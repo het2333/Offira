@@ -179,4 +179,24 @@ describe('Local Host document content routes', () => {
     expect(response.status).toBe(405)
     expect(await response.json()).toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' })
   })
+
+  it('serves the latest unsaved HTML preview without changing document bytes or revision', async () => {
+    const driver = createDriver()
+    let preview = new TextEncoder().encode('<h1>Saved</h1>')
+    driver.readPreview = async () => ({ bytes: preview, contentType: 'text/html; charset=utf-8' })
+    driver.writePreview = async (bytes) => { preview = new Uint8Array(bytes) }
+    const cookie = await startWith(driver)
+    const headers = { Cookie: cookie, 'Content-Type': 'text/html; charset=utf-8' }
+
+    const updated = await fetch(`${running!.origin}/api/documents/doc-1/preview`, {
+      method: 'PUT', headers, body: '<h1>Live</h1>',
+    })
+    const served = await fetch(`${running!.origin}/api/documents/doc-1/preview?v=2`, { headers })
+
+    expect(updated.status).toBe(204)
+    expect(served.status).toBe(200)
+    expect(await served.text()).toBe('<h1>Live</h1>')
+    expect(driver.document.revision).toBe(1)
+    expect(driver.writes).toHaveLength(0)
+  })
 })

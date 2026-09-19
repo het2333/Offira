@@ -65,6 +65,7 @@ export async function createTextDocumentDriver(
     path: authorizedPath,
   }
   let writeQueue: Promise<void> = Promise.resolve()
+  let preview: Uint8Array | undefined
 
   return {
     document,
@@ -77,6 +78,9 @@ export async function createTextDocumentDriver(
         language: 'en',
         theme: 'system',
         contentUrl: `/api/documents/${encodeURIComponent(document.documentId)}/content`,
+        ...(editorType === 'html'
+          ? { previewUrl: `/api/documents/${encodeURIComponent(document.documentId)}/preview` }
+          : {}),
       }
     },
     async execute(action) {
@@ -88,6 +92,22 @@ export async function createTextDocumentDriver(
     },
     async readContent() {
       return { bytes: new Uint8Array(await readFile(authorizedPath)), contentType: TEXT_CONTENT_TYPES[editorType] }
+    },
+    async readPreview() {
+      if (editorType !== 'html') {
+        throw new HostError('UNSUPPORTED_CAPABILITY', 'Markdown documents do not expose an HTML preview.', false)
+      }
+      return {
+        bytes: preview ?? new Uint8Array(await readFile(authorizedPath)),
+        contentType: TEXT_CONTENT_TYPES.html,
+      }
+    },
+    async writePreview(bytes) {
+      if (editorType !== 'html') {
+        throw new HostError('UNSUPPORTED_CAPABILITY', 'Markdown documents do not accept an HTML preview.', false)
+      }
+      validateUtf8(bytes)
+      preview = new Uint8Array(bytes)
     },
     writeContent(bytes, expectedRevision) {
       const write = writeQueue.then(async () => {

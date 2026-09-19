@@ -172,6 +172,7 @@ export default function App() {
   const originalSourceRef = useRef<MarkdownSourceSnapshot | undefined>(undefined)
   const envelopeRef = useRef<DocEnvelope>(EMPTY_ENVELOPE)
   const editorRef = useRef<Editor | null>(null)
+  const contentVersionRef = useRef(0)
   // blocks of the text on disk paired with the editor's nodes; null until a
   // file is loaded or saved, and whenever the pairing could not be established
   const sourceMapRef = useRef<SourceMap | null>(null)
@@ -230,7 +231,10 @@ export default function App() {
     editorProps: { attributes: { class: 'doc-editor', spellcheck: String(spellcheck) } },
     // uiOnly transactions (toggle fold state) never reach the file — not dirty
     onUpdate: ({ editor: updated, transaction }) => {
-      if (!transaction.getMeta('uiOnly')) markDirty()
+      if (!transaction.getMeta('uiOnly')) {
+        contentVersionRef.current += 1
+        markDirty()
+      }
       setOutlineItems(collectOutline(updated))
     },
   })
@@ -407,6 +411,7 @@ export default function App() {
             documentId: browserHost.document.documentId as never,
             clientId: (client.clientId ?? '') as never,
             revision: browserHost.document.revision as never,
+            contentVersion: contentVersionRef.current,
             title: browserHost.document.title,
             attached: client.attached && client.clientId !== undefined,
           }

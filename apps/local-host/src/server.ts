@@ -352,6 +352,34 @@ export async function startLocalHost(
         }
         return
       }
+      const previewMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/preview$/)
+      if (previewMatch !== null) {
+        if (!requireContentMethod(request, response)) return
+        const documentId = decodeURIComponent(previewMatch[1]!)
+        try {
+          const driver = options.documentDrivers?.require(documentId)
+          if (driver?.readPreview === undefined || driver.writePreview === undefined) {
+            throw new HostError('UNSUPPORTED_CAPABILITY', `Document ${documentId} does not expose an HTML preview.`, false)
+          }
+          if (request.method === 'GET') {
+            const preview = await driver.readPreview()
+            response.writeHead(200, {
+              'Content-Type': preview.contentType,
+              'Content-Length': preview.bytes.byteLength,
+              'Cache-Control': 'no-store',
+            })
+            response.end(preview.bytes)
+            return
+          }
+          await driver.writePreview(await readBinaryBody(request))
+          response.writeHead(204, { 'Cache-Control': 'no-store' })
+          response.end()
+        } catch (error: unknown) {
+          if (error instanceof HostError) sendHostError(response, error)
+          else throw error
+        }
+        return
+      }
       const contentMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/content$/)
       if (contentMatch !== null) {
         if (!requireContentMethod(request, response)) return

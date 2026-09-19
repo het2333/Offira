@@ -110,6 +110,64 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
+  it('rejects an unapproved Markdown save before it reaches the editor', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'markdown', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame({ type: 'agent:start', protocolVersion: PROTOCOL_VERSION, id: startRequestId, sessionId, documentId, prompt: 'markdown-save-unapproved' }, clientId)
+    await until(() => sent.some((frame) => frame.type === 'editor:request' || (frame.type === 'agent:event' && frame.event.type === 'test/editor-result')))
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'agent:event',
+      event: expect.objectContaining({ type: 'test/editor-result', data: expect.objectContaining({ result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'EDITOR_ROUTE_REJECTED' })] }) }) }),
+    }))
+    router.dispose()
+  })
+
+  it('rejects an HTML save whose approval is for a different plan', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'html', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({ supervisor, documents, operations: new OperationStore(), sendToClient: (_clientId, frame) => sent.push(frame) })
+    await supervisor.ready()
+
+    router.handleClientFrame({ type: 'agent:start', protocolVersion: PROTOCOL_VERSION, id: startRequestId, sessionId, documentId, prompt: 'html-save-wrong-approval' }, clientId)
+    await until(() => router.hasApproval('content-save-approval-1'))
+    router.handleClientFrame({ type: 'approval:response', protocolVersion: PROTOCOL_VERSION, id: 'content-save-approval-1' as RequestId, outcome: 'allowed-once' }, clientId)
+    await until(() => sent.some((frame) => frame.type === 'editor:request' || (frame.type === 'agent:event' && frame.event.type === 'test/editor-result')))
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    router.dispose()
+  })
+
+  it('consumes a one-time HTML save approval so a replay cannot reach the editor', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'html', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({ supervisor, documents, operations: new OperationStore(), sendToClient: (_clientId, frame) => sent.push(frame) })
+    await supervisor.ready()
+
+    router.handleClientFrame({ type: 'agent:start', protocolVersion: PROTOCOL_VERSION, id: startRequestId, sessionId, documentId, prompt: 'html-save-replayed-approval' }, clientId)
+    await until(() => router.hasApproval('content-save-approval-1'))
+    router.handleClientFrame({ type: 'approval:response', protocolVersion: PROTOCOL_VERSION, id: 'content-save-approval-1' as RequestId, outcome: 'allowed-once' }, clientId)
+    await until(() => sent.filter((frame) => frame.type === 'editor:request').length >= 2 || sent.some((frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result'))
+
+    expect(sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    router.dispose()
+  })
+
   it('expires a pending approval and sends one terminal failure when runtime crashes', async () => {
     const documents = new DocumentRegistry()
     const operations = new OperationStore()

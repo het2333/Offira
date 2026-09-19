@@ -71,4 +71,25 @@ describe('Markdown editor adapter', () => {
     expect(consumeApproval).not.toHaveBeenCalled()
     expect(apply).not.toHaveBeenCalled()
   })
+
+  it('rejects a plan after a manual editor change even when the Host revision is unchanged', async () => {
+    let contentVersion = 1
+    const apply = vi.fn()
+    const consumeApproval = vi.fn(() => true)
+    const adapter = createMarkdownEditorAdapter({
+      document: () => ({
+        documentId: 'markdown-1' as never, clientId: 'client-1' as never, revision: 1 as never,
+        contentVersion, title: 'Notes.md', attached: true,
+      }),
+      read: () => ({ ok: true, summary: 'Read Markdown.', warnings: [] }), apply, save: vi.fn(), consumeApproval,
+    })
+
+    const plan = await adapter.propose(baseRequest)
+    contentVersion = 2
+    const result = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+    expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })] })
+    expect(consumeApproval).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+  })
 })

@@ -86,6 +86,40 @@ process.on('message', (frame) => {
       })
       return
     }
+    if (frame.prompt === 'markdown-save-unapproved') {
+      process.send?.({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'markdown-save-request-1',
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: activeTurn.editorType,
+          revision: activeTurn.revision,
+          operationId: 'markdown-save-operation-1',
+          clientId: activeTurn.clientId,
+        },
+        command: 'save_markdown',
+        arguments: { inPlace: true },
+      })
+      return
+    }
+    if (frame.prompt === 'html-save-wrong-approval' || frame.prompt === 'html-save-replayed-approval') {
+      process.send?.({
+        type: 'approval:request',
+        protocolVersion: 1,
+        id: 'content-save-approval-1',
+        sessionId: frame.sessionId,
+        toolName: 'save_html',
+        proposal: {
+          planHash: 'content-save-plan-hash',
+          summary: 'Save the HTML document.',
+          targets: ['Page.html'],
+          warnings: [],
+        },
+      })
+      return
+    }
     if (frame.prompt === 'crash') {
       process.exit(18)
       return
@@ -110,6 +144,33 @@ process.on('message', (frame) => {
       event: { type: 'turn/end', data: { reason: { kind: 'aborted', reason: { kind: 'user' } } } },
     })
   } else if (frame.type === 'approval:response') {
+    if (frame.id === 'content-save-approval-1' && frame.outcome === 'allowed-once') {
+      const wrongApproval = activeTurn.prompt === 'html-save-wrong-approval'
+      const request = {
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'html-save-request-1',
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: 'html',
+          revision: activeTurn.revision,
+          operationId: 'html-save-operation-1',
+          clientId: activeTurn.clientId,
+        },
+        command: 'save_html',
+        arguments: { inPlace: true },
+        approval: {
+          id: 'content-save-approval-1',
+          planHash: wrongApproval ? 'wrong-plan-hash' : 'content-save-plan-hash',
+        },
+      }
+      process.send?.(request)
+      if (activeTurn.prompt === 'html-save-replayed-approval') {
+        process.send?.({ ...request, id: 'html-save-request-2' })
+      }
+      return
+    }
     if (frame.id === 'editor-approval-1' && frame.outcome === 'allowed-once') {
       process.send?.({
         type: 'editor:request',

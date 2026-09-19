@@ -18,6 +18,7 @@ interface MarkdownDocumentState {
   documentId: import('@nexusdesk/protocol').DocumentId
   clientId: import('@nexusdesk/protocol').ClientId
   revision: import('@nexusdesk/protocol').Revision
+  contentVersion: number
   title: string
   attached: boolean
 }
@@ -49,10 +50,13 @@ function canonical(value: unknown): string {
     .join(',')}}`
 }
 
-async function hashPlan(plan: Pick<EditPlan, 'target' | 'operations'>): Promise<string> {
+async function hashPlan(
+  plan: Pick<EditPlan, 'target' | 'operations'>,
+  contentVersion: number,
+): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode(canonical({ target: plan.target, operations: plan.operations })),
+    new TextEncoder().encode(canonical({ target: plan.target, operations: plan.operations, contentVersion })),
   )
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
@@ -90,6 +94,7 @@ function targetsFor(operations: JsonValue[]): string[] {
 class MarkdownEditorAdapter implements EditorAdapter {
   readonly editorType = 'markdown'
   private readonly operations = new Map<OperationId, RecordedOperation>()
+  private readonly proposedContentVersions = new Map<OperationId, number>()
 
   constructor(private readonly options: MarkdownEditorAdapterOptions) {}
 
@@ -112,6 +117,7 @@ class MarkdownEditorAdapter implements EditorAdapter {
   async propose(request: EditRequest): Promise<EditPlan> {
     if (request.command !== 'apply_ops') throw new Error(`unsupported Markdown edit command: ${request.command}`)
     const operations = operationsFrom(request)
+    const contentVersion = this.options.document().contentVersion
     const target = {
       sessionId: request.sessionId,
       documentId: request.documentId,
@@ -128,7 +134,8 @@ class MarkdownEditorAdapter implements EditorAdapter {
       operations,
       warnings: [],
     }
-    plan.planHash = await hashPlan(plan)
+    plan.planHash = await hashPlan(plan, contentVersion)
+    this.proposedContentVersions.set(plan.target.operationId, contentVersion)
     return plan
   }
 
@@ -139,10 +146,15 @@ class MarkdownEditorAdapter implements EditorAdapter {
     if (!document.attached) return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
     if (document.documentId !== plan.target.documentId || document.clientId !== plan.target.clientId) return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
     if (document.revision !== plan.target.revision) return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+    const proposedContentVersion = this.proposedContentVersions.get(plan.target.operationId)
+    if (proposedContentVersion !== document.contentVersion) {
+      return failure('STALE_CONTENT', 'the Markdown editor changed after this plan was prepared')
+    }
     if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash))) return failure('APPROVAL_INVALID', 'approval does not authorize this exact Markdown plan')
-    if ((await hashPlan(plan)) !== plan.planHash) return failure('PLAN_TAMPERED', 'the approved Markdown plan no longer matches its hash')
+    if ((await hashPlan(plan, proposedContentVersion)) !== plan.planHash) return failure('PLAN_TAMPERED', 'the approved Markdown plan no longer matches its hash')
     const result = this.applyOnce(plan.operations)
     this.operations.set(plan.target.operationId, { planHash: plan.planHash, result })
+    this.proposedContentVersions.delete(plan.target.operationId)
     return result
   }
 

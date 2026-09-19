@@ -262,7 +262,7 @@ export default function App() {
         textRef.current = doc.text
         // the frame must never race the first push: serve the buffer before the URL is known to React
         const map0 = getMap()
-        window.htmlApi.updatePreview(instrumentForPreview(doc.text, map0, inspectorSource))
+        await window.htmlApi.updatePreview(instrumentForPreview(doc.text, map0, inspectorSource))
         pushedTextRef.current = doc.text
         pushedVersionRef.current = map0.version
         frameVersionsRef.current = new Set([map0.version])
@@ -295,10 +295,10 @@ export default function App() {
    * scroll jump of a reload, and keeps talking under its own (older) version.
    */
   const pushPreview = useCallback(
-    (nextText: string, reload = true) => {
+    async (nextText: string, reload = true) => {
       if (pushedTextRef.current === nextText) return
       const map = getMap()
-      window.htmlApi.updatePreview(instrumentForPreview(nextText, map, inspectorSource))
+      await window.htmlApi.updatePreview(instrumentForPreview(nextText, map, inspectorSource))
       pushedTextRef.current = nextText
       pushedVersionRef.current = map.version
       if (reload) {
@@ -311,7 +311,7 @@ export default function App() {
   // push the instrumented buffer to html-preview:// and reload the frame, debounced per keystroke
   useEffect(() => {
     if (status !== 'ready' || pushedTextRef.current === text) return
-    const id = window.setTimeout(() => pushPreview(text), PREVIEW_DEBOUNCE_MS)
+    const id = window.setTimeout(() => { void pushPreview(text) }, PREVIEW_DEBOUNCE_MS)
     return () => window.clearTimeout(id)
   }, [text, status, pushPreview])
 

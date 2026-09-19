@@ -44,4 +44,35 @@ describe('Markdown browser Agent bridge', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(apply).not.toHaveBeenCalled()
   })
+
+  it('requires the exact save approval and consumes it after one save', async () => {
+    const client = new FakeClient()
+    const bridge = createMarkdownBrowserAgentBridge({ client, documentId: 'markdown-1' as never, revision: 1 as never })
+    const save = vi.fn().mockResolvedValue({ ok: true, summary: 'Saved.', warnings: [] })
+    bridge.attachEditor({
+      editorType: 'markdown', capabilities: () => ({ editorType: 'markdown', commands: [], canUndo: false, canSave: true, canExport: false }),
+      snapshot: vi.fn(), read: vi.fn(), propose: vi.fn(), apply: vi.fn(), verify: vi.fn(), undo: vi.fn(), save, export: vi.fn(),
+    } as never)
+    const target = { sessionId: 'session-1', documentId: 'markdown-1', editorType: 'markdown', revision: 1, clientId: 'client-1' }
+    const sendSave = (operationId: string, approval?: { id: string; planHash: string }) =>
+      (client.frames.push as never)({ type: 'editor:request', protocolVersion: 1, id: `request-${operationId}`, target: { ...target, operationId }, command: 'save_markdown', arguments: { inPlace: true }, approval })
+
+    sendSave('missing')
+    sendSave('wrong', { id: 'approval-wrong', planHash: 'other-plan' })
+    sendSave('valid', { id: 'approval-1', planHash: 'save-current-markdown-in-place' })
+    sendSave('replayed', { id: 'approval-1', planHash: 'save-current-markdown-in-place' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(client.sent).toContainEqual(expect.objectContaining({
+      type: 'editor:result',
+      target: expect.objectContaining({ operationId: 'missing' }),
+      result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })] }),
+    }))
+    expect(client.sent).toContainEqual(expect.objectContaining({
+      type: 'editor:result',
+      target: expect.objectContaining({ operationId: 'wrong' }),
+      result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })] }),
+    }))
+  })
 })

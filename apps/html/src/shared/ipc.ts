@@ -196,7 +196,7 @@ export interface HtmlApi {
   /** Read the file as UTF-8 text. Only paths granted to this view are allowed */
   readFile(path: string): Promise<string>
   /** Push the current buffer so html-preview:// serves it to the preview iframe */
-  updatePreview(text: string): void
+  updatePreview(text: string): void | Promise<void>
   /** The html-preview:// URL bound to this view (a present tab gets its owner's URL) */
   getPreviewInfo(): Promise<{ url: string }>
   /** Present → Fullscreen: cover the screen in one main-side call (tab-strip bleed, macOS simpleFullScreen) */

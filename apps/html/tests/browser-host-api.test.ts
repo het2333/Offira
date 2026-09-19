@@ -9,18 +9,21 @@ import {
 } from '../src/renderer/browser-host-api'
 
 function bootstrap(): HtmlBrowserBootstrap {
-  return { documentId: 'html-1', title: 'Page.html', revision: 1, websocketUrl: 'ws://127.0.0.1:43123/ws', language: 'en', theme: 'system', contentUrl: '/api/documents/html-1/content' }
+  return { documentId: 'html-1', title: 'Page.html', revision: 1, websocketUrl: 'ws://127.0.0.1:43123/ws', language: 'en', theme: 'system', contentUrl: '/api/documents/html-1/content', previewUrl: '/api/documents/html-1/preview' }
 }
 
-function transport(): HtmlBrowserTransport & { writes: Array<{ text: string; revision: number }> } {
+function transport(): HtmlBrowserTransport & { writes: Array<{ text: string; revision: number }>; previews: string[] } {
   const writes: Array<{ text: string; revision: number }> = []
+  const previews: string[] = []
   return {
     writes,
+    previews,
     async readContent() { return new TextEncoder().encode('<h1>Initial</h1>') },
     async writeContent(bytes, revision) {
       writes.push({ text: new TextDecoder().decode(bytes), revision })
       return { documentId: 'html-1', title: 'Page.html', editorType: 'html', revision: revision + 1 }
     },
+    async updatePreview(text) { previews.push(text) },
   }
 }
 
@@ -33,7 +36,9 @@ describe('HTML browser host API', () => {
     await expect(api.readFile('nexusdesk://html-1')).resolves.toBe('<h1>Initial</h1>')
     await expect(api.readFile('/tmp/other.html')).rejects.toMatchObject({ code: 'UNAVAILABLE_IN_WEB' })
     api.updatePreview('<h1>Preview</h1>')
-    await expect(api.getPreviewInfo()).resolves.toMatchObject({ url: expect.stringContaining('data:text/html') })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await expect(api.getPreviewInfo()).resolves.toEqual({ url: '/api/documents/html-1/preview' })
+    expect(host.previews).toEqual(['<h1>Preview</h1>'])
     await expect(api.save({ text: '<h1>Updated</h1>', imageSources: [], mode: 'save' })).resolves.toEqual({ ok: true, path: 'nexusdesk://html-1' })
     expect(host.writes).toEqual([{ text: '<h1>Updated</h1>', revision: 1 }])
     expect(handle.document.revision).toBe(2)

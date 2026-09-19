@@ -348,7 +348,9 @@ export class AgentRouter {
     if (
       frame.command === 'apply_ops' ||
       frame.command === 'save_sheet' ||
-      frame.command === 'save_document'
+      frame.command === 'save_document' ||
+      frame.command === 'save_markdown' ||
+      frame.command === 'save_html'
     ) {
       const authorization = frame.approval
       if (authorization === undefined) {

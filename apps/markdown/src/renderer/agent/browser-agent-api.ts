@@ -25,6 +25,7 @@ export interface MarkdownBrowserAgentBridgeOptions {
 }
 
 interface JournalRecord { fingerprint: string; result: AgentToolResult }
+const SAVE_PLAN_HASH = 'save-current-markdown-in-place'
 
 function failure(code: string, message: string): AgentToolResult {
   return { ok: false, summary: message, warnings: [{ code, message }] }
@@ -51,6 +52,7 @@ export function createMarkdownBrowserAgentBridge(
 ): MarkdownBrowserAgentBridge {
   let adapter: EditorAdapter | undefined
   const approvals = new Map<string, string>()
+  const consumedSaveApprovals = new Set<string>()
   const proposals = new Map<string, EditPlan>()
   const storage = options.storage ?? defaultStorage()
   const registration = registerEditor(options.client, {
@@ -69,7 +71,18 @@ export function createMarkdownBrowserAgentBridge(
   const execute = async (frame: EditorRequestFrame): Promise<AgentToolResult> => {
     if (!adapter) return failure('EDITOR_NOT_READY', 'the Markdown editor is not ready')
     if (frame.command === 'read_markdown') return adapter.read({ documentId: frame.target.documentId, command: frame.command, arguments: frame.arguments })
-    if (frame.command === 'save_markdown') return adapter.save(frame.target.documentId)
+    if (frame.command === 'save_markdown') {
+      const approval = frame.approval
+      if (
+        approval === undefined ||
+        approval.planHash !== SAVE_PLAN_HASH ||
+        consumedSaveApprovals.has(approval.id)
+      ) {
+        return failure('APPROVAL_INVALID', 'save request is not bound to an unused exact approval')
+      }
+      consumedSaveApprovals.add(approval.id)
+      return adapter.save(frame.target.documentId)
+    }
     if (frame.command === 'propose_ops') {
       const plan = await adapter.propose({ ...frame.target, command: 'apply_ops', arguments: frame.arguments })
       proposals.set(frame.target.operationId, plan)
@@ -109,6 +122,6 @@ export function createMarkdownBrowserAgentBridge(
     client: () => ({ clientId: options.client.clientId, attached: options.client.state === 'ready' }),
     consumeApproval(id, planHash) { if (approvals.get(id) !== planHash) return false; approvals.delete(id); return true },
     updateRevision(revision) { registration.updateRevision(revision) },
-    dispose() { approvals.clear(); proposals.clear(); adapter = undefined; unsubscribe(); registration.dispose() },
+    dispose() { approvals.clear(); consumedSaveApprovals.clear(); proposals.clear(); adapter = undefined; unsubscribe(); registration.dispose() },
   }
 }

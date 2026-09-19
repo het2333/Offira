@@ -15,6 +15,7 @@ export interface HtmlBrowserBootstrap {
   language: HtmlLanguage
   theme: UiTheme
   contentUrl: string
+  previewUrl: string
 }
 
 export interface HtmlDocumentWriteResult {
@@ -27,11 +28,12 @@ export interface HtmlDocumentWriteResult {
 export interface HtmlBrowserTransport {
   readContent(): Promise<Uint8Array>
   writeContent(bytes: Uint8Array, expectedRevision: number): Promise<HtmlDocumentWriteResult>
+  updatePreview(text: string): Promise<void>
 }
 
 export interface HtmlBrowserHostHandle {
   readonly document: { readonly documentId: string; readonly title: string; revision: number }
-  readonly settings: Pick<HtmlBrowserBootstrap, 'language' | 'theme'>
+  readonly settings: Pick<HtmlBrowserBootstrap, 'language' | 'theme' | 'previewUrl'>
   readonly api: HtmlApi
   readonly bridge: HtmlBrowserAgentBridge
   updateRevision(revision: number): void
@@ -64,7 +66,6 @@ function unavailable<T>(capability: string): Promise<T> {
 function noListener(): () => void { return () => undefined }
 function virtualPath(documentId: string): string { return `nexusdesk://${documentId}` }
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer { const copy = new Uint8Array(bytes.byteLength); copy.set(bytes); return copy.buffer }
-function previewUrl(text: string): string { return `data:text/html;charset=utf-8,${encodeURIComponent(text)}` }
 
 async function hostError(response: Response): Promise<Error> {
   let message = `Local Host request failed with HTTP ${String(response.status)}`
@@ -80,7 +81,7 @@ export async function loadHtmlBrowserBootstrap(documentId: string, fetchBootstra
   const response = await fetchBootstrap(`/api/documents/${encodeURIComponent(documentId)}/bootstrap`, { credentials: 'same-origin' })
   if (!response.ok) throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
   const value = (await response.json()) as Partial<HtmlBrowserBootstrap>
-  if (typeof value.documentId !== 'string' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || typeof value.websocketUrl !== 'string' || typeof value.language !== 'string' || typeof value.theme !== 'string' || typeof value.contentUrl !== 'string') {
+  if (typeof value.documentId !== 'string' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || typeof value.websocketUrl !== 'string' || typeof value.language !== 'string' || typeof value.theme !== 'string' || typeof value.contentUrl !== 'string' || typeof value.previewUrl !== 'string') {
     throw new Error('Local Host returned an invalid HTML bootstrap')
   }
   return value as HtmlBrowserBootstrap
@@ -100,13 +101,18 @@ export function createHttpHtmlBrowserTransport(bootstrap: HtmlBrowserBootstrap, 
       if (value.documentId !== bootstrap.documentId || value.editorType !== 'html' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || (value.revision ?? 0) <= expectedRevision) throw new Error('Local Host returned an invalid HTML write result')
       return value as HtmlDocumentWriteResult
     },
+    async updatePreview(text) {
+      const response = await fetchImpl(bootstrap.previewUrl, {
+        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: text,
+      })
+      if (!response.ok) throw await hostError(response)
+    },
   }
 }
 
 /** Preload-shaped, browser-safe surface for the existing HTML renderer. */
 export function createHtmlBrowserApi(handle: Pick<HtmlBrowserHostHandle, 'document' | 'settings' | 'updateRevision'>, transport: HtmlBrowserTransport): HtmlApi {
   let pending = true
-  let preview = previewUrl('')
   let prefs: AiPanelPrefs = DEFAULT_AI_PANEL_PREFS
   const preferenceListeners = new Set<(next: AiPanelPrefs) => void>()
   const path = virtualPath(handle.document.documentId)
@@ -115,8 +121,8 @@ export function createHtmlBrowserApi(handle: Pick<HtmlBrowserHostHandle, 'docume
     consumeHeadlessExport: async () => null,
     headlessExportDone: () => undefined,
     async readFile(candidate) { if (candidate !== path) throw new HtmlWebUnavailableError('opening an arbitrary filesystem path'); return new TextDecoder('utf-8', { fatal: true }).decode(await transport.readContent()) },
-    updatePreview(text) { preview = previewUrl(text) },
-    getPreviewInfo: async () => ({ url: preview }),
+    updatePreview(text) { return transport.updatePreview(text) },
+    getPreviewInfo: async () => ({ url: handle.settings.previewUrl }),
     setPresentFullScreen: () => unavailable('native full screen'),
     presentInNewTab: () => unavailable('native presentation tabs'),
     async save(request): Promise<SaveHtmlResult> {
@@ -144,7 +150,7 @@ export function installHtmlBrowserHostApi(bootstrap: HtmlBrowserBootstrap, optio
   const client = options.client ?? createNexusClient({ url: bootstrap.websocketUrl })
   const bridge = createHtmlBrowserAgentBridge({ client, documentId: bootstrap.documentId as import('@nexusdesk/protocol').DocumentId, revision: bootstrap.revision as import('@nexusdesk/protocol').Revision })
   const document = { documentId: bootstrap.documentId, title: bootstrap.title, revision: bootstrap.revision }
-  const settings = { language: bootstrap.language, theme: bootstrap.theme }
+  const settings = { language: bootstrap.language, theme: bootstrap.theme, previewUrl: bootstrap.previewUrl }
   let disposed = false
   let api!: HtmlApi
   const handle: HtmlBrowserHostHandle = { document, settings, bridge, get api() { return api }, updateRevision(revision) { document.revision = revision; bridge.updateRevision(revision as import('@nexusdesk/protocol').Revision) }, dispose() { if (disposed) return; disposed = true; if (target.htmlApi === api) delete target.htmlApi; if (target.agentApi === bridge.agentApi) delete target.agentApi; if (target.nexusdeskHtmlHost === handle) delete target.nexusdeskHtmlHost; bridge.dispose(); client.close() } }

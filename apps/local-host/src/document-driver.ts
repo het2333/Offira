@@ -14,6 +14,8 @@ export interface LocalDocumentDriver {
   execute(action: string, payload: unknown): Promise<unknown>
   readContent?(): Promise<{ bytes: Uint8Array; contentType: string }>
   writeContent?(bytes: Uint8Array, expectedRevision: number): Promise<ShellDocumentSummary>
+  readPreview?(): Promise<{ bytes: Uint8Array; contentType: string }>
+  writePreview?(bytes: Uint8Array): Promise<void>
   close(): Promise<void>
 }
 

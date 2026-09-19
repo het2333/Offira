@@ -57,4 +57,19 @@ describe('text Local Host driver', () => {
     expect(await readFile(path, 'utf8')).toBe('<h1>Initial</h1>')
     expect(driver.document.revision).toBe(1)
   })
+
+  it('keeps unsaved HTML preview bytes in the Host instead of writing them to disk', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'nexusdesk-text-driver-'))
+    const path = join(directory, 'Page.html')
+    await writeFile(path, '<h1>Saved</h1>')
+    const driver = await createTextDocumentDriver(path, 'html')
+
+    await driver.writePreview!(new TextEncoder().encode('<h1>Live preview</h1>'))
+
+    await expect(driver.readPreview!()).resolves.toEqual({
+      bytes: new TextEncoder().encode('<h1>Live preview</h1>'),
+      contentType: 'text/html; charset=utf-8',
+    })
+    expect(await readFile(path, 'utf8')).toBe('<h1>Saved</h1>')
+  })
 })
