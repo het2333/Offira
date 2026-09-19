@@ -1,8 +1,8 @@
 import { createRoot } from 'react-dom/client'
 import { htmlLang, type Lang } from '@genoffice/i18n'
-import { App } from './App'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
 import type { UiTheme } from '../shared/ipc'
+import { installDocsBrowserHostApiForDocument, selectDocsHost } from './browser-host-api'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/color-picker.css'
@@ -18,9 +18,6 @@ import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
 import { setAltChunkHtmlConverter } from '@genoffice/docx-engine'
 
 installScreenTips()
-if (window.desktop?.convertAltChunkHtml) {
-  setAltChunkHtmlConverter((html) => window.desktop.convertAltChunkHtml(html))
-}
 
 function applyTheme(theme: UiTheme): void {
   if (theme === 'system') document.documentElement.removeAttribute('data-theme')
@@ -28,6 +25,20 @@ function applyTheme(theme: UiTheme): void {
 }
 
 async function bootstrap(): Promise<void> {
+  const selection = await selectDocsHost({
+    search: window.location.search,
+    electronApi: (window as Partial<Window>).desktop,
+    installBrowser: installDocsBrowserHostApiForDocument,
+  })
+  const rootElement = document.getElementById('root')!
+  if (selection.kind === 'error') {
+    rootElement.textContent = selection.message
+    rootElement.setAttribute('role', 'alert')
+    return
+  }
+  if (window.desktop.convertAltChunkHtml) {
+    setAltChunkHtmlConverter((html) => window.desktop.convertAltChunkHtml(html))
+  }
   let lang: Lang = 'zh'
   let theme: UiTheme = 'system'
   try {
@@ -49,7 +60,8 @@ async function bootstrap(): Promise<void> {
     .then(applyAiPanelPrefs)
     .catch(() => {})
   window.desktop?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
-  createRoot(document.getElementById('root')!).render(
+  const { App } = await import('./App')
+  createRoot(rootElement).render(
     <LocaleProvider initial={lang}>
       <App />
     </LocaleProvider>,

@@ -665,6 +665,8 @@ interface ReviewTabProps extends TabProps {
   protectActive: boolean
   onProtectDoc: () => void
   onCompare: () => void
+  protectionAvailable?: boolean
+  compareAvailable?: boolean
 }
 
 export function ReviewTab({
@@ -694,6 +696,8 @@ export function ReviewTab({
   protectActive,
   onProtectDoc,
   onCompare,
+  protectionAvailable = true,
+  compareAvailable = true,
 }: ReviewTabProps) {
   const { t } = useI18n()
   // One-time acknowledgement before whole-document AI rewrites:
@@ -1014,43 +1018,49 @@ export function ReviewTab({
         <div className="ribbon-group-label">{t('ribbonGroupTracking')}</div>
       </div>
 
-      <div className="ribbon-sep" />
+      {compareAvailable && (
+        <>
+          <div className="ribbon-sep" />
+          <div className="ribbon-group">
+            <div className="ribbon-group-items">
+              <button
+                className="rb-big"
+                disabled={!hasDoc}
+                data-tip={t('ribbonCompareTip')}
+                onClick={onCompare}
+              >
+                <span className="rb-big-icon">
+                  <IconCompare size={BIG} />
+                </span>
+                <span>{t('ribbonCompare')}</span>
+              </button>
+            </div>
+            <div className="ribbon-group-label">{t('ribbonCompare')}</div>
+          </div>
+        </>
+      )}
 
-      <div className="ribbon-group">
-        <div className="ribbon-group-items">
-          <button
-            className="rb-big"
-            disabled={!hasDoc}
-            data-tip={t('ribbonCompareTip')}
-            onClick={onCompare}
-          >
-            <span className="rb-big-icon">
-              <IconCompare size={BIG} />
-            </span>
-            <span>{t('ribbonCompare')}</span>
-          </button>
-        </div>
-        <div className="ribbon-group-label">{t('ribbonCompare')}</div>
-      </div>
-
-      <div className="ribbon-sep" />
-
-      <div className="ribbon-group">
-        <div className="ribbon-group-items">
-          <button
-            className={`rb-big ${protectActive ? 'active' : ''}`}
-            disabled={!hasDoc}
-            title={t('ribbonProtectDocTip')}
-            onClick={onProtectDoc}
-          >
-            <span className="rb-big-icon">
-              <IconLock size={BIG} />
-            </span>
-            <span>{t('ribbonProtectDoc')}</span>
-          </button>
-        </div>
-        <div className="ribbon-group-label">{t('ribbonGroupProtect')}</div>
-      </div>
+      {protectionAvailable && (
+        <>
+          <div className="ribbon-sep" />
+          <div className="ribbon-group">
+            <div className="ribbon-group-items">
+              <button
+                className={`rb-big ${protectActive ? 'active' : ''}`}
+                disabled={!hasDoc}
+                title={t('ribbonProtectDocTip')}
+                onClick={onProtectDoc}
+              >
+                <span className="rb-big-icon">
+                  <IconLock size={BIG} />
+                </span>
+                <span>{t('ribbonProtectDoc')}</span>
+              </button>
+            </div>
+            <div className="ribbon-group-label">{t('ribbonGroupProtect')}</div>
+          </div>
+        </>
+      )}
     </>
   )
 }

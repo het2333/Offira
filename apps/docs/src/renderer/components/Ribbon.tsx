@@ -50,6 +50,7 @@ import { beginForeignPaste, defaultPasteMode, stashPastePayload } from '../edito
 import { formatNumber } from '../editor/numbering'
 import type { InkTool } from '../editor/ink'
 import type { RibbonFormatState } from './ribbon-format-state'
+import type { DocsBrowserCapabilities } from '../browser-host-api'
 import { setSelectedColumnWidth } from '../editor/table-sizing'
 import {
   applyTablePreset,
@@ -172,6 +173,8 @@ interface RibbonProps {
   onOpen: () => void
   onSave: () => void
   onSaveAs: () => void
+  /** Present only in Local Web mode; absent means the Electron preload owns all capabilities. */
+  nativeCapabilities?: DocsBrowserCapabilities
   showAi: boolean
   onToggleAi: () => void
   section: SectionSettings | null
@@ -633,6 +636,7 @@ function RibbonInner({
   onOpen,
   onSave,
   onSaveAs,
+  nativeCapabilities,
   showAi,
   onToggleAi,
   section,
@@ -1942,14 +1946,16 @@ function RibbonInner({
             </button>
             {dropdown === 'file' && (
               <div data-rb-panel="" className="file-menu">
-                <button
-                  onClick={() => {
-                    setDropdown(null)
-                    onOpen()
-                  }}
-                >
-                  {t('ribbonOpen')} <span className="file-menu-key">Ctrl+O</span>
-                </button>
+                {nativeCapabilities?.openFile !== false && (
+                  <button
+                    onClick={() => {
+                      setDropdown(null)
+                      onOpen()
+                    }}
+                  >
+                    {t('ribbonOpen')} <span className="file-menu-key">Ctrl+O</span>
+                  </button>
+                )}
                 <button
                   disabled={!hasDoc}
                   onClick={() => {
@@ -1959,15 +1965,17 @@ function RibbonInner({
                 >
                   {t('ribbonSave')} <span className="file-menu-key">Ctrl+S</span>
                 </button>
-                <button
-                  disabled={!hasDoc}
-                  onClick={() => {
-                    setDropdown(null)
-                    onSaveAs()
-                  }}
-                >
-                  {t('ribbonSaveAs')} <span className="file-menu-key">Ctrl+Shift+S</span>
-                </button>
+                {nativeCapabilities?.saveAs !== false && (
+                  <button
+                    disabled={!hasDoc}
+                    onClick={() => {
+                      setDropdown(null)
+                      onSaveAs()
+                    }}
+                  >
+                    {t('ribbonSaveAs')} <span className="file-menu-key">Ctrl+Shift+S</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -3829,6 +3837,7 @@ function RibbonInner({
             zoteroNoteFields={zoteroNoteFields}
             onAddSource={onAddSource}
             headingPages={headingPages}
+            zoteroAvailable={nativeCapabilities?.zotero !== false}
           />
         ) : tab === 'review' ? (
           <ReviewTab
@@ -3858,6 +3867,8 @@ function RibbonInner({
             protectActive={protectActive}
             onProtectDoc={onProtectDoc}
             onCompare={onCompare}
+            protectionAvailable={nativeCapabilities?.encryption !== false}
+            compareAvailable={nativeCapabilities?.openFile !== false}
           />
         ) : (
           <ViewTab

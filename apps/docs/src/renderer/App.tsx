@@ -5728,6 +5728,7 @@ export function App() {
         editor={editor}
         formatState={formatState}
         hasDoc={!!doc}
+        nativeCapabilities={window.nexusdeskDocsHost?.capabilities}
         blocks={doc?.parsed.blocks ?? EMPTY_BLOCKS}
         styles={ribbonStyles}
         docDefaults={doc?.parsed.docDefaults}
