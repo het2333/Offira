@@ -22,6 +22,8 @@ describe('official Harness Slides tools', () => {
       'read_presentation',
       'apply_presentation_operations',
       'save_presentation',
+      'undo_presentation',
+      'redo_presentation',
     ])
     expect(tools.some((tool) => /electron|webcontents|pptx-engine/i.test(tool.name))).toBe(false)
   })
@@ -90,6 +92,48 @@ describe('official Harness Slides tools', () => {
       { inPlace: true, contentVersion: 2 },
       expect.anything(),
       { approvalId: 'approval-1', planHash: 'save-plan-hash-1', operationId: 'save-operation-1' },
+    )
+  })
+
+  it.each([
+    ['undo_presentation', 'undo'],
+    ['redo_presentation', 'redo'],
+  ] as const)('proposes, approves, and applies %s as a typed history transaction', async (toolName, action) => {
+    const historyProposal: AgentToolResult = {
+      ok: true,
+      summary: `${toolName} the latest presentation change.`,
+      warnings: [],
+      data: {
+        operationId: `${action}-operation-1`,
+        planHash: `${action}-plan-hash-1`,
+        summary: `${toolName} the latest presentation change.`,
+        targets: ['presentation history'],
+      },
+    }
+    const historyResult: AgentToolResult = {
+      ok: true,
+      summary: `${toolName} the latest presentation change.`,
+      warnings: [],
+      changes: { targets: ['presentation history'], count: 1 },
+    }
+    const request = vi.fn().mockResolvedValueOnce(historyProposal).mockResolvedValueOnce(historyResult)
+    const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-1' })
+    const historyTool = createSlidesTools({ request, approve }).find((tool) => tool.name === toolName)!
+
+    await expect(historyTool.execute({}, { signal: new AbortController().signal } as never)).resolves.toEqual(historyResult)
+
+    expect(request).toHaveBeenNthCalledWith(1, 'propose_history', { action }, expect.anything())
+    expect(approve).toHaveBeenCalledWith(
+      toolName,
+      expect.objectContaining({ operationId: `${action}-operation-1`, planHash: `${action}-plan-hash-1` }),
+      expect.anything(),
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      'apply_history',
+      { action },
+      expect.anything(),
+      { approvalId: 'approval-1', planHash: `${action}-plan-hash-1`, operationId: `${action}-operation-1` },
     )
   })
 })

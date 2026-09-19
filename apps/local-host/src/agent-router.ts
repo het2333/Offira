@@ -347,6 +347,7 @@ export class AgentRouter {
     }
     if (
       frame.command === 'apply_ops' ||
+      frame.command === 'apply_history' ||
       frame.command === 'save_sheet' ||
       frame.command === 'save_document' ||
       frame.command === 'save_presentation' ||
@@ -442,5 +443,5 @@ function sameTarget(left: MutationTarget, right: MutationTarget): boolean {
 }
 
 function isProposalCommand(command: string): boolean {
-  return command === 'propose_ops' || command === 'propose_save'
+  return command === 'propose_ops' || command === 'propose_save' || command === 'propose_history'
 }

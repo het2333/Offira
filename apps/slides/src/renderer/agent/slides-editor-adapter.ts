@@ -35,6 +35,8 @@ export interface SlidesEditorAdapterOptions {
   read(): Promise<JsonValue>
   runTransaction(operations: JsonValue[]): Promise<{ applied: boolean; contentVersion?: number; records?: Array<{ op: string; target?: string }>; failures?: Array<{ error: string }> }>
   save(): Promise<void>
+  undo(): Promise<{ contentVersion: number } | null>
+  redo(): Promise<{ contentVersion: number } | null>
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
 }
 
@@ -46,8 +48,20 @@ export interface SlidesSavePlan {
   warnings: Array<{ code: string; message: string; target?: string }>
 }
 
+export type SlidesHistoryAction = 'undo' | 'redo'
+
+export interface SlidesHistoryPlan extends EditPlan<{ action: SlidesHistoryAction }> {
+  contentVersion: number
+}
+
+export interface ApprovedSlidesHistoryPlan extends SlidesHistoryPlan {
+  approvalId: string
+}
+
 export interface SlidesEditorAdapter extends EditorAdapter {
   proposeSave(request: EditRequest): Promise<SlidesSavePlan>
+  proposeHistory(request: EditRequest): Promise<SlidesHistoryPlan>
+  applyHistory(plan: ApprovedSlidesHistoryPlan): Promise<AgentEditResult>
 }
 
 function canonical(value: unknown): string {
@@ -98,12 +112,21 @@ function sameRequestTarget(request: EditRequest, current: SlidesDocumentState): 
   return request.documentId === current.documentId && request.clientId === current.clientId && request.revision === current.revision && request.editorType === 'slides'
 }
 
+function historyAction(value: JsonValue): SlidesHistoryAction {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || (value.action !== 'undo' && value.action !== 'redo')) {
+    throw new Error('Presentation history requests require action "undo" or "redo"')
+  }
+  return value.action
+}
+
 export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): SlidesEditorAdapter {
   const applied = new Map<string, Promise<AgentEditResult>>()
   const proposedContentVersions = new Map<string, { planHash: string; contentVersion: number }>()
+  const appliedHistory = new Map<string, Promise<AgentEditResult>>()
+  const proposedHistory = new Map<string, SlidesHistoryPlan>()
   return {
     editorType: 'slides',
-    capabilities: () => ({ editorType: 'slides', commands: ['read_presentation', 'apply_ops', 'save_presentation'], canUndo: false, canSave: true, canExport: false }),
+    capabilities: () => ({ editorType: 'slides', commands: ['read_presentation', 'apply_ops', 'save_presentation', 'undo_presentation', 'redo_presentation'], canUndo: true, canSave: true, canExport: false }),
     async snapshot(documentId): Promise<AgentDocumentSummary> {
       const current = options.document()
       if (documentId !== current.documentId) throw new Error('Presentation is not attached')
@@ -146,6 +169,35 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
         warnings: [],
       }
     },
+    async proposeHistory(request): Promise<SlidesHistoryPlan> {
+      const current = options.document()
+      if (request.command !== 'propose_history' || !sameRequestTarget(request, current) || !current.attached) {
+        throw new Error('Presentation is no longer attached at the requested revision')
+      }
+      const action = historyAction(request.arguments)
+      const planHash = await hash({
+        target: {
+          documentId: request.documentId,
+          clientId: request.clientId,
+          revision: request.revision,
+          editorType: request.editorType,
+        },
+        contentVersion: current.contentVersion,
+        command: 'apply_history',
+        action,
+      })
+      const plan: SlidesHistoryPlan = {
+        target: { sessionId: request.sessionId, documentId: request.documentId, clientId: request.clientId, editorType: 'slides', revision: request.revision, operationId: request.operationId },
+        planId: `slides-history-${request.operationId}`,
+        planHash,
+        summary: `${action === 'undo' ? 'Undo' : 'Redo'} the latest presentation change.`,
+        operations: [{ action }],
+        warnings: [],
+        contentVersion: current.contentVersion,
+      }
+      proposedHistory.set(request.operationId, plan)
+      return plan
+    },
     async apply(plan: ApprovedEditPlan): Promise<AgentEditResult> {
       const current = options.document()
       if (!sameTarget(plan, current)) return failure('STALE_REVISION', 'The presentation changed or detached before this approved operation could apply.')
@@ -173,6 +225,37 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
         }
       })()
       applied.set(plan.target.operationId, result)
+      return result
+    },
+    async applyHistory(plan): Promise<AgentEditResult> {
+      const current = options.document()
+      if (!sameTarget(plan, current)) return failure('STALE_REVISION', 'The presentation changed or detached before this approved history change could apply.')
+      const proposed = proposedHistory.get(plan.target.operationId)
+      if (proposed === undefined || proposed.planHash !== plan.planHash || proposed.contentVersion !== current.contentVersion) {
+        return failure('STALE_CONTENT', 'The presentation changed in memory after this history change was prepared.')
+      }
+      const operation = plan.operations[0]
+      if (plan.operations.length !== 1 || operation === undefined || operation.action !== proposed.operations[0]!.action) {
+        return failure('PLAN_TAMPERED', 'The approved presentation history change no longer matches its proposal.')
+      }
+      const existing = appliedHistory.get(plan.target.operationId)
+      if (existing !== undefined) return existing
+      if (!(await options.consumeApproval(plan.approvalId, plan.planHash))) return failure('APPROVAL_INVALID', 'The presentation history change was not approved for this exact plan.')
+      const result = (async () => {
+        const action = operation.action
+        const history = await (action === 'undo' ? options.undo() : options.redo())
+        if (history === null) return failure('HISTORY_EMPTY', `There is no presentation change to ${action}.`)
+        return {
+          ok: true,
+          summary: `${action === 'undo' ? 'Undid' : 'Redid'} the latest presentation change.`,
+          changes: { targets: ['presentation history'], count: 1 },
+          warnings: [],
+          verification: { passed: true, issues: [] },
+          transactionId: `slides-history-${plan.target.operationId}` as TransactionId,
+          data: { contentVersion: history.contentVersion },
+        }
+      })()
+      appliedHistory.set(plan.target.operationId, result)
       return result
     },
     async verify(documentId): Promise<VerificationResult> {

@@ -68,7 +68,7 @@ process.on('message', (frame) => {
       })
       return
     }
-    if (frame.prompt === 'docs-save-unapproved' || frame.prompt === 'slides-save-unapproved') {
+    if (frame.prompt === 'docs-save-unapproved' || frame.prompt === 'slides-save-unapproved' || frame.prompt === 'slides-history-unapproved') {
       process.send?.({
         type: 'editor:request',
         protocolVersion: 1,
@@ -81,8 +81,8 @@ process.on('message', (frame) => {
           operationId: `${activeTurn.editorType}-save-operation-1`,
           clientId: activeTurn.clientId,
         },
-        command: activeTurn.editorType === 'slides' ? 'save_presentation' : 'save_document',
-        arguments: { inPlace: true },
+        command: frame.prompt === 'slides-history-unapproved' ? 'apply_history' : activeTurn.editorType === 'slides' ? 'save_presentation' : 'save_document',
+        arguments: frame.prompt === 'slides-history-unapproved' ? { action: 'undo' } : { inPlace: true },
       })
       return
     }

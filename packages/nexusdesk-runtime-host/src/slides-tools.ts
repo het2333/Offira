@@ -60,6 +60,26 @@ function saveProposal(value: AgentToolResult): {
   return { ...pending, contentVersion }
 }
 
+function historyTool(name: 'undo_presentation' | 'redo_presentation', action: 'undo' | 'redo', bridge: SlidesToolBridge): ToolDefinition {
+  return defineTool({
+    name,
+    description: `${action === 'undo' ? 'Undo' : 'Redo'} the latest presentation change after exact user approval.`,
+    parameters: {}, output,
+    async execute(_args, execution) {
+      const proposed = result(await bridge.request('propose_history', { action }, execution))
+      if (!proposed.ok) return proposed as unknown as JsonValue
+      const pending = proposal(proposed)
+      const approval = await bridge.approve(name, pending.proposal, execution)
+      if (!approval.approved || approval.approvalId === undefined) throw new Error(`presentation ${action} was not approved`)
+      return result(await bridge.request('apply_history', { action }, execution, {
+        approvalId: approval.approvalId,
+        planHash: pending.proposal.planHash,
+        operationId: pending.operationId,
+      })) as unknown as JsonValue
+    },
+  })
+}
+
 export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
   return [
     defineTool({
@@ -99,5 +119,7 @@ export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
         })) as unknown as JsonValue
       },
     }),
+    historyTool('undo_presentation', 'undo', bridge),
+    historyTool('redo_presentation', 'redo', bridge),
   ]
 }

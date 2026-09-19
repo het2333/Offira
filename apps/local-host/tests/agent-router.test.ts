@@ -215,6 +215,33 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
+  it('rejects an unapproved Slides history change before it reaches the editor', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame({
+      type: 'agent:start', protocolVersion: PROTOCOL_VERSION, id: startRequestId,
+      sessionId, documentId, prompt: 'slides-history-unapproved',
+    }, clientId)
+    await until(() => sent.some((frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result'))
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'agent:event',
+      event: expect.objectContaining({ data: expect.objectContaining({ result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'EDITOR_ROUTE_REJECTED' })] }) }) }),
+    }))
+    router.dispose()
+  })
+
   it('rejects a Slides save whose approval hash differs from the granted plan', async () => {
     const documents = new DocumentRegistry()
     documents.register({ documentId, clientId, editorType: 'slides', revision })

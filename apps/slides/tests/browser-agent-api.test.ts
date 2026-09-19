@@ -117,4 +117,34 @@ describe('Slides browser Agent bridge', () => {
     expect(save).toHaveBeenCalledWith(documentId, 2)
     bridge.dispose()
   })
+
+  it.each(['undo', 'redo'] as const)('routes an approved %s history transaction through the Agent bridge', async (action) => {
+    const client = new FakeClient()
+    const bridge = createSlidesBrowserAgentBridge({ client, documentId, revision, storage: new MemoryStorage() })
+    const proposeHistory = vi.fn().mockResolvedValue({
+      target: target(),
+      planId: `${action}-plan`,
+      planHash: `${action}-plan-hash`,
+      summary: `${action} the latest presentation change`,
+      operations: [{ action }],
+      warnings: [],
+      contentVersion: 2,
+    })
+    const applyHistory = vi.fn().mockResolvedValue({ ok: true, summary: `${action} complete`, warnings: [] })
+    bridge.attachEditor({ ...adapterWith(), proposeHistory, applyHistory } as any)
+
+    client.emit({ ...request('propose_history'), arguments: { action } })
+    await vi.waitFor(() => expect(client.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(1))
+    expect(client.sent.at(-1)).toMatchObject({ result: { ok: true, data: { operationId: 'operation-1', planHash: `${action}-plan-hash` } } })
+
+    client.emit({
+      ...request('apply_history', { id: 'approval-1' as RequestId, planHash: `${action}-plan-hash` }),
+      arguments: { action },
+    })
+    await vi.waitFor(() => expect(client.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(2))
+
+    expect(applyHistory).toHaveBeenCalledWith(expect.objectContaining({ approvalId: 'approval-1', operations: [{ action }] }))
+    expect(client.sent.at(-1)).toMatchObject({ result: { ok: true, summary: `${action} complete` } })
+    bridge.dispose()
+  })
 })

@@ -34,6 +34,8 @@ describe('Slides editor adapter', () => {
       read: async () => ({ slides: [{ index: 0, id: 'slide-1', elements: [] }] }),
       runTransaction,
       save: async () => undefined,
+      undo: async () => null,
+      redo: async () => null,
       consumeApproval(id, hash) {
         const key = `${id}:${hash}`
         if (!approvals.has(key)) return false
@@ -70,6 +72,8 @@ describe('Slides editor adapter', () => {
       read: async () => ({ slides: [] }),
       runTransaction,
       save: async () => undefined,
+      undo: async () => null,
+      redo: async () => null,
       consumeApproval,
     })
     const plan = await adapter.propose(request())
@@ -91,11 +95,52 @@ describe('Slides editor adapter', () => {
       read: async () => ({ slides: [] }),
       runTransaction: async () => ({ applied: true }),
       save: async () => undefined,
+      undo: async () => null,
+      redo: async () => null,
       consumeApproval: () => true,
     })
 
     const result = await (adapter.save as (id: DocumentId, contentVersion?: number) => Promise<unknown>)(documentId, 1)
 
     expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })] })
+  })
+
+  it.each([
+    ['undo', 'Undid the latest presentation change.'],
+    ['redo', 'Redid the latest presentation change.'],
+  ] as const)('returns an AgentToolResult for approved %s history changes', async (action, summary) => {
+    let contentVersion = 3
+    const undo = vi.fn().mockResolvedValue({ slides: [], contentVersion: 4 })
+    const redo = vi.fn().mockResolvedValue({ slides: [], contentVersion: 4 })
+    const adapter = createSlidesEditorAdapter({
+      document: () => ({ documentId, clientId, revision, contentVersion, title: 'Deck.pptx', attached: true }),
+      read: async () => ({ slides: [] }),
+      runTransaction: async () => ({ applied: true }),
+      save: async () => undefined,
+      undo,
+      redo,
+      consumeApproval: () => true,
+    } as any) as any
+    const historyRequest = request({
+      command: 'propose_history',
+      arguments: { action },
+    })
+    const plan = await adapter.proposeHistory(historyRequest)
+    contentVersion += 1
+
+    const stale = await adapter.applyHistory({ ...plan, approvalId: 'approval-1' })
+    expect(stale).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })] })
+
+    contentVersion -= 1
+    const result = await adapter.applyHistory({ ...plan, approvalId: 'approval-2' })
+
+    expect(action === 'undo' ? undo : redo).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({
+      ok: true,
+      summary,
+      changes: { targets: ['presentation history'], count: 1 },
+      data: { contentVersion: 4 },
+    })
+    expect(() => parseAgentToolResult(result)).not.toThrow()
   })
 })

@@ -14,6 +14,8 @@ export const SLIDES_TOOL_NAMES = [
   'read_presentation',
   'apply_presentation_operations',
   'save_presentation',
+  'undo_presentation',
+  'redo_presentation',
 ] as const
 export const OFFICE_TOOL_NAMES = [
   ...SHEETS_TOOL_NAMES,

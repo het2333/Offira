@@ -80,7 +80,9 @@ test('Local Web Slides opens the original UI, persists manual and slide CRUD edi
     stage = 'commit manual text edit'
     await textEditor.fill('Edited manually in Local Web')
     await textEditor.press('Control+Enter')
+    const initialRevision = await editor.locator('body').evaluate(() => (window as any).nexusdeskSlidesHost.document.revision)
     await editor.getByRole('button', { name: /^Save/ }).click()
+    await expect.poll(() => editor.locator('body').evaluate(() => (window as any).nexusdeskSlidesHost.document.revision)).toBe(initialRevision + 1)
     await expect.poll(host.readApplyCount).toBe(0)
     await expect.poll(host.readPersistedText).toContain('Edited manually in Local Web')
 
@@ -91,7 +93,9 @@ test('Local Web Slides opens the original UI, persists manual and slide CRUD edi
     await expect.poll(() => editor.locator('body').evaluate(async () =>
       (await (window as any).slidesApi.getRenderSlides()).length,
     )).toBe(render.length + 1)
+    const manualSaveRevision = await editor.locator('body').evaluate(() => (window as any).nexusdeskSlidesHost.document.revision)
     await editor.getByRole('button', { name: /^Save/ }).click()
+    await expect.poll(() => editor.locator('body').evaluate(() => (window as any).nexusdeskSlidesHost.document.revision)).toBe(manualSaveRevision + 1)
     await expect.poll(host.readPersistedText).toContain('Edited manually in Local Web')
 
     stage = 'reload manual edits'

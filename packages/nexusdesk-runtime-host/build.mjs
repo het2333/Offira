@@ -14,3 +14,14 @@ await build({
   external: ['@deepseek-ai/*'],
   logLevel: 'warning',
 })
+
+await build({
+  entryPoints: [join(here, 'src/slides-tools.ts')],
+  outfile: join(here, 'lib/slides-tools.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  external: ['@deepseek-ai/*'],
+  logLevel: 'warning',
+})

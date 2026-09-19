@@ -312,6 +312,18 @@ export function installSlidesBrowserHostApi(
       return result
     },
     save: async () => { await slidesApi.save() },
+    async undo() {
+      const result = await transport.execute('slides:undo', {}) as { contentVersion?: number } | null
+      if (result?.contentVersion === undefined) return null
+      handle.updateContentVersion(result.contentVersion)
+      return { contentVersion: result.contentVersion }
+    },
+    async redo() {
+      const result = await transport.execute('slides:redo', {}) as { contentVersion?: number } | null
+      if (result?.contentVersion === undefined) return null
+      handle.updateContentVersion(result.contentVersion)
+      return { contentVersion: result.contentVersion }
+    },
     consumeApproval: (approvalId, planHash) => bridge.consumeApproval(approvalId, planHash),
   }))
   target.slidesApi = slidesApi

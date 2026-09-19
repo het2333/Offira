@@ -38,8 +38,22 @@ interface SaveProposal {
   warnings: AgentToolResult['warnings']
 }
 
+interface HistoryProposal {
+  planHash: string
+  contentVersion: number
+  summary: string
+  targets: string[]
+  warnings: AgentToolResult['warnings']
+  operations: Array<{ action: 'undo' | 'redo' }>
+}
+
 type SaveProposalAdapter = EditorAdapter & {
   proposeSave?(request: EditRequest): Promise<SaveProposal>
+}
+
+type HistoryProposalAdapter = EditorAdapter & {
+  proposeHistory?(request: EditRequest): Promise<HistoryProposal>
+  applyHistory?(plan: HistoryProposal & { target: EditorRequestFrame['target']; approvalId: string }): Promise<AgentToolResult>
 }
 
 function failure(code: string, message: string): AgentToolResult {
@@ -76,6 +90,7 @@ export function createSlidesBrowserAgentBridge(options: SlidesBrowserAgentBridge
   const approvals = new Map<string, string>()
   const proposals = new Map<string, EditPlan>()
   const saveProposals = new Map<string, SaveProposal>()
+  const historyProposals = new Map<string, HistoryProposal>()
   const storage = options.storage ?? defaultStorage()
   const registration = registerEditor(options.client, { documentId: options.documentId, editorType: 'slides', revision: options.revision })
   const sendResult = (frame: EditorRequestFrame, result: AgentToolResult): void => {
@@ -132,6 +147,46 @@ export function createSlidesBrowserAgentBridge(options: SlidesBrowserAgentBridge
         saveProposals.delete(frame.target.operationId)
       }
     }
+    if (frame.command === 'propose_history') {
+      const historyAdapter = adapter as HistoryProposalAdapter
+      if (historyAdapter.proposeHistory === undefined) {
+        return failure('UNAVAILABLE_IN_WEB', 'the presentation editor cannot prepare a history change')
+      }
+      const plan = await historyAdapter.proposeHistory({ ...frame.target, command: 'propose_history', arguments: frame.arguments })
+      historyProposals.set(frame.target.operationId, plan)
+      return {
+        ok: true,
+        summary: plan.summary,
+        warnings: plan.warnings,
+        data: {
+          operationId: frame.target.operationId,
+          planHash: plan.planHash,
+          summary: plan.summary,
+          targets: plan.targets,
+          contentVersion: plan.contentVersion,
+        },
+      }
+    }
+    if (frame.command === 'apply_history') {
+      const historyAdapter = adapter as HistoryProposalAdapter
+      const plan = historyProposals.get(frame.target.operationId)
+      if (
+        plan === undefined ||
+        historyAdapter.applyHistory === undefined ||
+        frame.approval === undefined ||
+        frame.approval.planHash !== plan.planHash ||
+        canonical(frame.arguments) !== canonical(plan.operations[0])
+      ) {
+        return failure('APPROVAL_INVALID', 'history request is not bound to a proposed presentation change')
+      }
+      approvals.set(frame.approval.id, plan.planHash)
+      try {
+        return await historyAdapter.applyHistory({ ...plan, target: frame.target, approvalId: frame.approval.id })
+      } finally {
+        approvals.delete(frame.approval.id)
+        historyProposals.delete(frame.target.operationId)
+      }
+    }
     if (frame.command === 'propose_ops') {
       const plan = await adapter.propose({ ...frame.target, command: 'apply_ops', arguments: frame.arguments })
       proposals.set(frame.target.operationId, plan)
@@ -154,7 +209,7 @@ export function createSlidesBrowserAgentBridge(options: SlidesBrowserAgentBridge
   }
   const journalKey = (operationId: string): string => `nexusdesk:editor-result:${options.documentId}:${operationId}`
   const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (storage === undefined || frame.command === 'propose_ops' || frame.command === 'propose_save') return undefined
+    if (storage === undefined || frame.command === 'propose_ops' || frame.command === 'propose_save' || frame.command === 'propose_history') return undefined
     const raw = storage.getItem(journalKey(frame.target.operationId))
     if (raw === null) return undefined
     try {
@@ -164,7 +219,7 @@ export function createSlidesBrowserAgentBridge(options: SlidesBrowserAgentBridge
     } catch { storage.removeItem(journalKey(frame.target.operationId)); return undefined }
   }
   const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (storage === undefined || frame.command === 'propose_ops' || frame.command === 'propose_save') return
+    if (storage === undefined || frame.command === 'propose_ops' || frame.command === 'propose_save' || frame.command === 'propose_history') return
     storage.setItem(journalKey(frame.target.operationId), JSON.stringify({ fingerprint: requestFingerprint(frame), result } satisfies JournalRecord))
   }
   const unsubscribe = options.client.onFrame((frame) => {
@@ -184,6 +239,6 @@ export function createSlidesBrowserAgentBridge(options: SlidesBrowserAgentBridge
     client() { return { clientId: options.client.clientId, attached: options.client.state === 'ready' } },
     consumeApproval(approvalId, planHash) { if (approvals.get(approvalId) !== planHash) return false; approvals.delete(approvalId); return true },
     updateRevision(revision) { registration.updateRevision(revision) },
-    dispose() { approvals.clear(); proposals.clear(); saveProposals.clear(); adapter = undefined; unsubscribe(); registration.dispose() },
+    dispose() { approvals.clear(); proposals.clear(); saveProposals.clear(); historyProposals.clear(); adapter = undefined; unsubscribe(); registration.dispose() },
   }
 }
