@@ -16,6 +16,65 @@ function execution() {
 }
 
 describe('official Harness PDF tools', () => {
+  it.each([
+    ['update_pdf_annotation', { action: 'reply', page: 1, key: 'S10', text: 'Reply' }],
+    ['update_pdf_annotation', { action: 'edit', page: 1, key: 'S10', text: 'Edit' }],
+    ['update_pdf_annotation', { action: 'delete', page: 1, key: 'S10' }],
+    [
+      'transform_pdf_image',
+      { action: 'replace', page: 1, oldRect: [0, 0, 20, 30], image: 'aGVsbG8=' },
+    ],
+    ['transform_pdf_image', { action: 'delete', page: 1, oldRect: [0, 0, 20, 30] }],
+    [
+      'transform_pdf_image',
+      { action: 'rotate', page: 1, oldRect: [0, 0, 20, 30], quarterTurns: 1 },
+    ],
+    [
+      'transform_pdf_image',
+      { action: 'bake', page: 1, oldRect: [0, 0, 20, 30], bake: 'opacity', alpha: 0.5 },
+    ],
+    ['modify_pdf_pages', { action: 'insertBlankPage', afterPage: 0 }],
+    ['modify_pdf_pages', { action: 'setPageSize', width: 300, height: 400 }],
+    ['modify_pdf_pages', { action: 'cropPages', pages: [1], crop: [0.1, 0.1, 0.9, 0.9] }],
+  ])('binds %s capability arguments to one exact approved plan', async (name, args) => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        summary: 'Proposal',
+        warnings: [],
+        data: {
+          operationId: 'op-capability',
+          planHash: 'hash-capability',
+          snapshotHash: 'snapshot-capability',
+          targets: ['page:1'],
+        },
+      })
+      .mockResolvedValueOnce(success)
+    const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-capability' })
+    const tool = createPdfTools({ request, approve }).find((tool) => tool.name === name)!
+    await expect(tool.execute(args, execution())).resolves.toEqual(success)
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      'propose_ops',
+      { ops: [{ op: name, ...args }] },
+      expect.anything(),
+    )
+    expect(approve).toHaveBeenCalledWith(
+      name,
+      expect.objectContaining({
+        planHash: 'hash-capability',
+        snapshotHash: 'snapshot-capability',
+        operationId: 'op-capability',
+      }),
+      expect.anything(),
+    )
+    expect(request).toHaveBeenNthCalledWith(2, 'apply_ops', {}, expect.anything(), {
+      approvalId: 'approval-capability',
+      planHash: 'hash-capability',
+      operationId: 'op-capability',
+    })
+  })
   it('registers curated PDF capabilities instead of renderer or PDFium methods', () => {
     const tools = createPdfTools({
       request: vi.fn().mockResolvedValue(success),
@@ -38,6 +97,8 @@ describe('official Harness PDF tools', () => {
       'delete_pdf_page',
       'reorder_pdf_pages',
       'set_pdf_metadata',
+      'update_pdf_annotation',
+      'modify_pdf_pages',
       'redact_pdf',
       'save_pdf',
     ])

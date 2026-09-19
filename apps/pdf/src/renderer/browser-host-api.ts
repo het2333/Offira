@@ -1,6 +1,7 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
 import type { DocumentId, Revision } from '@nexusdesk/protocol'
+import type { PdfCapabilities, PdfPageModification } from '../shared/web-capabilities'
 import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/web-client'
 
 import type {
@@ -26,10 +27,7 @@ export interface PdfBrowserBootstrap {
   language: string
   theme: UiTheme
   contentUrl: string
-  capabilities: {
-    saveInPlace: true
-    textReflow: false
-  }
+  capabilities: PdfCapabilities
 }
 
 export interface PdfBrowserWriteResult {
@@ -48,6 +46,15 @@ export interface PdfBrowserTransport {
   readContent(): Promise<Uint8Array>
   listPageImages(): Promise<PageImageRef[]>
   save(request: SavePdfRequest, expectedRevision: number): Promise<PdfBrowserWriteResult>
+  modifyPages(
+    modification: PdfPageModification,
+    expectedRevision: number,
+  ): Promise<PdfBrowserWriteResult>
+  pageImagePng(request: {
+    pageIndex: number
+    rect: [number, number, number, number]
+    scale?: number
+  }): Promise<string | null>
 }
 
 export interface PdfBrowserHostState {
@@ -123,7 +130,40 @@ export function createHttpPdfBrowserTransport(
   bootstrap: PdfBrowserBootstrap,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): PdfBrowserTransport {
+  const post = async (action: string, body: unknown) => {
+    const response = await fetchImpl(
+      `/api/documents/${encodeURIComponent(bootstrap.documentId)}/${action}`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
+    if (!response.ok) throw await hostError(response)
+    return response.json()
+  }
   return {
+    async modifyPages(modification, expectedRevision) {
+      const value = (await post('modify-pages', {
+        modification,
+        expectedRevision,
+      })) as PdfBrowserWriteResult
+      if (
+        value.document?.documentId !== bootstrap.documentId ||
+        value.document.editorType !== 'pdf' ||
+        !Number.isSafeInteger(value.document.revision) ||
+        value.document.revision <= expectedRevision
+      )
+        throw new Error('Local Host returned an invalid PDF rewrite result')
+      return value
+    },
+    async pageImagePng(request) {
+      const value = (await post('page-image-png', request)) as { png: unknown }
+      if (value.png !== null && typeof value.png !== 'string')
+        throw new Error('Invalid PDF image preview')
+      return value.png
+    },
     async readContent() {
       const response = await fetchImpl(bootstrap.contentUrl, { credentials: 'same-origin' })
       if (!response.ok) throw await hostError(response)
@@ -176,7 +216,30 @@ export function createPdfBrowserApi(
   let aiPanelPrefs: AiPanelPrefs = DEFAULT_AI_PANEL_PREFS
   const prefsListeners = new Set<(prefs: AiPanelPrefs) => void>()
   const path = virtualPath(state.document.documentId)
+  const rewrite = async (candidate: string, modification: PdfPageModification) => {
+    if (candidate !== path || !state.document.capabilities.pageRewriting)
+      return {
+        ok: false as const,
+        error: 'Page rewriting requires the Host-authorized PDF capability.',
+      }
+    try {
+      const result = await transport.modifyPages(modification, state.document.revision)
+      state.document.revision = result.document.revision
+      state.updateRevision(result.document.revision)
+      return { ok: true as const }
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : 'PDF rewrite failed',
+      }
+    }
+  }
   const api: Partial<PdfApi> = {
+    insertBlankPage: ({ path, afterPageIndex }) =>
+      rewrite(path, { action: 'insertBlankPage', afterPageIndex }),
+    setPageSize: ({ path, width, height }) =>
+      rewrite(path, { action: 'setPageSize', width, height }),
+    cropPages: ({ path, pages, rect }) => rewrite(path, { action: 'cropPages', pages, rect }),
     async consumePending() {
       if (!pending) return null
       pending = false
@@ -224,7 +287,11 @@ export function createPdfBrowserApi(
     listPageImages: () => transport.listPageImages(),
     listStaticFormFills: async () => [],
     ocrPage: async () => null,
-    pageImagePng: async () => null,
+    pageImagePng: ({ path: candidate, pageIndex, rect, scale }) => {
+      if (candidate !== path || !state.document.capabilities.imageEditing)
+        return unavailable('image pixels')
+      return transport.pageImagePng({ pageIndex, rect, ...(scale === undefined ? {} : { scale }) })
+    },
     pagePreviewPng: async () => null,
     getUsername: async () => '',
     setDirty: () => undefined,

@@ -195,6 +195,12 @@ import { planEditOps, reduceBucket } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
 import type { AgentToolResult, JsonValue } from '@nexusdesk/protocol'
 import type { PdfEditPlan } from './agent/browser-agent-api'
+import { annotationOperations, imageOperations } from './agent/semantic-operations'
+import {
+  pdfCapabilities,
+  parsePdfPageModification,
+  describePdfPageModification,
+} from '../shared/web-capabilities'
 import { rectsNear } from './edit-state'
 import type {
   StampConfig,
@@ -293,6 +299,7 @@ const RIBBON_TABS = [
 type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm'
 
 export default function App() {
+  const capabilities = pdfCapabilities(window.nexusdeskPdfHost?.capabilities)
   const { lang, t } = useI18n()
   const collapse = useRibbonCollapse('genoffice-pdf-ribbon-collapsed')
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
@@ -5049,6 +5056,7 @@ export default function App() {
   // currentPage only tracks scroll, so it can outlive a page deletion
   const printCurrentPage = Math.max(1, Math.min(currentPage, pageCount))
   const openPrintDlg = () => {
+    if (!capabilities.print) return
     setPrintMode('all')
     setPrintInput(String(printCurrentPage))
     setPrintInvalid(false)
@@ -5459,7 +5467,11 @@ export default function App() {
     const targetsFor = (operations: Op[]): string[] => [
       ...new Set(
         operations.map((operation) => {
-          const page = operation.pageIndex
+          const nested = (operation.input ??
+            operation.annot ??
+            operation.drawing ??
+            operation.markup) as Record<string, unknown> | undefined
+          const page = operation.pageIndex ?? nested?.pageIndex
           if (typeof page === 'number') return `page:${String(page + 1)}`
           const pages = operation.pages
           if (Array.isArray(pages) && typeof pages[0] === 'number')
@@ -5472,6 +5484,34 @@ export default function App() {
       const semantic = operations as unknown as Array<Record<string, unknown>>
       if (semantic.length !== 1) return operations as Op[]
       const input = semantic[0]
+      if (input?.op === 'update_pdf_annotation') {
+        if (!browserHost.capabilities.annotationEditing || readOnly)
+          throw new Error('Annotation editing is unavailable')
+        const page = Number(input.page)
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        )
+          throw new Error('Annotation page is unavailable')
+        const threads = await noteThreadsFor(page - 1)
+        const loaded = doc ? await loadSavedAnnots(doc, page - 1) : null
+        const saved = loaded?.markups.find(
+          (a) =>
+            `S${a.objNum}` === input.key &&
+            !annotDeletesRef.current.some((d) => d.annot.objNum === a.objNum),
+        )
+        const pending = markupsRef.current.find(
+          (m) => m.pageIndex === page - 1 && `P${m.id}` === input.key,
+        )
+        return annotationOperations(
+          input,
+          page - 1,
+          threads,
+          saved ? { saved } : pending ? { pendingId: pending.id } : undefined,
+        )
+      }
       if (input?.op === 'insert_pdf_text') {
         const page = Number(input.page)
         const text = typeof input.text === 'string' ? input.text : ''
@@ -5570,9 +5610,9 @@ export default function App() {
         ]
       }
       if (input?.op === 'transform_pdf_image') {
+        if (!browserHost.capabilities.imageEditing || readOnly)
+          throw new Error('Image editing is unavailable')
         const page = Number(input.page)
-        const oldRect = input.oldRect
-        const rect = input.rect
         if (
           !Number.isInteger(page) ||
           page < 1 ||
@@ -5581,30 +5621,19 @@ export default function App() {
         ) {
           throw new Error('the image page is unavailable')
         }
-        if (
-          ![oldRect, rect].every(
-            (value) =>
-              Array.isArray(value) &&
-              value.length === 4 &&
-              value.every((item) => typeof item === 'number'),
-          )
-        ) {
-          throw new Error(
-            'image transformation needs oldRect and rect as four-number PDF-space rectangles',
-          )
-        }
-        return [
-          {
-            op: 'addImageEdit',
-            input: {
-              kind: 'transformImage',
-              pageIndex: page - 1,
-              oldRect,
-              rect,
-              layer: input.layer === 'belowText' ? 'belowText' : 'aboveText',
-            },
-          },
-        ]
+        return imageOperations(input, page - 1, await aiApi.listImages(), async (ref, op) => {
+          const src = await bakeSourcePng({ kind: 'existing', ref })
+          if (!src) return null
+          return op.kind === 'crop'
+            ? cropPng(src, op.crop)
+            : transformPngPixels(src, (img) =>
+                op.kind === 'flip'
+                  ? flipPixels(img, op.axis)
+                  : op.kind === 'opacity'
+                    ? multiplyAlpha(img, op.alpha)
+                    : removeBackground(img, op.tolerance).data,
+              )
+        })
       }
       if (input?.op === 'fill_pdf_form') {
         const name = typeof input.name === 'string' ? input.name : ''
@@ -5799,12 +5828,50 @@ export default function App() {
       },
       snapshot: pendingSnapshot,
       async propose(operations, snapshotHash) {
+        const pageInput = operations[0] as Record<string, unknown> | undefined
+        if (operations.length === 1 && pageInput?.op === 'modify_pdf_pages') {
+          if (!browserHost.capabilities.pageRewriting || readOnly)
+            throw new Error('Page rewriting is unavailable')
+          const modification = parsePdfPageModification(
+            {
+              ...pageInput,
+              afterPageIndex: Number(pageInput.afterPage) - 1,
+              pages: Array.isArray(pageInput.pages)
+                ? pageInput.pages.map((page) => Number(page) - 1)
+                : undefined,
+              rect: Array.isArray(pageInput.crop)
+                ? {
+                    l: pageInput.crop[0],
+                    t: pageInput.crop[1],
+                    r: pageInput.crop[2],
+                    b: pageInput.crop[3],
+                  }
+                : undefined,
+            },
+            visList.length,
+          )
+          const resolved = [{ op: 'modify_pdf_pages', ...modification }]
+          return {
+            planHash: await hash({ command: 'apply_ops', snapshotHash, operations: resolved }),
+            summary: `Save pending PDF edits and ${describePdfPageModification(modification)} in place.`,
+            targets: ['current PDF'],
+            operations: resolved as JsonValue[],
+          }
+        }
         const parsed = await resolveHarnessOperations(operations)
         const plan = planEditOps(parsed, editOpContext(), newId)
         if (plan.failures.length > 0) throw new Error(plan.failures[0]!.error)
+        const semantic =
+          operations.length === 1 ? (operations[0] as Record<string, unknown>) : undefined
+        const summary =
+          semantic?.op === 'update_pdf_annotation'
+            ? `${String(semantic.action)} annotation ${String(semantic.key)} on page ${String(semantic.page)}${typeof semantic.text === 'string' ? `: ${semantic.text.slice(0, 160)}` : ' and its replies'}.`
+            : semantic?.op === 'transform_pdf_image'
+              ? `${String(semantic.action ?? 'transform')} image on page ${String(semantic.page)} at ${JSON.stringify(semantic.oldRect)}${semantic.bake ? ` (${String(semantic.bake)})` : ''}.`
+              : `Apply ${String(plan.ops.length)} PDF operation${plan.ops.length === 1 ? '' : 's'}.`
         return {
           planHash: await hash({ command: 'apply_ops', snapshotHash, operations: plan.ops }),
-          summary: `Apply ${String(plan.ops.length)} PDF operation${plan.ops.length === 1 ? '' : 's'}.`,
+          summary,
           targets: targetsFor(plan.ops),
           operations: plan.ops as JsonValue[],
         }
@@ -5819,8 +5886,30 @@ export default function App() {
         }
       },
       async apply(plan: PdfEditPlan & { approvalId: string }) {
+        if ((await pendingSnapshot()) !== plan.snapshotHash)
+          return failure('STALE_PLAN', 'The PDF changed after proposal.')
         if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
           return failure('APPROVAL_INVALID', 'The PDF operation is not bound to a live approval.')
+        }
+        const first = plan.operations[0] as Record<string, unknown> | undefined
+        if (plan.operations.length === 1 && first?.op === 'modify_pdf_pages') {
+          const modification = parsePdfPageModification(first, visList.length)
+          const result =
+            modification.action === 'insertBlankPage'
+              ? await insertBlankPageAt(modification.afterPageIndex)
+              : modification.action === 'setPageSize'
+                ? await resizePages(modification.width, modification.height)
+                : await cropPagesOnDisk(modification.pages, modification.rect)
+          if (!result.ok) return failure('PDF_PAGE_REWRITE_FAILED', result.error)
+          if ('canceled' in result)
+            return failure('PDF_PAGE_REWRITE_CANCELED', 'PDF page rewrite canceled')
+          return {
+            ok: true,
+            summary: `Completed ${modification.action}; PDF now has ${result.pageCount} pages.`,
+            warnings: [],
+            changes: { targets: ['current PDF'], count: 1 },
+            verification: { passed: true, issues: [] },
+          }
         }
         const applied = applyEditOpsRef.current(plan.operations as Op[])
         if (applied.failures.length > 0) {
@@ -6584,7 +6673,7 @@ export default function App() {
                     <button
                       className={`rb-big${convertOpen ? ' active' : ''}`}
                       data-tip={t('convertPdfTip')}
-                      disabled={convertBusy}
+                      disabled={convertBusy || !capabilities.conversion}
                       onClick={() => setConvertOpen((v) => !v)}
                     >
                       <span className="rb-big-icon">
@@ -6614,7 +6703,7 @@ export default function App() {
                   <button
                     className="rb-big"
                     data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
-                    disabled={printing}
+                    disabled={printing || !capabilities.print}
                     onClick={openPrintDlg}
                   >
                     <span className="rb-big-icon">
@@ -6625,7 +6714,7 @@ export default function App() {
                   <button
                     className="rb-big"
                     data-tip={t('exportImagesAll')}
-                    disabled={exporting}
+                    disabled={exporting || !capabilities.saveAs}
                     onClick={() => void exportImages(true)}
                   >
                     <span className="rb-big-icon">
@@ -6706,7 +6795,7 @@ export default function App() {
                   ))}
                   <button
                     className={`rb-big${drawTool === 'redact' ? ' active' : ''}`}
-                    disabled={readOnly}
+                    disabled={readOnly || !capabilities.permanentRedaction}
                     data-tip={t('redactHint')}
                     onClick={() => {
                       setEditTextMode(false)
@@ -7032,7 +7121,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={curOrigIdx < 0 || readOnly}
+                    disabled={curOrigIdx < 0 || readOnly || !capabilities.saveAs}
                     onClick={openExtractDlg}
                   >
                     <span className="rb-big-icon">
@@ -7042,7 +7131,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={readOnly}
+                    disabled={readOnly || !capabilities.nativeFileDialogs}
                     onClick={() => void insertPdf(curOrigIdx)}
                   >
                     <span className="rb-big-icon">
@@ -7052,7 +7141,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={readOnly}
+                    disabled={readOnly || !capabilities.pageRewriting}
                     onClick={() => void insertBlankPage(curOrigIdx)}
                   >
                     <span className="rb-big-icon">
@@ -7062,7 +7151,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={curOrigIdx < 0 || readOnly}
+                    disabled={curOrigIdx < 0 || readOnly || !capabilities.nativeFileDialogs}
                     onClick={openReplaceDlg}
                   >
                     <span className="rb-big-icon">
@@ -7077,7 +7166,7 @@ export default function App() {
                 <div className="ribbon-group-items">
                   <button
                     className="rb-big"
-                    disabled={curOrigIdx < 0 || readOnly}
+                    disabled={curOrigIdx < 0 || readOnly || !capabilities.pageRewriting}
                     onClick={() => void openPageCrop(curOrigIdx)}
                   >
                     <span className="rb-big-icon">
@@ -7087,7 +7176,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={pageCount === 0 || readOnly}
+                    disabled={pageCount === 0 || readOnly || !capabilities.pageRewriting}
                     onClick={() => setPageSizeDlg(true)}
                   >
                     <span className="rb-big-icon">
@@ -7112,7 +7201,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={pageCount <= 1 || readOnly}
+                    disabled={pageCount <= 1 || readOnly || !capabilities.saveAs}
                     onClick={openSplitDlg}
                   >
                     <span className="rb-big-icon">
@@ -7120,7 +7209,11 @@ export default function App() {
                     </span>
                     {t('splitPdf')}
                   </button>
-                  <button className="rb-big" disabled={readOnly} onClick={() => void mergePdf()}>
+                  <button
+                    className="rb-big"
+                    disabled={readOnly || !capabilities.nativeFileDialogs}
+                    onClick={() => void mergePdf()}
+                  >
                     <span className="rb-big-icon">
                       <IconMergePdf />
                     </span>
@@ -7128,7 +7221,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={pageCount <= 1 || readOnly}
+                    disabled={pageCount <= 1 || readOnly || !capabilities.saveAs}
                     onClick={openMergePagesDlg}
                   >
                     <span className="rb-big-icon">
@@ -7138,7 +7231,7 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
-                    disabled={pageCount === 0 || readOnly}
+                    disabled={pageCount === 0 || readOnly || !capabilities.saveAs}
                     onClick={() => setSplitPagesDlg(true)}
                   >
                     <span className="rb-big-icon">
@@ -8855,6 +8948,7 @@ export default function App() {
                   {t('deletePage')}
                 </button>
                 <button
+                  disabled={!capabilities.saveAs}
                   onClick={() => {
                     setThumbMenu(null)
                     void extractPage(menuOrig)
@@ -8863,6 +8957,7 @@ export default function App() {
                   {t('extractPage')}
                 </button>
                 <button
+                  disabled={!capabilities.nativeFileDialogs}
                   onClick={() => {
                     setThumbMenu(null)
                     void insertPdf(menuOrig)
@@ -8871,6 +8966,7 @@ export default function App() {
                   {t('insertPdf')}
                 </button>
                 <button
+                  disabled={!capabilities.pageRewriting}
                   onClick={() => {
                     setThumbMenu(null)
                     void insertBlankPage(menuOrig)

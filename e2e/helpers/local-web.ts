@@ -311,15 +311,22 @@ export async function launchPdfLocalWebHost() {
       const saved = await PDFDocument.load(bytes)
       const annots = saved.getPage(0).node.lookupMaybe(PDFName.of('Annots'), PDFArray)
       const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      const rendered = await getDocument({ data: new Uint8Array(bytes), disableWorker: true })
-        .promise
+      const loadingTask = getDocument({ data: new Uint8Array(bytes), disableWorker: true })
+      const rendered = await loadingTask.promise
       const text = await (
         await rendered.getPage(1)
       )
         .getTextContent()
         .then((content) => content.items.map((item) => ('str' in item ? item.str : '')).join(''))
-      await rendered.destroy()
-      return { changed: !bytes.equals(original), annotationCount: annots?.size() ?? 0, text }
+      await loadingTask.destroy()
+      return {
+        changed: !bytes.equals(original),
+        annotationCount: annots?.size() ?? 0,
+        text,
+        pageCount: saved.getPageCount(),
+        pageSizes: saved.getPages().map((p) => p.getSize()),
+        cropBoxes: saved.getPages().map((p) => p.getCropBox()),
+      }
     },
     async close() {
       await running.close()

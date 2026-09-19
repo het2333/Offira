@@ -14799,6 +14799,8 @@ var PDF_TOOL_NAMES = [
   "delete_pdf_page",
   "reorder_pdf_pages",
   "set_pdf_metadata",
+  "update_pdf_annotation",
+  "modify_pdf_pages",
   "redact_pdf",
   "save_pdf"
 ];
@@ -15220,8 +15222,13 @@ function createPdfTools(bridge) {
   );
   const transformImage = mutate(
     "transform_pdf_image",
-    "Move or resize one discovered PDF image after approval.",
+    "Move, resize, replace, delete, rotate, or bake one discovered PDF image after approval. Bakes support flip, opacity, crop, and background removal.",
     {
+      action: {
+        type: "string",
+        enum: ["transform", "replace", "delete", "rotate", "bake"],
+        description: "Image operation; defaults to transform."
+      },
       page: { type: "integer", required: true, description: "Page number (1-based)." },
       oldRect: {
         type: "array",
@@ -15231,9 +15238,27 @@ function createPdfTools(bridge) {
       },
       rect: {
         type: "array",
-        required: true,
         items: { type: "number" },
         description: "New [x1,y1,x2,y2] in PDF points."
+      },
+      image: { type: "string", description: "Replacement PNG base64, without a data URL prefix." },
+      quarterTurns: {
+        type: "integer",
+        enum: [0, 1, 2, 3],
+        description: "Clockwise quarter turns. Rotating without rect swaps width/height around center."
+      },
+      bake: {
+        type: "string",
+        enum: ["flip", "opacity", "crop", "cutout"],
+        description: "Pixel operation for action=bake."
+      },
+      axis: { type: "string", enum: ["h", "v"], description: "Flip axis." },
+      alpha: { type: "number", description: "Opacity from 0 to 1." },
+      tolerance: { type: "number", description: "Background removal tolerance from 0 to 100." },
+      crop: {
+        type: "array",
+        items: { type: "number" },
+        description: "Kept [left,top,right,bottom] fractions from 0 to 1."
       },
       layer: { type: "string", enum: ["aboveText", "belowText"], description: "Content layer." }
     },
@@ -15241,8 +15266,76 @@ function createPdfTools(bridge) {
       op: "transform_pdf_image",
       page: args.page,
       oldRect: args.oldRect,
-      rect: args.rect,
+      ...Object.fromEntries(
+        ["action", "rect", "image", "quarterTurns", "bake", "axis", "alpha", "tolerance", "crop"].filter((key) => args[key] !== void 0).map((key) => [key, args[key]])
+      ),
       ...args.layer === void 0 ? {} : { layer: args.layer }
+    })
+  );
+  const updateAnnotation = mutate(
+    "update_pdf_annotation",
+    "Reply to or edit a note, or delete an annotation and its replies, after approval. Read annotations first for the exact saved/pending key.",
+    {
+      action: {
+        type: "string",
+        required: true,
+        enum: ["reply", "edit", "delete"],
+        description: "Annotation operation."
+      },
+      page: { type: "integer", required: true, description: "Original page number (1-based)." },
+      key: {
+        type: "string",
+        required: true,
+        description: "Exact S<object> or P<id> key from read_pdf_annotations."
+      },
+      text: { type: "string", description: "Contents for reply or edit." }
+    },
+    (args) => ({
+      op: "update_pdf_annotation",
+      action: args.action,
+      page: args.page,
+      key: args.key,
+      ...args.text === void 0 ? {} : { text: args.text }
+    })
+  );
+  const modifyPages = mutate(
+    "modify_pdf_pages",
+    "Save pending edits and rewrite the authorized PDF in place after approval: insert a blank page, resize all pages, or crop pages. Page numbers are visible positions after pending order/deletions are saved.",
+    {
+      action: {
+        type: "string",
+        required: true,
+        enum: ["insertBlankPage", "setPageSize", "cropPages"],
+        description: "Page rewrite operation."
+      },
+      afterPage: {
+        type: "integer",
+        description: "Insert after this visible page (0 inserts at front)."
+      },
+      width: {
+        type: "number",
+        description: "Target width in points, greater than 0 and at most 14400."
+      },
+      height: {
+        type: "number",
+        description: "Target height in points, greater than 0 and at most 14400."
+      },
+      pages: {
+        type: "array",
+        items: { type: "integer" },
+        description: "Visible page numbers (1-based) to crop."
+      },
+      crop: {
+        type: "array",
+        items: { type: "number" },
+        description: "Kept [left,top,right,bottom] displayed-page fractions, 0 to 1."
+      }
+    },
+    (args) => ({
+      op: "modify_pdf_pages",
+      ...Object.fromEntries(
+        ["action", "afterPage", "width", "height", "pages", "crop"].filter((key) => args[key] !== void 0).map((key) => [key, args[key]])
+      )
     })
   );
   const form = mutate(
@@ -15382,6 +15475,8 @@ function createPdfTools(bridge) {
     deletePage,
     reorderPages,
     metadata,
+    updateAnnotation,
+    modifyPages,
     redactionUnavailable,
     save
   ];

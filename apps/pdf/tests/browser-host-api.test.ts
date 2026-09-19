@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { PDF_WEB_CAPABILITIES } from '../src/shared/web-capabilities'
 
 import {
   createHttpPdfBrowserTransport,
@@ -14,10 +15,84 @@ const bootstrap = {
   language: 'en',
   theme: 'system' as const,
   contentUrl: '/api/documents/pdf-1/content',
-  capabilities: { saveInPlace: true, textReflow: false },
+  capabilities: PDF_WEB_CAPABILITIES,
 }
 
 describe('PDF Local Web browser adapter', () => {
+  it('routes page rewrites and image pixels without renderer paths, advancing Host revisions', async () => {
+    let revision = 4
+    const fetcher = vi.fn(
+      async (url: string) =>
+        new Response(
+          JSON.stringify(
+            url.endsWith('page-image-png')
+              ? { png: 'aGVsbG8=' }
+              : {
+                  document: {
+                    documentId: 'pdf-1',
+                    title: 'review.pdf',
+                    editorType: 'pdf',
+                    revision: ++revision,
+                  },
+                },
+          ),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    )
+    const updateRevision = vi.fn()
+    const api = createPdfBrowserApi(
+      { document: { ...bootstrap }, updateRevision },
+      createHttpPdfBrowserTransport(bootstrap, fetcher),
+    )
+    await expect(
+      api.insertBlankPage({ path: 'nexusdesk://pdf-1', afterPageIndex: 0 }),
+    ).resolves.toEqual({ ok: true })
+    await expect(
+      api.setPageSize({ path: 'nexusdesk://pdf-1', width: 300, height: 400 }),
+    ).resolves.toEqual({ ok: true })
+    await expect(
+      api.cropPages({
+        path: 'nexusdesk://pdf-1',
+        pages: [0],
+        rect: { l: 0.1, t: 0.1, r: 0.9, b: 0.9 },
+      }),
+    ).resolves.toEqual({ ok: true })
+    await expect(
+      api.pageImagePng({ path: 'nexusdesk://pdf-1', pageIndex: 0, rect: [0, 0, 20, 20], scale: 3 }),
+    ).resolves.toBe('aGVsbG8=')
+    expect(updateRevision.mock.calls.map((call) => call[0])).toEqual([5, 6, 7])
+    for (const call of fetcher.mock.calls)
+      expect(JSON.parse((call[1] as RequestInit).body as string)).not.toHaveProperty('path')
+    await expect(
+      api.insertBlankPage({ path: '/other.pdf', afterPageIndex: 0 }),
+    ).resolves.toMatchObject({ ok: false })
+    await expect(
+      api.pageImagePng({ path: '/other.pdf', pageIndex: 0, rect: [0, 0, 20, 20] }),
+    ).rejects.toMatchObject({ code: 'UNAVAILABLE_IN_WEB' })
+    expect(fetcher).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not dispatch when the explicit page or image capability is absent', async () => {
+    const transport = { modifyPages: vi.fn(), pageImagePng: vi.fn() }
+    const api = createPdfBrowserApi(
+      {
+        document: {
+          ...bootstrap,
+          capabilities: { ...PDF_WEB_CAPABILITIES, pageRewriting: false, imageEditing: false },
+        },
+        updateRevision: vi.fn(),
+      },
+      transport as never,
+    )
+    await expect(
+      api.setPageSize({ path: 'nexusdesk://pdf-1', width: 300, height: 400 }),
+    ).resolves.toMatchObject({ ok: false })
+    await expect(
+      api.pageImagePng({ path: 'nexusdesk://pdf-1', pageIndex: 0, rect: [0, 0, 20, 20] }),
+    ).rejects.toMatchObject({ code: 'UNAVAILABLE_IN_WEB' })
+    expect(transport.modifyPages).not.toHaveBeenCalled()
+    expect(transport.pageImagePng).not.toHaveBeenCalled()
+  })
   it('loads the authorized bootstrap and saves only the active Host PDF', async () => {
     const fetcher = vi.fn(
       async () =>

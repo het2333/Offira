@@ -343,7 +343,7 @@ export function listEditFonts(): string[] {
     resolution for an insert (the chosen edit font, else any fallback face), so the
     renderer can reject an undrawable insert at confirm time instead of at save. */
 export function canDrawText(text: string, font?: string, bold = false, italic = false): boolean {
-  if (base14FontFor(text, bold, italic) !== null) return true
+  if (!font && base14FontFor(text, false, italic) !== null) return true
   const drawn = text.replace(/\n/g, '')
   if (font) {
     const style: EditFontStyle =
@@ -2120,12 +2120,18 @@ export function applyTextInserts(
             let font = 0
             let fontBytes: Buffer | null = null
             try {
-              const standardFont = base14FontFor(input.text, input.bold, input.italic)
+              // Preserve the default face's advances when toggling bold, just like
+              // the embedded fallback path. Explicit font choices still resolve
+              // their own family/style instead of silently becoming Helvetica.
+              const standardFont = input.font
+                ? null
+                : base14FontFor(input.text, false, input.italic)
               let syntheticBold = false
               if (standardFont !== null) {
                 const standardFontPtr = asciiPtr(m, standardFont)
                 font = m._FPDFText_LoadStandardFont(doc, standardFontPtr)
                 m._free(standardFontPtr)
+                syntheticBold = input.bold === true
               } else {
                 const resolved = await resolveRebuildFont(m, 0, pseudoEdit, input.text)
                 fontBytes = resolved.bytes

@@ -76,6 +76,7 @@ function requestFingerprint(frame: EditorRequestFrame): string {
     editorType: frame.target.editorType,
     command: frame.command,
     arguments: frame.arguments,
+    ...(frame.approval === undefined ? {} : { planHash: frame.approval.planHash }),
   })
 }
 
@@ -99,6 +100,7 @@ export function createPdfBrowserAgentBridge(
   const approvals = new Map<string, string>()
   const proposals = new Map<string, PdfEditPlan>()
   const saveProposals = new Map<string, PdfEditPlan>()
+  const inFlight = new Map<string, { fingerprint: string; result: Promise<AgentToolResult> }>()
   const storage = options.storage ?? defaultStorage()
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
@@ -260,9 +262,22 @@ export function createPdfBrowserAgentBridge(
   }
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
+    const mutation = frame.command === 'apply_ops' || frame.command === 'save_pdf'
+    const running = mutation ? inFlight.get(frame.target.operationId) : undefined
+    if (running) {
+      if (running.fingerprint !== requestFingerprint(frame)) {
+        deliver(
+          frame,
+          failure('OPERATION_ID_COLLISION', 'operation id is bound to different PDF arguments'),
+        )
+      } else {
+        void running.result.then((result) => deliver(frame, result))
+      }
+      return
+    }
     const replayed = replay(frame)
     if (replayed !== undefined) return deliver(frame, replayed)
-    void (async () => {
+    const resultPromise = (async () => {
       let result: AgentToolResult
       try {
         result = await execute(frame)
@@ -270,8 +285,17 @@ export function createPdfBrowserAgentBridge(
         result = failure('EDITOR_REQUEST_FAILED', errorMessage(error))
       }
       remember(frame, result)
-      deliver(frame, result)
+      return result
     })()
+    if (mutation)
+      inFlight.set(frame.target.operationId, {
+        fingerprint: requestFingerprint(frame),
+        result: resultPromise,
+      })
+    void resultPromise.then((result) => {
+      if (mutation) inFlight.delete(frame.target.operationId)
+      deliver(frame, result)
+    })
   })
 
   return {

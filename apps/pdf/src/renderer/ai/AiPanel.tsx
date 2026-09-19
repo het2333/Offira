@@ -1,7 +1,8 @@
 import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
-import { AgentLoop } from '@genoffice/agent-core'
+import { AgentLoop, type AgentLoopOptions } from '@genoffice/agent-core'
+import { PdfHostLoop, type PdfPanelLoop } from './host-loop'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
@@ -314,7 +315,7 @@ export function AiPanel({
   }
 
   // The loop is built once; every mutable value goes through a ref getter
-  const loopRef = useRef<AgentLoop | null>(null)
+  const loopRef = useRef<PdfPanelLoop | null>(null)
   if (!loopRef.current) {
     const deps: PdfAiDeps = {
       doc: () => apiRef.current.doc(),
@@ -378,7 +379,7 @@ export function AiPanel({
         imageGenerationAvailable(settingsRef.current, gskLoggedInRef.current),
       fetchImage: (url) => apiRef.current.fetchImage(url),
     }
-    loopRef.current = new AgentLoop({
+    const options: AgentLoopOptions = {
       transport: createElectronTransport(() => settingsRef.current!),
       skill: createPdfSkill(deps),
       systemSuffix: () => aiLangDirective(langRef.current),
@@ -464,8 +465,24 @@ export function AiPanel({
           setBusy(false)
         },
       },
-    })
+    }
+    loopRef.current = window.agentApi
+      ? new PdfHostLoop(
+          window.agentApi,
+          () => window.nexusdeskPdfHost?.document.documentId,
+          options.events,
+          (frame) =>
+            deps.confirmFileOp({
+              summary: frame.proposal?.summary ?? frame.reason ?? frame.toolName,
+              detail: [
+                ...(frame.proposal?.targets ?? []),
+                ...(frame.proposal?.warnings.map((warning) => warning.message) ?? []),
+              ].join('\n'),
+            }),
+        )
+      : new AgentLoop(options)
   }
+  useEffect(() => () => loopRef.current?.dispose?.(), [])
 
   useEffect(() => {
     if (stickToBottomRef.current) {
@@ -727,7 +744,9 @@ export function AiPanel({
             {fileOpConfirm.detail && (
               <div className="ai-confirm-detail">{fileOpConfirm.detail}</div>
             )}
-            <div className="ai-confirm-warning">{t('aiFileOpConfirmWarning')}</div>
+            {!window.agentApi && (
+              <div className="ai-confirm-warning">{t('aiFileOpConfirmWarning')}</div>
+            )}
             <div className="ai-confirm-actions">
               <button
                 type="button"

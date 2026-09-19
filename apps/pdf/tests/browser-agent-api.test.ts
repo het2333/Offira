@@ -66,6 +66,87 @@ function request(
 }
 
 describe('PDF browser Agent bridge', () => {
+  it('coalesces concurrent page rewrite replay and replays the committed result after reconnect', async () => {
+    const client = new FakeClient()
+    const entries = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        entries.set(key, value)
+      },
+      removeItem: (key: string) => {
+        entries.delete(key)
+      },
+    }
+    let finish: (result: { ok: true; summary: string; warnings: [] }) => void = () => {}
+    const adapter: PdfEditorAdapter = {
+      read: vi.fn(),
+      snapshot: vi.fn().mockResolvedValue('snapshot-1'),
+      propose: vi.fn().mockResolvedValue({
+        planHash: 'page-plan',
+        summary: 'Insert blank page',
+        targets: ['current PDF'],
+      }),
+      proposeSave: vi.fn(),
+      save: vi.fn(),
+      apply: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      ),
+    }
+    const bridge = createPdfBrowserAgentBridge({
+      client,
+      storage,
+      documentId: 'pdf-1' as DocumentId,
+      revision: 1 as Revision,
+    })
+    bridge.attachEditor(adapter)
+    const proposal = request('propose_ops', undefined, 'rewrite-1')
+    proposal.arguments = {
+      ops: [{ op: 'modify_pdf_pages', action: 'insertBlankPage', afterPage: 1 }],
+    }
+    client.emit(proposal)
+    await vi.waitFor(() =>
+      expect(client.sent.filter((f) => f.type === 'editor:result')).toHaveLength(1),
+    )
+    const apply = request(
+      'apply_ops',
+      { id: 'approval-1' as RequestId, planHash: 'page-plan' },
+      'rewrite-1',
+    )
+    apply.arguments = {}
+    client.emit(apply)
+    client.emit(apply)
+    await vi.waitFor(() => expect(adapter.apply).toHaveBeenCalledTimes(1))
+    finish({ ok: true, summary: 'Inserted once', warnings: [] })
+    await vi.waitFor(() =>
+      expect(client.sent.filter((f) => f.type === 'editor:result')).toHaveLength(3),
+    )
+    bridge.dispose()
+    const reconnected = createPdfBrowserAgentBridge({
+      client,
+      storage,
+      documentId: 'pdf-1' as DocumentId,
+      revision: 2 as Revision,
+    })
+    reconnected.attachEditor(adapter)
+    client.emit(apply)
+    await vi.waitFor(() =>
+      expect(client.sent.filter((f) => f.type === 'editor:result')).toHaveLength(4),
+    )
+    expect(adapter.apply).toHaveBeenCalledTimes(1)
+    expect(client.sent.at(-1)).toMatchObject({ result: { ok: true, summary: 'Inserted once' } })
+    client.emit({ ...apply, approval: { id: 'tampered' as RequestId, planHash: 'another-plan' } })
+    await vi.waitFor(() =>
+      expect(client.sent.at(-1)).toMatchObject({
+        result: { ok: false, warnings: [{ code: 'OPERATION_ID_COLLISION' }] },
+      }),
+    )
+    expect(adapter.apply).toHaveBeenCalledTimes(1)
+    reconnected.dispose()
+  })
   it('requires an exact proposal and applies it only while its approval is live', async () => {
     const client = new FakeClient()
     const adapter: PdfEditorAdapter = {
@@ -168,13 +249,11 @@ describe('PDF browser Agent bridge', () => {
     const adapter: PdfEditorAdapter = {
       read: vi.fn(),
       snapshot: vi.fn().mockResolvedValue('snapshot-1'),
-      propose: vi
-        .fn()
-        .mockResolvedValue({
-          planHash: 'plan-hash',
-          summary: 'Rotate page 1.',
-          targets: ['page:1'],
-        }),
+      propose: vi.fn().mockResolvedValue({
+        planHash: 'plan-hash',
+        summary: 'Rotate page 1.',
+        targets: ['page:1'],
+      }),
       proposeSave: vi.fn(),
       apply: vi.fn(),
       save: vi.fn(),

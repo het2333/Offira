@@ -34,6 +34,8 @@ export const PDF_TOOL_NAMES = [
   'delete_pdf_page',
   'reorder_pdf_pages',
   'set_pdf_metadata',
+  'update_pdf_annotation',
+  'modify_pdf_pages',
   'redact_pdf',
   'save_pdf',
 ] as const

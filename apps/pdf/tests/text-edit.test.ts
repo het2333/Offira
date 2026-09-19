@@ -1627,7 +1627,6 @@ describe('synthetic bold (stroke instead of a bold face)', () => {
   })
 
   it('strokes inserted text when no edit font is chosen', async () => {
-    if (!hasArialUnicode) return
     const f = await makeFixture('Existing text')
     const result = await applyTextInserts(f.bytes, [
       {

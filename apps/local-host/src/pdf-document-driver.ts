@@ -5,8 +5,17 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import { PDFDocument } from 'pdf-lib'
 
-import { applySaveRequest } from '../../pdf/src/main/save-pdf'
-import { listPageImages } from '../../pdf/src/main/image-edit'
+import {
+  applySaveRequest,
+  insertBlankPageBytes,
+  setPageSizeBytes,
+  cropPagesBytes,
+} from '../../pdf/src/main/save-pdf'
+import { listPageImages, renderImagePng } from '../../pdf/src/main/image-edit'
+import {
+  PDF_WEB_CAPABILITIES,
+  parsePdfPageModification,
+} from '../../pdf/src/shared/web-capabilities'
 import type { PageImageRef, SavePdfRequest } from '../../pdf/src/shared/ipc'
 import type { LocalDocumentDriver } from './document-driver'
 
@@ -158,17 +167,74 @@ export async function createPdfDocumentDriver(
         language: 'en',
         theme: 'system',
         contentUrl: `/api/documents/${encodeURIComponent(document.documentId)}/content`,
-        capabilities: {
-          saveInPlace: true,
-          textReflow: false,
-          nativeFileDialogs: false,
-          permanentRedaction: false,
-        },
+        capabilities: PDF_WEB_CAPABILITIES,
       }
     },
     async execute(action, payload) {
       if (action === 'list-page-images') {
         return { images: await listPageImages(new Uint8Array(await readFile(authorizedPath))) }
+      }
+      if (action === 'page-image-png') {
+        const p = payload as {
+          pageIndex?: unknown
+          rect?: unknown
+          scale?: unknown
+          path?: unknown
+        } | null
+        if (
+          !p ||
+          p.path !== undefined ||
+          !Number.isInteger(p.pageIndex) ||
+          Number(p.pageIndex) < 0 ||
+          !Array.isArray(p.rect) ||
+          p.rect.length !== 4 ||
+          !p.rect.every((n) => typeof n === 'number' && Number.isFinite(n)) ||
+          p.rect[0] >= p.rect[2] ||
+          p.rect[1] >= p.rect[3] ||
+          (p.scale !== undefined &&
+            (typeof p.scale !== 'number' ||
+              !Number.isFinite(p.scale) ||
+              p.scale < 1 ||
+              p.scale > 3))
+        ) {
+          throw new HostError('INVALID_REQUEST', 'Invalid PDF image preview request.', false)
+        }
+        return {
+          png: await renderImagePng(
+            new Uint8Array(await readFile(authorizedPath)),
+            Number(p.pageIndex),
+            p.rect as [number, number, number, number],
+            Number(p.scale ?? 1),
+          ),
+        }
+      }
+      if (action === 'modify-pages') {
+        const body = payload as {
+          expectedRevision?: unknown
+          modification?: unknown
+          path?: unknown
+        } | null
+        if (!body || body.path !== undefined || !Number.isSafeInteger(body.expectedRevision))
+          throw new HostError('INVALID_REQUEST', 'Invalid PDF page rewrite request.', false)
+        await write(Number(body.expectedRevision), async () => {
+          const bytes = new Uint8Array(await readFile(authorizedPath))
+          const pdf = await PDFDocument.load(bytes, { updateMetadata: false })
+          let op
+          try {
+            op = parsePdfPageModification(body.modification, pdf.getPageCount())
+          } catch (error) {
+            throw new HostError('INVALID_REQUEST', String(error), false)
+          }
+          const result =
+            op.action === 'insertBlankPage'
+              ? await insertBlankPageBytes(bytes, op.afterPageIndex)
+              : op.action === 'setPageSize'
+                ? await setPageSizeBytes(bytes, op.width, op.height)
+                : await cropPagesBytes(bytes, op.pages, op.rect)
+          await validatePdf(result)
+          await atomicReplace(authorizedPath, result)
+        })
+        return { document: shellDocumentSummarySchema.parse(document) }
       }
       if (action !== 'save') {
         throw new HostError(

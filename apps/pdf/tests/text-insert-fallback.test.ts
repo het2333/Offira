@@ -19,6 +19,8 @@ vi.mock('node:fs', async (importOriginal) => {
 import { PDFDocument } from 'pdf-lib'
 import { applyTextInserts, fallbackFontFor } from '../src/main/text-edit'
 import type { TextInsertInput } from '../src/shared/ipc'
+import * as fontCmap from '../src/main/font-cmap'
+import * as fontLocate from '../src/main/font-locate'
 
 async function blankPage(): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
@@ -59,12 +61,18 @@ describe('insert-text fallback without any fallback font file (Windows shape)', 
   })
 
   it('reports the reason when no installed face covers the text', async () => {
-    // Unassigned codepoint U+0378: no real font maps it (LastResort-style fonts use
-    // cmap format 13, which the coverage reader deliberately does not treat as real
-    // coverage), so the insert must skip with the no-font reason instead of embedding
-    // .notdef boxes
-    const result = await applyTextInserts(await blankPage(), [insert('bad \u0378 char')])
-    expect(result.skipped).toHaveLength(1)
-    expect(result.skipped[0]!.reason).toContain('no available font')
+    // A Unicode-unassigned character is not a portable no-font fixture: installed
+    // SimHei faces can map U+0378. Explicitly simulate the no-coverage condition
+    // at both lookup boundaries, then assert the real save path reports the skip.
+    const coverage = vi.spyOn(fontCmap, 'fontCoversText').mockReturnValue(false)
+    const lookup = vi.spyOn(fontLocate, 'findFontCovering').mockReturnValue(null)
+    try {
+      const result = await applyTextInserts(await blankPage(), [insert('bad \u0378 char')])
+      expect(result.skipped).toHaveLength(1)
+      expect(result.skipped[0]!.reason).toContain('no available font')
+    } finally {
+      coverage.mockRestore()
+      lookup.mockRestore()
+    }
   })
 })

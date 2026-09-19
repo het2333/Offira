@@ -56,7 +56,11 @@ process.on('message', (frame) => {
       target: target('pdf-operation-1'),
       command: 'propose_ops',
       arguments: {
-        ops: [{ op: 'markup_pdf_text', page: 1, text: 'NexusDesk', type: 'highlight' }],
+        ops: [
+          frame.prompt === 'Insert a blank page.'
+            ? { op: 'modify_pdf_pages', action: 'insertBlankPage', afterPage: 1 }
+            : { op: 'markup_pdf_text', page: 1, text: 'NexusDesk', type: 'highlight' },
+        ],
       },
     })
     return
@@ -96,7 +100,7 @@ process.on('message', (frame) => {
         type: 'approval:request',
         id: 'pdf-approval-1',
         sessionId: turn.sessionId,
-        toolName: 'markup_pdf_text',
+        toolName: turn.prompt === 'Insert a blank page.' ? 'modify_pdf_pages' : 'markup_pdf_text',
         reason: frame.result?.summary,
         proposal: {
           planHash,
