@@ -29,7 +29,7 @@ interface Parser<T> {
 
 const BROWSER_CAPABILITIES: HostCapabilities = {
   mode: 'browser',
-  editors: ['docs', 'sheets'],
+  editors: ['docs', 'sheets', 'slides'],
   nativeFilePicker: false,
   browserImport: false,
   revealInFileManager: false,

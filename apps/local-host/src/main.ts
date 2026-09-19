@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { nexusdeskAppDataDirectory } from './app-data'
 import { DocumentDriverRegistry } from './document-driver'
 import { createDocsDocumentDriver } from './docs-document-driver'
+import { createSlidesDocumentDriver } from './slides-document-driver'
 import { startLocalHost } from './server'
 import { createSheetsDocumentService } from './sheets-document-service'
 import { startupDocumentPaths } from './startup'
@@ -16,6 +17,9 @@ for (const startup of startupDocuments) {
   if (startup.editorType === 'docs') {
     drivers.push(await createDocsDocumentDriver(startup.path))
   } else if (startup.editorType === 'sheets') {
+  } else if (startup.editorType === 'slides') {
+    drivers.push(await createSlidesDocumentDriver(startup.path))
+  } else if (startup.editorType === 'sheets') {
     const sheets = await createSheetsDocumentService(repositoryRoot, startup.path)
     drivers.push(...sheets.drivers)
   } else {
@@ -26,12 +30,13 @@ const running = await startLocalHost({
   shellStatePath: resolve(nexusdeskAppDataDirectory(), 'shell-state.json'),
   staticAssets: {
     webRoot: resolve(process.cwd(), 'apps/web/dist'),
-    editorRoots: {
-      docs: resolve(process.cwd(), 'apps/docs/out/web'),
-      sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
-      markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
-      html: resolve(process.cwd(), 'apps/html/out/web'),
-    },
+      editorRoots: {
+        docs: resolve(process.cwd(), 'apps/docs/out/web'),
+        sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
+        slides: resolve(process.cwd(), 'apps/slides/out/web'),
+        markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
+        html: resolve(process.cwd(), 'apps/html/out/web'),
+      },
   },
   runtimeCommand: {
     entry: resolve(runtimePackage, 'lib/index.mjs'),

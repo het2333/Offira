@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build:web-renderer": "vite build --config vite.renderer.config.ts",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

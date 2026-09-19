@@ -13,8 +13,8 @@ import {
   type ShellPlatformServices,
 } from '../src/index'
 
-it('advertises Docs and Sheets in the NexusDesk product configuration', () => {
-  expect(NEXUSDESK_PRODUCT_CONFIG.editors).toEqual(['docs', 'sheets'])
+it('advertises Docs, Sheets, and Slides in the NexusDesk product configuration', () => {
+  expect(NEXUSDESK_PRODUCT_CONFIG.editors).toEqual(['docs', 'sheets', 'slides'])
 })
 
 const actEnvironment = globalThis as typeof globalThis & {

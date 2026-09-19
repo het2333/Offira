@@ -49,6 +49,7 @@ rmSync(hostileUserHome, { recursive: true, force: true })
 const expectedCatalogs = {
   docs: ['read_document', 'apply_document_operations', 'save_document'],
   sheets: ['read_sheet', 'apply_sheet_operations', 'save_sheet'],
+  slides: ['read_presentation', 'apply_presentation_operations', 'save_presentation'],
   markdown: ['read_markdown', 'apply_markdown_operations', 'save_markdown'],
   html: ['read_html', 'apply_html_operations', 'save_html'],
 }

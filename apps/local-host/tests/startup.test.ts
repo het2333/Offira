@@ -35,25 +35,30 @@ describe('Local Web production startup', () => {
     directory = currentDirectory
     const docx = join(currentDirectory, 'Report.docx')
     const xlsx = join(currentDirectory, 'Forecast.xlsx')
+    const pptx = join(currentDirectory, 'Deck.pptx')
     const markdown = join(currentDirectory, 'Notes.md')
     const html = join(currentDirectory, 'Page.html')
     const text = join(currentDirectory, 'notes.txt')
     await Promise.all([
       writeFile(docx, 'fixture'),
       writeFile(xlsx, 'fixture'),
+      writeFile(pptx, 'fixture'),
       writeFile(markdown, '# Notes'),
       writeFile(html, '<h1>Page</h1>'),
       writeFile(text, 'x'),
     ])
 
-    expect(startupDocumentPaths([docx, xlsx, markdown, html], '/unused')).toEqual([
+    expect(startupDocumentPaths([docx, xlsx, pptx, markdown, html], '/unused')).toEqual([
       { editorType: 'docs', path: docx },
       { editorType: 'sheets', path: xlsx },
+      { editorType: 'slides', path: pptx },
       { editorType: 'markdown', path: markdown },
       { editorType: 'html', path: html },
     ])
     expect(() => startupDocumentPaths([], currentDirectory)).toThrow(/npm run start:web --/)
-    expect(() => startupDocumentPaths([text], currentDirectory)).toThrow(/\.docx.*\.xlsx.*\.md.*\.html/i)
+    expect(() => startupDocumentPaths([text], currentDirectory)).toThrow(
+      /\.docx.*\.xlsx.*\.pptx.*\.md.*\.html/i,
+    )
     expect(() =>
       startupDocumentPaths([join(currentDirectory, 'missing.docx')], currentDirectory),
     ).toThrow(/does not exist/)

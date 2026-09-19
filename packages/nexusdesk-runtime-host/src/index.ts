@@ -23,11 +23,13 @@ import {
   HTML_TOOL_NAMES,
   MARKDOWN_TOOL_NAMES,
   SHEETS_TOOL_NAMES,
+  SLIDES_TOOL_NAMES,
 } from './runtime-policy'
 import { createDocsTools, type DocsToolBridge } from './docs-tools'
 import { createMarkdownTools } from './markdown-tools'
 import { createHtmlTools } from './html-tools'
 import { createSheetsTools } from './sheets-tools'
+import { createSlidesTools } from './slides-tools'
 import {
   PROTOCOL_VERSION,
   type HarnessDurableEvent,
@@ -265,7 +267,9 @@ process.once('disconnect', () => {
 
 const ctx = asRuntimeContext((await boot).ctx)
 
-function createEditorToolBridge(editorType: 'docs' | 'sheets' | 'markdown' | 'html'): DocsToolBridge {
+function createEditorToolBridge(
+  editorType: 'docs' | 'sheets' | 'slides' | 'markdown' | 'html',
+): DocsToolBridge {
   return {
     async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
       const sessionId = String(execution.agent?.id ?? '')
@@ -322,6 +326,7 @@ disposeOfficeTools = [
   ...createDocsTools(createEditorToolBridge('docs')),
   ...createMarkdownTools(createEditorToolBridge('markdown')),
   ...createHtmlTools(createEditorToolBridge('html')),
+  ...createSlidesTools(createEditorToolBridge('slides')),
 ].map((tool) => ctx.tools.register(tool))
 
 ctx.on(
@@ -363,5 +368,11 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles as string[],
-  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES, markdown: MARKDOWN_TOOL_NAMES, html: HTML_TOOL_NAMES },
+  toolCatalogs: {
+    docs: DOCS_TOOL_NAMES,
+    sheets: SHEETS_TOOL_NAMES,
+    slides: SLIDES_TOOL_NAMES,
+    markdown: MARKDOWN_TOOL_NAMES,
+    html: HTML_TOOL_NAMES,
+  },
 })

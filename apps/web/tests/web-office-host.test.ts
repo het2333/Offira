@@ -38,8 +38,8 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe('createWebOfficeHost', () => {
-  it('advertises the Docs and Sheets renderers that ship in the Web build', () => {
-    expect(createWebOfficeHost().capabilities.editors).toEqual(['docs', 'sheets'])
+  it('advertises the Docs, Sheets, and Slides renderers that ship in the Web build', () => {
+    expect(createWebOfficeHost().capabilities.editors).toEqual(['docs', 'sheets', 'slides'])
   })
 
   it('parses bootstrap and sends tab mutations to the Host', async () => {

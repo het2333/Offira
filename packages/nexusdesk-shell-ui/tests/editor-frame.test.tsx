@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
-import { shellBootstrapSchema } from '@nexusdesk/office-host'
+import { shellBootstrapSchema, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import { EditorFrame, editorRoute } from '../src/EditorFrame'
 
 let container: HTMLDivElement
@@ -61,13 +61,17 @@ it('renders one active Sheets frame after a bootstrap refresh', () => {
 })
 
 it('routes Docs by document id and keeps every open editor frame mounted', () => {
-  const docsDocument = {
+  const docsDocument = shellDocumentSummarySchema.parse({
     documentId: 'doc 1',
     title: 'Report.docx',
-    editorType: 'docs' as const,
+    editorType: 'docs',
     revision: 1,
-  }
+  })
   expect(editorRoute(docsDocument)).toBe('/docs/?host=local-web&documentId=doc%201')
+
+  expect(
+    editorRoute(shellDocumentSummarySchema.parse({ documentId: 'slides 1', title: 'Deck.pptx', editorType: 'slides', revision: 1 })),
+  ).toBe('/slides/?host=local-web&documentId=slides%201')
 
   const withDocs = shellBootstrapSchema.parse({
     ...bootstrap,

@@ -46,7 +46,13 @@ export type RuntimeResponseFrame =
       protocolVersion: number
       pid: number
       startedBundles: string[]
-      toolCatalogs: { docs: readonly string[]; sheets: readonly string[]; markdown: readonly string[]; html: readonly string[] }
+      toolCatalogs: {
+        docs: readonly string[]
+        sheets: readonly string[]
+        slides: readonly string[]
+        markdown: readonly string[]
+        html: readonly string[]
+      }
     }
   | { type: 'fatal'; protocolVersion: number; message: string }
   | { type: 'shutdown-complete'; protocolVersion: number }

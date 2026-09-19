@@ -3,10 +3,11 @@ import { HostError, type ShellBootstrap, type ShellDocumentSummary } from '@nexu
 
 export function editorRoute(document: ShellDocumentSummary): string {
   if (
-    document.editorType === 'docs' ||
-    document.editorType === 'sheets' ||
-    document.editorType === 'markdown' ||
-    document.editorType === 'html'
+      document.editorType === 'docs' ||
+      document.editorType === 'sheets' ||
+      document.editorType === 'slides' ||
+      document.editorType === 'markdown' ||
+      document.editorType === 'html'
   ) {
     return `/${document.editorType}/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
   }

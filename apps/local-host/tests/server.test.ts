@@ -212,15 +212,18 @@ describe('startLocalHost HTTP bootstrap', () => {
     const webRoot = join(temporaryDirectory, 'web')
     const docsRoot = join(temporaryDirectory, 'docs')
     const sheetsRoot = join(temporaryDirectory, 'sheets')
+    const slidesRoot = join(temporaryDirectory, 'slides')
     await mkdir(join(webRoot, 'assets'), { recursive: true })
     await mkdir(docsRoot, { recursive: true })
     await mkdir(sheetsRoot, { recursive: true })
+    await mkdir(slidesRoot, { recursive: true })
     await writeFile(join(webRoot, 'index.html'), '<div id="root">shell</div>')
     await writeFile(join(webRoot, 'assets', 'index-a1b2c3.js'), 'globalThis.shellLoaded=true')
     await writeFile(join(docsRoot, 'index.html'), '<div id="root">docs</div>')
     await writeFile(join(sheetsRoot, 'index.html'), '<div id="root">sheets</div>')
+    await writeFile(join(slidesRoot, 'index.html'), '<div id="root">slides</div>')
     running = await startLocalHost({
-      staticAssets: { webRoot, editorRoots: { docs: docsRoot, sheets: sheetsRoot } },
+      staticAssets: { webRoot, editorRoots: { docs: docsRoot, sheets: sheetsRoot, slides: slidesRoot } },
     })
     const headers = await authenticatedHeaders()
 
@@ -231,15 +234,14 @@ describe('startLocalHost HTTP bootstrap', () => {
     const docsRoute = await fetch(`${running.origin}/docs/?host=local-web&documentId=doc-1`, {
       headers,
     })
-    const missingEditor = await fetch(`${running.origin}/slides/`, { headers })
+    const slidesRoute = await fetch(`${running.origin}/slides/?host=local-web&documentId=slides-1`, { headers })
     const unknownApi = await fetch(`${running.origin}/api/unknown`, { headers })
 
     expect(asset.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
     expect(route.headers.get('cache-control')).toBe('no-store')
     expect(await route.text()).toContain('sheets')
     expect(await docsRoute.text()).toContain('docs')
-    expect(missingEditor.status).toBe(404)
-    expect(missingEditor.headers.get('content-type')).toContain('application/json')
+    expect(await slidesRoute.text()).toContain('slides')
     expect(unknownApi.status).toBe(404)
     expect(unknownApi.headers.get('content-type')).toContain('application/json')
   })
