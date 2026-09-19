@@ -51,21 +51,26 @@ export class DocumentRegistry {
   }
 
   assertOwner(check: DocumentOwnerCheck): AttachedDocument {
-    const record = this.documents.get(check.documentId)
-    if (record === undefined) {
-      throw new DocumentRegistryError('DOCUMENT_NOT_FOUND', `document ${check.documentId} is not registered`)
-    }
-    if (!record.attached) {
-      throw new DocumentRegistryError('DOCUMENT_DETACHED', `document ${check.documentId} has no browser client`)
-    }
-    if (record.clientId !== check.clientId) {
-      throw new DocumentRegistryError('WRONG_CLIENT', `document ${check.documentId} belongs to another browser client`)
-    }
+    const record = this.assertClient(check.documentId, check.clientId)
     if (record.revision !== check.revision) {
       throw new DocumentRegistryError(
         'STALE_REVISION',
         `document ${check.documentId} is revision ${String(record.revision)}, not ${String(check.revision)}`,
       )
+    }
+    return record
+  }
+
+  assertClient(documentId: DocumentId, clientId: ClientId): AttachedDocument {
+    const record = this.documents.get(documentId)
+    if (record === undefined) {
+      throw new DocumentRegistryError('DOCUMENT_NOT_FOUND', `document ${documentId} is not registered`)
+    }
+    if (!record.attached) {
+      throw new DocumentRegistryError('DOCUMENT_DETACHED', `document ${documentId} has no browser client`)
+    }
+    if (record.clientId !== clientId) {
+      throw new DocumentRegistryError('WRONG_CLIENT', `document ${documentId} belongs to another browser client`)
     }
     return record
   }

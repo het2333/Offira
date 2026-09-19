@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 
 import { createBootstrapAuth } from './bootstrap-auth'
+import type { AgentRouter } from './agent-router'
 import { DocumentRegistry } from './document-registry'
 import { acceptHttpOrigin } from './origin-policy'
 import { installWsSessionServer } from './ws-session'
@@ -15,6 +16,7 @@ export interface RunningLocalHost {
 
 export interface StartLocalHostOptions {
   documentRegistry?: DocumentRegistry
+  agentRouter?: AgentRouter
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -91,6 +93,8 @@ export async function startLocalHost(options: StartLocalHostOptions = {}): Promi
     origin: () => origin,
     hasSession: (sessionId) => sessions.has(sessionId),
     documents,
+    onFrame: (frame, clientId) => options.agentRouter?.handleClientFrame(frame, clientId),
+    onDisconnect: (clientId) => options.agentRouter?.disconnectClient(clientId),
   })
 
   await new Promise<void>((resolve, reject) => {

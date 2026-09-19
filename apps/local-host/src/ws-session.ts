@@ -14,7 +14,8 @@ export interface WsSessionOptions {
   origin: () => string
   hasSession(sessionId: string): boolean
   documents: DocumentRegistry
-  onFrame?: (frame: ClientFrame, clientId: string) => void
+  onFrame?: (frame: ClientFrame, clientId: ClientId) => void
+  onDisconnect?: (clientId: ClientId) => void
 }
 
 export interface WsSessionServer {
@@ -96,13 +97,14 @@ export function installWsSessionServer(
           default:
             break
         }
-        options.onFrame?.(frame, clientId)
+        options.onFrame?.(frame, clientId as ClientId)
       } catch {
         socket.close(1008, 'invalid client frame')
       }
     })
     socket.once('close', () => {
       options.documents.detachClient(clientId as ClientId)
+      options.onDisconnect?.(clientId as ClientId)
     })
   })
 

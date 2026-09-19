@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@nexusdesk/protocol": "*",
+    "@nexusdesk/runtime-host": "*",
     "ws": "^8.21.1"
   },
   "devDependencies": {
