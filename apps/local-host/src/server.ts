@@ -11,6 +11,7 @@ import {
   closeTabRequestSchema,
   reorderTabRequestSchema,
   shellSettingsPatchSchema,
+  type EditorKind,
   type ShellDocumentSummary,
 } from '@nexusdesk/office-host'
 
@@ -19,6 +20,7 @@ import { createBootstrapAuth } from './bootstrap-auth'
 import type { AgentRouter } from './agent-router'
 import { AgentRouter as OwnedAgentRouter } from './agent-router'
 import { DocumentRegistry } from './document-registry'
+import { DocumentDriverRegistry, type LocalDocument } from './document-driver'
 import { HarnessSupervisor } from './harness-supervisor'
 import { OperationStore } from './operation-store'
 import { acceptHttpOrigin } from './origin-policy'
@@ -34,22 +36,14 @@ export interface RunningLocalHost {
 export interface StartLocalHostOptions {
   documentRegistry?: DocumentRegistry
   agentRouter?: AgentRouter
+  documentDrivers?: DocumentDriverRegistry
   documents?: LocalDocument[]
   shellStatePath?: string
-  staticAssets?: { webRoot: string; sheetsRoot: string }
-  documentService?: {
-    bootstrap(document: LocalDocument, origin: string): Promise<unknown>
-    execute(document: LocalDocument, action: string, payload: unknown): Promise<unknown>
+  staticAssets?: {
+    webRoot: string
+    editorRoots: Partial<Record<EditorKind, string>>
   }
   runtimeCommand?: { entry: string; args?: string[]; nodeExecutable?: string }
-}
-
-export interface LocalDocument {
-  documentId: string
-  title: string
-  editorType: 'sheets'
-  revision: number
-  path?: string
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -171,7 +165,7 @@ export async function startLocalHost(
   const auth = createBootstrapAuth()
   const sessions = new Set<string>()
   const documents = options.documentRegistry ?? new DocumentRegistry()
-  const localDocuments = options.documents ?? []
+  const localDocuments = options.documentDrivers?.list() ?? options.documents ?? []
   const shellDocuments = localDocuments.map(
     ({ documentId, title, editorType, revision }) =>
       ({ documentId, title, editorType, revision }) as ShellDocumentSummary,
@@ -239,14 +233,12 @@ export async function startLocalHost(
       }
       if (url.pathname === '/api/bootstrap') {
         sendJson(response, 200, {
-          documents: (options.documents ?? []).map(
-            ({ documentId, title, editorType, revision }) => ({
-              documentId,
-              title,
-              editorType,
-              revision,
-            }),
-          ),
+          documents: localDocuments.map(({ documentId, title, editorType, revision }) => ({
+            documentId,
+            title,
+            editorType,
+            revision,
+          })),
         })
         return
       }
@@ -345,23 +337,34 @@ export async function startLocalHost(
       if (documentMatch !== null) {
         const documentId = decodeURIComponent(documentMatch[1]!)
         const action = documentMatch[2]!
-        const document = (options.documents ?? []).find(
-          (candidate) => candidate.documentId === documentId,
-        )
-        if (document === undefined || options.documentService === undefined) {
-          sendJson(response, 404, { error: 'document service is unavailable' })
+        if (options.documentDrivers === undefined) {
+          sendJson(response, 404, {
+            code: 'DOCUMENT_NOT_FOUND',
+            message: `Document ${documentId} is not registered with this Local Host.`,
+            retryable: false,
+            documentId,
+          })
           return
         }
         try {
+          if (!requireMethod(request, response, action === 'bootstrap' ? 'GET' : 'POST')) return
           const result =
             action === 'bootstrap'
-              ? await options.documentService.bootstrap(document, origin)
-              : await options.documentService.execute(document, action, await readJsonBody(request))
+              ? await options.documentDrivers.bootstrap(documentId, origin)
+              : await options.documentDrivers.execute(
+                  documentId,
+                  action,
+                  await readJsonBody(request),
+                )
           sendJson(response, 200, result)
         } catch (error: unknown) {
-          sendJson(response, 400, {
-            error: error instanceof Error ? error.message : 'document request failed',
-          })
+          if (error instanceof HostError || error instanceof SyntaxError) {
+            sendHostError(response, error)
+          } else {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : 'document request failed',
+            })
+          }
         }
         return
       }
@@ -370,11 +373,17 @@ export async function startLocalHost(
         return
       }
       if (options.staticAssets !== undefined) {
-        if (url.pathname === '/sheets' || url.pathname.startsWith('/sheets/')) {
-          const relative = url.pathname.replace(/^\/sheets\/?/, '') || 'index.html'
+        const editorMatch = url.pathname.match(/^\/(docs|sheets|slides|pdf|markdown|html)(?:\/|$)/)
+        if (editorMatch !== null) {
+          const editor = editorMatch[1] as EditorKind
+          const editorRoot = options.staticAssets.editorRoots[editor]
+          if (editorRoot === undefined) {
+            sendJson(response, 404, { error: `${editor} editor assets are unavailable` })
+            return
+          }
+          const relative = url.pathname.replace(new RegExp(`^/${editor}/?`), '') || 'index.html'
           const file =
-            (await staticFile(options.staticAssets.sheetsRoot, relative)) ??
-            (await staticFile(options.staticAssets.sheetsRoot, 'index.html'))
+            (await staticFile(editorRoot, relative)) ?? (await staticFile(editorRoot, 'index.html'))
           if (file !== undefined) {
             sendFile(response, file, relative !== 'index.html')
             return
@@ -446,6 +455,7 @@ export async function startLocalHost(
         await wsSessions.close()
         ownedRouter?.dispose()
         await supervisor?.shutdown()
+        await options.documentDrivers?.close()
         await new Promise<void>((resolve, reject) => {
           server.close((error) => (error === undefined ? resolve() : reject(error)))
         })

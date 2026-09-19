@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+import { DocumentDriverRegistry, type LocalDocumentDriver } from '../src/document-driver'
 import { startLocalHost, type RunningLocalHost } from '../src/server'
 
 let running: RunningLocalHost | undefined
@@ -120,6 +121,44 @@ describe('startLocalHost HTTP bootstrap', () => {
     })
   })
 
+  it('routes document bootstrap and actions through the owning driver', async () => {
+    const actions: Array<[string, unknown]> = []
+    const driver: LocalDocumentDriver = {
+      document: {
+        documentId: 'doc-1',
+        title: 'Report.docx',
+        editorType: 'docs',
+        revision: 4,
+      },
+      async bootstrap(origin) {
+        return { documentId: 'doc-1', kind: 'docs', origin }
+      },
+      async execute(action, payload) {
+        actions.push([action, payload])
+        return { ok: true }
+      },
+      async close() {},
+    }
+    running = await startLocalHost({
+      documentDrivers: new DocumentDriverRegistry([driver]),
+    })
+    const headers = { ...(await authenticatedHeaders()), 'Content-Type': 'application/json' }
+
+    const bootstrap = await fetch(`${running.origin}/api/documents/doc-1/bootstrap`, { headers })
+    const action = await fetch(`${running.origin}/api/documents/doc-1/read-document`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ scope: 'document' }),
+    })
+    const unknown = await fetch(`${running.origin}/api/documents/missing/bootstrap`, { headers })
+
+    expect(await bootstrap.json()).toMatchObject({ documentId: 'doc-1', kind: 'docs' })
+    expect(action.status).toBe(200)
+    expect(actions).toEqual([['read-document', { scope: 'document' }]])
+    expect(unknown.status).toBe(404)
+    expect(await unknown.json()).toMatchObject({ code: 'DOCUMENT_NOT_FOUND' })
+  })
+
   it('serves authenticated Shell state and validates tab and file mutations', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-shell-api-'))
     running = await startLocalHost({
@@ -171,24 +210,36 @@ describe('startLocalHost HTTP bootstrap', () => {
   it('serves hashed assets immutably and falls client routes back to no-store shell HTML', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-web-'))
     const webRoot = join(temporaryDirectory, 'web')
+    const docsRoot = join(temporaryDirectory, 'docs')
     const sheetsRoot = join(temporaryDirectory, 'sheets')
     await mkdir(join(webRoot, 'assets'), { recursive: true })
+    await mkdir(docsRoot, { recursive: true })
     await mkdir(sheetsRoot, { recursive: true })
     await writeFile(join(webRoot, 'index.html'), '<div id="root">shell</div>')
     await writeFile(join(webRoot, 'assets', 'index-a1b2c3.js'), 'globalThis.shellLoaded=true')
+    await writeFile(join(docsRoot, 'index.html'), '<div id="root">docs</div>')
     await writeFile(join(sheetsRoot, 'index.html'), '<div id="root">sheets</div>')
-    running = await startLocalHost({ staticAssets: { webRoot, sheetsRoot } })
+    running = await startLocalHost({
+      staticAssets: { webRoot, editorRoots: { docs: docsRoot, sheets: sheetsRoot } },
+    })
     const headers = await authenticatedHeaders()
 
     const asset = await fetch(`${running.origin}/assets/index-a1b2c3.js`, { headers })
     const route = await fetch(`${running.origin}/sheets/?host=local-web&documentId=document-1`, {
       headers,
     })
+    const docsRoute = await fetch(`${running.origin}/docs/?host=local-web&documentId=doc-1`, {
+      headers,
+    })
+    const missingEditor = await fetch(`${running.origin}/slides/`, { headers })
     const unknownApi = await fetch(`${running.origin}/api/unknown`, { headers })
 
     expect(asset.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
     expect(route.headers.get('cache-control')).toBe('no-store')
     expect(await route.text()).toContain('sheets')
+    expect(await docsRoute.text()).toContain('docs')
+    expect(missingEditor.status).toBe(404)
+    expect(missingEditor.headers.get('content-type')).toContain('application/json')
     expect(unknownApi.status).toBe(404)
     expect(unknownApi.headers.get('content-type')).toContain('application/json')
   })

@@ -23,12 +23,10 @@ describe('production Sheets document service', () => {
     const service = await createSheetsDocumentService(resolve(process.cwd(), '../..'), path)
 
     try {
-      expect(service.documents).toEqual([
+      expect(service.drivers.map((driver) => driver.document)).toEqual([
         expect.objectContaining({ title: 'Forecast.xlsx', editorType: 'sheets', path }),
       ])
-      await expect(
-        service.documentService.bootstrap(service.documents[0]!, 'http://127.0.0.1:43123'),
-      ).resolves.toMatchObject({
+      await expect(service.drivers[0]!.bootstrap('http://127.0.0.1:43123')).resolves.toMatchObject({
         title: 'Forecast.xlsx',
         websocketUrl: 'ws://127.0.0.1:43123/ws',
         workbook: expect.objectContaining({ path, readOnly: false }),
