@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { startupWorkbookPath } from '../src/startup'
+import { startupDocumentPaths, startupWorkbookPath } from '../src/startup'
 
 let directory: string | undefined
 
@@ -28,5 +28,28 @@ describe('Local Web production startup', () => {
     expect(() =>
       startupWorkbookPath([join(currentDirectory, 'notes.txt')], currentDirectory),
     ).toThrow(/\.xlsx/)
+  })
+
+  it('classifies existing DOCX and XLSX startup paths without accepting other files', async () => {
+    const currentDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-startup-'))
+    directory = currentDirectory
+    const docx = join(currentDirectory, 'Report.docx')
+    const xlsx = join(currentDirectory, 'Forecast.xlsx')
+    const text = join(currentDirectory, 'notes.txt')
+    await Promise.all([
+      writeFile(docx, 'fixture'),
+      writeFile(xlsx, 'fixture'),
+      writeFile(text, 'x'),
+    ])
+
+    expect(startupDocumentPaths([docx, xlsx], '/unused')).toEqual([
+      { editorType: 'docs', path: docx },
+      { editorType: 'sheets', path: xlsx },
+    ])
+    expect(() => startupDocumentPaths([], currentDirectory)).toThrow(/npm run start:web --/)
+    expect(() => startupDocumentPaths([text], currentDirectory)).toThrow(/\.docx.*\.xlsx/i)
+    expect(() =>
+      startupDocumentPaths([join(currentDirectory, 'missing.docx')], currentDirectory),
+    ).toThrow(/does not exist/)
   })
 })

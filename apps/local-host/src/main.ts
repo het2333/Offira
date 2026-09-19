@@ -2,14 +2,23 @@ import { resolve } from 'node:path'
 
 import { nexusdeskAppDataDirectory } from './app-data'
 import { DocumentDriverRegistry } from './document-driver'
+import { createDocsDocumentDriver } from './docs-document-driver'
 import { startLocalHost } from './server'
 import { createSheetsDocumentService } from './sheets-document-service'
-import { startupWorkbookPath } from './startup'
+import { startupDocumentPaths } from './startup'
 
 const repositoryRoot = process.cwd()
 const runtimePackage = resolve(repositoryRoot, 'packages/nexusdesk-runtime-host')
-const workbookPath = startupWorkbookPath(process.argv.slice(2), repositoryRoot)
-const sheets = await createSheetsDocumentService(repositoryRoot, workbookPath)
+const startupDocuments = startupDocumentPaths(process.argv.slice(2), repositoryRoot)
+const drivers = []
+for (const startup of startupDocuments) {
+  if (startup.editorType === 'docs') {
+    drivers.push(await createDocsDocumentDriver(startup.path))
+  } else {
+    const sheets = await createSheetsDocumentService(repositoryRoot, startup.path)
+    drivers.push(...sheets.drivers)
+  }
+}
 const running = await startLocalHost({
   shellStatePath: resolve(nexusdeskAppDataDirectory(), 'shell-state.json'),
   staticAssets: {
@@ -22,7 +31,7 @@ const running = await startLocalHost({
     entry: resolve(runtimePackage, 'lib/index.mjs'),
     args: [repositoryRoot, resolve(runtimePackage, 'profile'), 'runtime'],
   },
-  documentDrivers: new DocumentDriverRegistry(sheets.drivers),
+  documentDrivers: new DocumentDriverRegistry(drivers),
 })
 process.stdout.write(`${JSON.stringify({ bootstrapUrl: running.bootstrapUrl })}\n`)
 
