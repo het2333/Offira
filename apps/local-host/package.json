@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@genoffice/xlsx-gateway": "*",
+    "@nexusdesk/office-host": "*",
     "@nexusdesk/protocol": "*",
     "@nexusdesk/runtime-host": "*",
     "ws": "^8.21.1"

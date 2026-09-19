@@ -40,7 +40,7 @@ export interface ShellDocumentSummary {
   readonly title: string
   readonly editorType: EditorKind
   readonly revision: Revision
-  readonly dirty?: boolean
+  readonly dirty?: boolean | undefined
 }
 
 export interface HomeTabSummary {
@@ -69,9 +69,9 @@ export interface ShellSettings {
 }
 
 export interface ShellSettingsPatch {
-  readonly language?: ShellLanguage
-  readonly theme?: ShellTheme
-  readonly onboardingSeen?: boolean
+  readonly language?: ShellLanguage | undefined
+  readonly theme?: ShellTheme | undefined
+  readonly onboardingSeen?: boolean | undefined
 }
 
 export interface ShellBootstrap {

@@ -120,6 +120,54 @@ describe('startLocalHost HTTP bootstrap', () => {
     })
   })
 
+  it('serves authenticated Shell state and validates tab and file mutations', async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-shell-api-'))
+    running = await startLocalHost({
+      shellStatePath: join(temporaryDirectory, 'shell.json'),
+      documents: [
+        {
+          documentId: 'document-1',
+          title: 'Forecast.xlsx',
+          editorType: 'sheets',
+          revision: 3,
+          path: '/Users/example/authorized/Forecast.xlsx',
+        },
+      ],
+    })
+    const headers = { ...(await authenticatedHeaders()), 'Content-Type': 'application/json' }
+
+    const bootstrap = await fetch(`${running.origin}/api/shell/bootstrap`, { headers })
+    const activated = await fetch(`${running.origin}/api/shell/tabs/activate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tabId: 'document:document-1' }),
+    })
+    const unauthorized = await fetch(`${running.origin}/api/shell/files/open`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fileId: 'not-authorized', path: '/etc/passwd' }),
+    })
+    const wrongMethod = await fetch(`${running.origin}/api/shell/tabs/activate`, { headers })
+
+    expect(bootstrap.status).toBe(200)
+    expect(await bootstrap.json()).toMatchObject({
+      tabs: [
+        expect.objectContaining({ id: 'home' }),
+        expect.objectContaining({ documentId: 'document-1' }),
+      ],
+    })
+    expect(activated.status).toBe(200)
+    expect(await activated.json()).toMatchObject({
+      tabs: expect.arrayContaining([
+        expect.objectContaining({ id: 'document:document-1', active: true }),
+      ]),
+    })
+    expect(unauthorized.status).toBe(403)
+    expect(await unauthorized.json()).toMatchObject({ code: 'FILE_NOT_AUTHORIZED' })
+    expect(wrongMethod.status).toBe(405)
+    expect(await wrongMethod.json()).toMatchObject({ code: 'INVALID_REQUEST' })
+  })
+
   it('serves hashed assets immutably and falls client routes back to no-store shell HTML', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-web-'))
     const webRoot = join(temporaryDirectory, 'web')

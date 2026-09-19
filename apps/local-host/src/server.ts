@@ -1,9 +1,20 @@
 import { createServer, type ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { extname, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+import {
+  HostError,
+  activateTabRequestSchema,
+  closeTabRequestSchema,
+  reorderTabRequestSchema,
+  shellSettingsPatchSchema,
+  type ShellDocumentSummary,
+} from '@nexusdesk/office-host'
 
+import { AuthorizedFiles } from './authorized-files'
 import { createBootstrapAuth } from './bootstrap-auth'
 import type { AgentRouter } from './agent-router'
 import { AgentRouter as OwnedAgentRouter } from './agent-router'
@@ -11,6 +22,7 @@ import { DocumentRegistry } from './document-registry'
 import { HarnessSupervisor } from './harness-supervisor'
 import { OperationStore } from './operation-store'
 import { acceptHttpOrigin } from './origin-policy'
+import { ShellState } from './shell-state'
 import { installWsSessionServer } from './ws-session'
 
 export interface RunningLocalHost {
@@ -23,6 +35,7 @@ export interface StartLocalHostOptions {
   documentRegistry?: DocumentRegistry
   agentRouter?: AgentRouter
   documents?: LocalDocument[]
+  shellStatePath?: string
   staticAssets?: { webRoot: string; sheetsRoot: string }
   documentService?: {
     bootstrap(document: LocalDocument, origin: string): Promise<unknown>
@@ -47,6 +60,47 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
     'Cache-Control': 'no-store',
   })
   response.end(body)
+}
+
+function sendHostError(response: ServerResponse, error: unknown): void {
+  if (error instanceof HostError) {
+    const status =
+      error.code === 'FILE_NOT_AUTHORIZED'
+        ? 403
+        : error.code === 'DOCUMENT_NOT_FOUND' || error.code === 'TAB_NOT_FOUND'
+          ? 404
+          : 400
+    sendJson(response, status, {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      ...(error.documentId === undefined ? {} : { documentId: error.documentId }),
+    })
+    return
+  }
+  if (error instanceof SyntaxError || (error instanceof Error && error.name === 'ZodError')) {
+    sendJson(response, 400, {
+      code: 'INVALID_REQUEST',
+      message: 'The Local Host request was invalid.',
+      retryable: false,
+    })
+    return
+  }
+  throw error
+}
+
+function requireMethod(
+  request: import('node:http').IncomingMessage,
+  response: ServerResponse,
+  method: 'GET' | 'POST',
+): boolean {
+  if (request.method === method) return true
+  sendJson(response, 405, {
+    code: 'INVALID_REQUEST',
+    message: `This endpoint requires ${method}.`,
+    retryable: false,
+  })
+  return false
 }
 
 function cookieSession(cookie: string | undefined): string | undefined {
@@ -117,6 +171,16 @@ export async function startLocalHost(
   const auth = createBootstrapAuth()
   const sessions = new Set<string>()
   const documents = options.documentRegistry ?? new DocumentRegistry()
+  const localDocuments = options.documents ?? []
+  const shellDocuments = localDocuments.map(
+    ({ documentId, title, editorType, revision }) =>
+      ({ documentId, title, editorType, revision }) as ShellDocumentSummary,
+  )
+  const shellState = await ShellState.open({
+    path: options.shellStatePath ?? resolve(tmpdir(), `nexusdesk-shell-state-${randomUUID()}.json`),
+    documents: shellDocuments,
+  })
+  const authorizedFiles = new AuthorizedFiles(localDocuments)
   const supervisor =
     options.runtimeCommand === undefined
       ? undefined
@@ -184,6 +248,91 @@ export async function startLocalHost(
             }),
           ),
         })
+        return
+      }
+      if (url.pathname === '/api/shell/bootstrap') {
+        if (!requireMethod(request, response, 'GET')) return
+        sendJson(response, 200, shellState.bootstrap())
+        return
+      }
+      if (url.pathname === '/api/shell/files') {
+        if (!requireMethod(request, response, 'GET')) return
+        sendJson(response, 200, { files: authorizedFiles.list() })
+        return
+      }
+      if (url.pathname === '/api/shell/files/open') {
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const body = await readJsonBody(request)
+          const parsed = activateTabRequestSchema.parse(
+            typeof body === 'object' && body !== null && 'fileId' in body
+              ? { tabId: (body as { fileId?: unknown }).fileId }
+              : body,
+          )
+          const file = authorizedFiles.require(parsed.tabId)
+          sendJson(response, 200, await shellState.openDocument(file.documentId))
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/files/toggle-star') {
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const body = await readJsonBody(request)
+          const parsed = activateTabRequestSchema.parse(
+            typeof body === 'object' && body !== null && 'fileId' in body
+              ? { tabId: (body as { fileId?: unknown }).fileId }
+              : body,
+          )
+          sendJson(response, 200, { files: authorizedFiles.toggleStar(parsed.tabId) })
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/tabs/activate') {
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const body = activateTabRequestSchema.parse(await readJsonBody(request))
+          sendJson(response, 200, await shellState.activate(body.tabId))
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/tabs/close') {
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const body = closeTabRequestSchema.parse(await readJsonBody(request))
+          sendJson(response, 200, await shellState.close(body.tabId))
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/tabs/reorder') {
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const body = reorderTabRequestSchema.parse(await readJsonBody(request))
+          sendJson(response, 200, await shellState.reorder(body.tabId, body.toIndex))
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/settings') {
+        if (request.method === 'GET') {
+          sendJson(response, 200, shellState.bootstrap().settings)
+          return
+        }
+        if (!requireMethod(request, response, 'POST')) return
+        try {
+          const patch = shellSettingsPatchSchema.parse(await readJsonBody(request))
+          sendJson(response, 200, (await shellState.updateSettings(patch)).settings)
+        } catch (error: unknown) {
+          sendHostError(response, error)
+        }
         return
       }
       const documentMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/(bootstrap|[^/]+)$/)

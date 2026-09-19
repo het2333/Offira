@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 
+import { nexusdeskAppDataDirectory } from './app-data'
 import { startLocalHost } from './server'
 import { createSheetsDocumentService } from './sheets-document-service'
 import { startupWorkbookPath } from './startup'
@@ -9,6 +10,7 @@ const runtimePackage = resolve(repositoryRoot, 'packages/nexusdesk-runtime-host'
 const workbookPath = startupWorkbookPath(process.argv.slice(2), repositoryRoot)
 const sheets = await createSheetsDocumentService(repositoryRoot, workbookPath)
 const running = await startLocalHost({
+  shellStatePath: resolve(nexusdeskAppDataDirectory(), 'shell-state.json'),
   staticAssets: {
     webRoot: resolve(process.cwd(), 'apps/web/dist'),
     sheetsRoot: resolve(process.cwd(), 'apps/sheets/out/web'),
