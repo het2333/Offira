@@ -17,8 +17,14 @@ import type {
 } from '@nexusdesk/protocol'
 
 import { projectDurableEvent, projectStreamChunk } from './projection'
-import { configureOfficeToolScope, DOCS_TOOL_NAMES, SHEETS_TOOL_NAMES } from './runtime-policy'
+import {
+  configureOfficeToolScope,
+  DOCS_TOOL_NAMES,
+  MARKDOWN_TOOL_NAMES,
+  SHEETS_TOOL_NAMES,
+} from './runtime-policy'
 import { createDocsTools, type DocsToolBridge } from './docs-tools'
+import { createMarkdownTools } from './markdown-tools'
 import { createSheetsTools } from './sheets-tools'
 import {
   PROTOCOL_VERSION,
@@ -257,7 +263,7 @@ process.once('disconnect', () => {
 
 const ctx = asRuntimeContext((await boot).ctx)
 
-function createEditorToolBridge(editorType: 'docs' | 'sheets'): DocsToolBridge {
+function createEditorToolBridge(editorType: 'docs' | 'sheets' | 'markdown'): DocsToolBridge {
   return {
     async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
       const sessionId = String(execution.agent?.id ?? '')
@@ -312,6 +318,7 @@ function createEditorToolBridge(editorType: 'docs' | 'sheets'): DocsToolBridge {
 disposeOfficeTools = [
   ...createSheetsTools(createEditorToolBridge('sheets')),
   ...createDocsTools(createEditorToolBridge('docs')),
+  ...createMarkdownTools(createEditorToolBridge('markdown')),
 ].map((tool) => ctx.tools.register(tool))
 
 ctx.on(
@@ -353,5 +360,5 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles as string[],
-  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES },
+  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES, markdown: MARKDOWN_TOOL_NAMES },
 })

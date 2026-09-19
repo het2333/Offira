@@ -2,7 +2,11 @@ import { useRef } from 'react'
 import { HostError, type ShellBootstrap, type ShellDocumentSummary } from '@nexusdesk/office-host'
 
 export function editorRoute(document: ShellDocumentSummary): string {
-  if (document.editorType === 'docs' || document.editorType === 'sheets') {
+  if (
+    document.editorType === 'docs' ||
+    document.editorType === 'sheets' ||
+    document.editorType === 'markdown'
+  ) {
     return `/${document.editorType}/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
   }
   throw new HostError(

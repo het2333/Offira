@@ -6,6 +6,7 @@ import { createDocsDocumentDriver } from './docs-document-driver'
 import { startLocalHost } from './server'
 import { createSheetsDocumentService } from './sheets-document-service'
 import { startupDocumentPaths } from './startup'
+import { createTextDocumentDriver } from './text-document-driver'
 
 const repositoryRoot = process.cwd()
 const runtimePackage = resolve(repositoryRoot, 'packages/nexusdesk-runtime-host')
@@ -14,9 +15,11 @@ const drivers = []
 for (const startup of startupDocuments) {
   if (startup.editorType === 'docs') {
     drivers.push(await createDocsDocumentDriver(startup.path))
-  } else {
+  } else if (startup.editorType === 'sheets') {
     const sheets = await createSheetsDocumentService(repositoryRoot, startup.path)
     drivers.push(...sheets.drivers)
+  } else {
+    drivers.push(await createTextDocumentDriver(startup.path, startup.editorType))
   }
 }
 const running = await startLocalHost({
@@ -26,6 +29,8 @@ const running = await startLocalHost({
     editorRoots: {
       docs: resolve(process.cwd(), 'apps/docs/out/web'),
       sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
+      markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
+      html: resolve(process.cwd(), 'apps/html/out/web'),
     },
   },
   runtimeCommand: {

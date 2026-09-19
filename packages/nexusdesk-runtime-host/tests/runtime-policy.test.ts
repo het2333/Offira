@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   configureOfficeToolScope,
   DOCS_TOOL_NAMES,
+  MARKDOWN_TOOL_NAMES,
   OFFICE_TOOL_NAMES,
   SHEETS_TOOL_NAMES,
 } from '../src/runtime-policy'
@@ -63,6 +64,16 @@ describe('Office-only Agent capability policy', () => {
     ).toEqual([...DOCS_TOOL_NAMES].sort())
     expect(tools.guardCallback?.({ name: 'read_document' })).toBeUndefined()
     expect(tools.guardCallback?.({ name: 'read_sheet' })).toMatch(/Office tools/)
+  })
+
+  it('exposes only Markdown tools for a Markdown session', () => {
+    const tools = new EffectiveToolCatalog()
+
+    configureOfficeToolScope({ tools }, 'markdown')
+
+    expect(tools.schemas().map(({ name }) => name).sort()).toEqual([...MARKDOWN_TOOL_NAMES].sort())
+    expect(tools.guardCallback?.({ name: 'read_markdown' })).toBeUndefined()
+    expect(tools.guardCallback?.({ name: 'read_document' })).toMatch(/Office tools/)
   })
 
   it('rejects an unknown editor kind instead of widening the catalog', () => {

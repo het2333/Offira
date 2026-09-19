@@ -21,10 +21,15 @@ const TIPTAP_DEDUPE = [
 // renderer-only dev server (embedded by shell via MARKDOWN_RENDERER_URL for HMR; no standalone Electron)
 export default defineConfig({
   root: 'src/renderer',
+  base: '/markdown/',
   plugins: [react()],
   resolve: { dedupe: TIPTAP_DEDUPE },
   server: {
     port: Number(process.env.MARKDOWN_DEV_PORT) || 5177,
     strictPort: true,
+  },
+  build: {
+    outDir: '../../out/web',
+    emptyOutDir: true,
   },
 })

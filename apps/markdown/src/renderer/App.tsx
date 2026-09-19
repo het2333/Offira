@@ -46,6 +46,8 @@ import type { DiagramLanguage } from './editor/diagrams'
 import { resolveImageSrc } from './editor/localImage'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
 import { uiOp } from './editor/ops'
+import { buildDocContext, executeTool } from './ai/tools'
+import { createMarkdownEditorAdapter } from './agent/markdown-editor-adapter'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
@@ -393,6 +395,77 @@ export default function App() {
       savingRef.current = false
     }
   }, [])
+
+  useEffect(() => {
+    const browserHost = window.nexusdeskMarkdownHost
+    if (!browserHost) return
+    return browserHost.bridge.attachEditor(
+      createMarkdownEditorAdapter({
+        document: () => {
+          const client = browserHost.bridge.client()
+          return {
+            documentId: browserHost.document.documentId as never,
+            clientId: (client.clientId ?? '') as never,
+            revision: browserHost.document.revision as never,
+            title: browserHost.document.title,
+            attached: client.attached && client.clientId !== undefined,
+          }
+        },
+        read: () => {
+          const current = editorRef.current
+          if (!current || statusRef.current !== 'ready') {
+            return {
+              ok: false,
+              summary: 'The Markdown editor is not ready.',
+              warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The Markdown editor is not ready.' }],
+            }
+          }
+          return {
+            ok: true,
+            summary: 'Read the current Markdown document.',
+            warnings: [],
+            data: { context: buildDocContext(current) },
+          }
+        },
+        async apply(operations) {
+          const current = editorRef.current
+          if (!current || statusRef.current !== 'ready') {
+            return {
+              ok: false,
+              summary: 'The Markdown editor is not ready.',
+              warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The Markdown editor is not ready.' }],
+            }
+          }
+          const outcome = await executeTool(current, {
+            id: `nexusdesk-${globalThis.crypto.randomUUID()}`,
+            name: 'apply_ops',
+            input: { ops: operations },
+          })
+          if (outcome.mutated) markDirty()
+          return {
+            ok: !outcome.isError && outcome.mutated === true,
+            summary: outcome.summary,
+            warnings: outcome.isError
+              ? [{ code: 'APPLY_FAILED', message: outcome.output }]
+              : [],
+            ...(outcome.mutated ? { changes: { targets: [], count: operations.length } } : {}),
+          }
+        },
+        async save() {
+          const ok = await doSave('save')
+          return ok
+            ? { ok: true, summary: 'Saved the current Markdown document.', warnings: [] }
+            : {
+                ok: false,
+                summary: 'Could not save the current Markdown document.',
+                warnings: [{ code: 'SAVE_FAILED', message: 'The Local Host rejected the save.' }],
+              }
+        },
+        consumeApproval: (approvalId, planHash) =>
+          browserHost.bridge.consumeApproval(approvalId, planHash),
+      }),
+    )
+  }, [doSave, markDirty])
 
   /** `outPath` (headless export only) skips the save dialog; resolves true when a file was written. */
   const runExport = useCallback(async (format: ExportFormat, outPath?: string) => {

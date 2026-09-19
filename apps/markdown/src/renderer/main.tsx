@@ -15,6 +15,7 @@ import '@genoffice/ui/image-viewer.css'
 import 'katex/dist/katex.min.css'
 import './styles.css'
 import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import { installMarkdownBrowserHostApiForDocument, selectMarkdownHost } from './browser-host-api'
 
 installScreenTips()
 
@@ -24,6 +25,17 @@ function applyTheme(theme: UiTheme): void {
 }
 
 void (async () => {
+  const selection = await selectMarkdownHost({
+    search: window.location.search,
+    electronApi: (window as Partial<Window>).markdownApi,
+    installBrowser: installMarkdownBrowserHostApiForDocument,
+  })
+  const root = document.getElementById('root')!
+  if (selection.kind === 'error') {
+    root.textContent = selection.message
+    root.setAttribute('role', 'alert')
+    return
+  }
   const [lang, theme] = await Promise.all([
     window.markdownApi.getLanguage().catch(() => 'zh' as const),
     window.markdownApi.getTheme().catch(() => 'system' as const),
@@ -36,7 +48,7 @@ void (async () => {
     .then(applyAiPanelPrefs)
     .catch(() => {})
   window.markdownApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
-  createRoot(document.getElementById('root')!).render(
+  createRoot(root).render(
     <LocaleProvider initial={lang}>
       <App />
     </LocaleProvider>,
