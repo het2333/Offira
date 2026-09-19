@@ -7,7 +7,7 @@ import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiPanelPrefs } from '@genoffice/ui'
 import type { HomeApi } from '../src/shared/home-api'
-import { SettingsModal } from '../src/renderer/src/SettingsModal'
+import { SettingsModal } from '@nexusdesk/shell-ui'
 import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & {

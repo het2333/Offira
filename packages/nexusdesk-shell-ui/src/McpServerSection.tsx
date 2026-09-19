@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { McpStatus } from '../../shared/home-api'
+import type { McpStatus } from './platform/home-api'
 import { useShellPlatform } from './office-host-context'
 import type { TFunc } from './locale'
 

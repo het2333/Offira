@@ -1,9 +1,9 @@
 import { createContext, useContext, type ReactNode } from 'react'
 
 import type { OfficeHost } from '@nexusdesk/office-host'
-import type { HomeApi } from '../../shared/home-api'
-import type { IntegrationsApi } from '../../shared/integrations-api'
-import type { TabsApi } from '../../shared/tabs-api'
+import type { HomeApi } from './platform/home-api'
+import type { IntegrationsApi } from './platform/integrations-api'
+import type { TabsApi } from './platform/tabs-api'
 
 export interface ShellPlatformServices {
   readonly home: HomeApi

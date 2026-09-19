@@ -1,4 +1,4 @@
-import type { RecentPage } from '../../shared/home-api'
+import type { RecentPage } from './platform/home-api'
 
 export type FileCountKey = 'fileCount' | 'fileCountOne'
 export type TimelineCountKey = 'timelineCount' | 'timelineCountOne'

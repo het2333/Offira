@@ -7,8 +7,8 @@ import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
 import type { IntegrationsApi, IntegrationsStatus } from '../src/shared/integrations-api'
-import { mcpClaudeCommand, mcpConfigJson, mcpLaunch } from '../src/renderer/src/IntegrationsPane'
-import { SettingsModal, type SettingsModalProps } from '../src/renderer/src/SettingsModal'
+import { mcpClaudeCommand, mcpConfigJson, mcpLaunch } from '@nexusdesk/shell-ui'
+import { SettingsModal, type SettingsModalProps } from '@nexusdesk/shell-ui'
 import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }

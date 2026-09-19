@@ -6,7 +6,7 @@ import type {
   AgentTarget,
   IntegrationsStatus,
   SkillInstallState,
-} from '../../shared/integrations-api'
+} from './platform/integrations-api'
 import { useShellPlatform } from './office-host-context'
 
 // ── Settings → Integrations ─────────────────────────────────

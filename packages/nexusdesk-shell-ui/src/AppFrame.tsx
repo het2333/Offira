@@ -7,10 +7,10 @@ import { useOfficeHost, useShellPlatform } from './office-host-context'
 
 interface AppFrameProps {
   /** resolved before first paint (main.tsx) so home never flashes under the overlay */
-  initialOnboardingSeen: boolean
+  initialOnboardingSeen?: boolean | undefined
 }
 
-export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
+export function AppFrame({ initialOnboardingSeen = true }: AppFrameProps) {
   const host = useOfficeHost()
   const { home: homeApi } = useShellPlatform()
   const [homeActive, setHomeActive] = useState(true)

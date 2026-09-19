@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createI18n } from '@genoffice/i18n'
 import { normalizeRecentQuery, pageRecentPaths } from '../src/main/recent-files'
-import { fileCountKey, timelineCountKey, visiblePageCount } from '../src/renderer/src/counts'
-import { strings } from '../src/renderer/src/strings'
+import { fileCountKey, timelineCountKey, visiblePageCount } from '@nexusdesk/shell-ui'
+import { strings } from '@nexusdesk/shell-ui'
 
 const tempDirs: string[] = []
 

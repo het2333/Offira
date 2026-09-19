@@ -5,7 +5,7 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Onboarding } from '../src/renderer/src/Onboarding'
+import { Onboarding } from '@nexusdesk/shell-ui'
 import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & {

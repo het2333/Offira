@@ -16,7 +16,7 @@ import type {
   FolderRoot,
   MoveConflictPolicy,
   RecentEntry,
-} from '../../shared/home-api'
+} from './platform/home-api'
 import { useDismissablePopover } from '@genoffice/ui'
 import { fileCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'

@@ -36,6 +36,7 @@
     "@genoffice/xlsx-gateway": "*",
     "@nexusdesk/office-host": "*",
     "@nexusdesk/protocol": "*",
+    "@nexusdesk/shell-ui": "*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

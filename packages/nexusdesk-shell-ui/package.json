@@ -1,0 +1,36 @@
+{
+  "name": "@nexusdesk/shell-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css",
+    "./platform/home-api": "./src/platform/home-api.ts",
+    "./platform/integrations-api": "./src/platform/integrations-api.ts",
+    "./platform/tabs-api": "./src/platform/tabs-api.ts",
+    "./platform/update-api": "./src/platform/update-api.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@genoffice/ai-provider": "*",
+    "@genoffice/cli": "*",
+    "@genoffice/i18n": "*",
+    "@genoffice/ui": "*",
+    "@nexusdesk/office-host": "*",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.13",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^29.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.11"
+  }
+}

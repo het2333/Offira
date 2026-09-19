@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import type { OfficeHost } from '@nexusdesk/office-host'
 import type { HomeApi } from '../src/shared/home-api'
 import type { TabsApi } from '../src/shared/tabs-api'
-import { OfficeHostProvider, useOfficeHost } from '../src/renderer/src/office-host-context'
+import { OfficeHostProvider, useOfficeHost } from '@nexusdesk/shell-ui'
 import { createTemporaryElectronOfficeHost } from '../src/renderer/src/temporary-electron-office-host'
 
 function Consumer({ expected }: { expected?: OfficeHost }) {
@@ -29,7 +29,7 @@ describe('OfficeHostProvider', () => {
   })
 
   it('keeps product components independent of Electron globals', async () => {
-    const root = resolve(import.meta.dirname, '../src/renderer/src')
+    const root = resolve(import.meta.dirname, '../../../packages/nexusdesk-shell-ui/src')
     const productSources = await Promise.all(
       [
         'AppFrame.tsx',

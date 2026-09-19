@@ -6,8 +6,8 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
-import { useI18n } from '../src/renderer/src/locale'
-import { McpServerSection } from '../src/renderer/src/McpServerSection'
+import { useI18n } from '@nexusdesk/shell-ui'
+import { McpServerSection } from '@nexusdesk/shell-ui'
 import { shellTestTree } from './test-shell-providers'
 
 /** the section as Settings → Integrations → MCP → B mounts it */

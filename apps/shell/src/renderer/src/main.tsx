@@ -1,18 +1,20 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { htmlLang } from '@genoffice/i18n'
-import { AppFrame } from './AppFrame'
-import { LocaleProvider } from './locale'
+import {
+  LocaleProvider,
+  OfficeHostProvider,
+  SharedShell,
+  type ShellPlatformServices,
+} from '@nexusdesk/shell-ui'
 import type { HomeApi } from '../../shared/home-api'
 import type { IntegrationsApi } from '../../shared/integrations-api'
 import type { TabsApi } from '../../shared/tabs-api'
-import { OfficeHostProvider, type ShellPlatformServices } from './office-host-context'
 import { createTemporaryElectronOfficeHost } from './temporary-electron-office-host'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/dropdown.css'
-import './home.css'
-import './tabbar.css'
+import '@nexusdesk/shell-ui/styles.css'
 import { installScreenTips } from '@genoffice/ui'
 
 installScreenTips()
@@ -57,7 +59,7 @@ void host.settings.get().then(({ language: lang, onboardingSeen, theme }) => {
     <React.StrictMode>
       <OfficeHostProvider host={host} platform={platform}>
         <LocaleProvider initial={lang}>
-          <AppFrame initialOnboardingSeen={onboardingSeen} />
+          <SharedShell initialOnboardingSeen={onboardingSeen} />
         </LocaleProvider>
       </OfficeHostProvider>
     </React.StrictMode>,

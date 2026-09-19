@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { strings } from '../src/renderer/src/strings'
+import { strings } from '@nexusdesk/shell-ui'
 
 /**
  * Home-screen locale tables (src/renderer/src/strings.ts): zh defines the key

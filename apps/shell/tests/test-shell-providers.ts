@@ -3,8 +3,8 @@ import { createElement, type ReactNode } from 'react'
 import type { HomeApi } from '../src/shared/home-api'
 import type { IntegrationsApi } from '../src/shared/integrations-api'
 import type { TabsApi } from '../src/shared/tabs-api'
-import { LocaleProvider } from '../src/renderer/src/locale'
-import { OfficeHostProvider } from '../src/renderer/src/office-host-context'
+import { LocaleProvider } from '@nexusdesk/shell-ui'
+import { OfficeHostProvider } from '@nexusdesk/shell-ui'
 import { createTemporaryElectronOfficeHost } from '../src/renderer/src/temporary-electron-office-host'
 
 const tabs: TabsApi = {
