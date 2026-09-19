@@ -2,16 +2,18 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Duplex } from 'node:stream'
 
-import { parseClientFrame, PROTOCOL_VERSION, type ClientFrame } from '@nexusdesk/protocol'
+import { parseClientFrame, PROTOCOL_VERSION, type ClientFrame, type ClientId } from '@nexusdesk/protocol'
 import { WebSocket, WebSocketServer } from 'ws'
 
 import { acceptWebSocketOrigin } from './origin-policy'
+import { DocumentRegistry } from './document-registry'
 
 const MAX_FRAME_BYTES = 1024 * 1024
 
 export interface WsSessionOptions {
   origin: () => string
   hasSession(sessionId: string): boolean
+  documents: DocumentRegistry
   onFrame?: (frame: ClientFrame, clientId: string) => void
 }
 
@@ -75,10 +77,32 @@ export function installWsSessionServer(
       }
       try {
         const frame = parseClientFrame(JSON.parse(data.toString()))
+        switch (frame.type) {
+          case 'editor:register':
+            if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            options.documents.register(frame)
+            break
+          case 'editor:revision':
+            if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            options.documents.commitRevision(frame)
+            break
+          case 'editor:detach':
+            if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            options.documents.detachClient(frame.clientId)
+            break
+          case 'editor:result':
+            if (frame.target.clientId !== clientId) throw new Error('client identity mismatch')
+            break
+          default:
+            break
+        }
         options.onFrame?.(frame, clientId)
       } catch {
         socket.close(1008, 'invalid client frame')
       }
+    })
+    socket.once('close', () => {
+      options.documents.detachClient(clientId as ClientId)
     })
   })
 

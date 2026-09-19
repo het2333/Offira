@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 
 import { createBootstrapAuth } from './bootstrap-auth'
+import { DocumentRegistry } from './document-registry'
 import { acceptHttpOrigin } from './origin-policy'
 import { installWsSessionServer } from './ws-session'
 
@@ -10,6 +11,10 @@ export interface RunningLocalHost {
   readonly origin: string
   readonly bootstrapUrl: string
   close(): Promise<void>
+}
+
+export interface StartLocalHostOptions {
+  documentRegistry?: DocumentRegistry
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -32,9 +37,10 @@ function cookieSession(cookie: string | undefined): string | undefined {
 }
 
 /** Start one authenticated, loopback-only NexusDesk host. */
-export async function startLocalHost(): Promise<RunningLocalHost> {
+export async function startLocalHost(options: StartLocalHostOptions = {}): Promise<RunningLocalHost> {
   const auth = createBootstrapAuth()
   const sessions = new Set<string>()
+  const documents = options.documentRegistry ?? new DocumentRegistry()
   let origin = ''
   let closing: Promise<void> | undefined
 
@@ -84,6 +90,7 @@ export async function startLocalHost(): Promise<RunningLocalHost> {
   const wsSessions = installWsSessionServer(server, {
     origin: () => origin,
     hasSession: (sessionId) => sessions.has(sessionId),
+    documents,
   })
 
   await new Promise<void>((resolve, reject) => {
