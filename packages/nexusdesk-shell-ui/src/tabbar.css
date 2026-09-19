@@ -321,7 +321,6 @@ body.overlay-title-bar .tab-bar-drag-spacer {
   display: grid;
   place-items: center;
 }
-
 /* ── Dark mode tab bar overrides ─────────────────────────── */
 
 [data-theme='dark'] .tab-bar {
