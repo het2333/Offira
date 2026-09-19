@@ -19,4 +19,5 @@ export default defineConfig({
   snapshotPathTemplate: '{testDir}/visual-baselines/{arg}{ext}',
   expect: { timeout: 15_000 },
   reporter: [['list'], ['html', { outputFolder: './playwright-report', open: 'never' }]],
+  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
 })

@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { WebSocket } from 'ws'
 
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 import { startLocalHost, type RunningLocalHost } from '../src/server'
@@ -12,7 +14,8 @@ let temporaryDirectory: string | undefined
 afterEach(async () => {
   await running?.close()
   running = undefined
-  if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true })
+  if (temporaryDirectory !== undefined)
+    await rm(temporaryDirectory, { recursive: true, force: true })
   temporaryDirectory = undefined
 })
 
@@ -36,6 +39,55 @@ describe('startLocalHost HTTP bootstrap', () => {
     expect(replay.status).toBe(401)
   })
 
+  it('wires an explicitly injected runtime through the authenticated browser session', async () => {
+    const runtimeEntry = fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url))
+    running = await startLocalHost({ runtimeCommand: { entry: runtimeEntry } })
+    const headers = await authenticatedHeaders()
+    const socket = new WebSocket(running.origin.replace(/^http/, 'ws') + '/ws', {
+      headers: { Cookie: headers.cookie, Origin: running.origin },
+    })
+    const frames: Array<Record<string, unknown>> = []
+    socket.on('message', (data) =>
+      frames.push(JSON.parse(data.toString()) as Record<string, unknown>),
+    )
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'server:ready')).toBe(true))
+    const clientId = frames.find((frame) => frame.type === 'server:ready')!.clientId as string
+    socket.send(
+      JSON.stringify({
+        type: 'editor:register',
+        protocolVersion: 1,
+        id: 'register-1',
+        clientId,
+        documentId: 'document-1',
+        editorType: 'sheets',
+        revision: 1,
+      }),
+    )
+    socket.send(
+      JSON.stringify({
+        type: 'agent:start',
+        protocolVersion: 1,
+        id: 'start-1',
+        sessionId: 'session-1',
+        documentId: 'document-1',
+        prompt: 'hello',
+      }),
+    )
+
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'agent:event')).toBe(true))
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: 'agent:event',
+        event: expect.objectContaining({ type: 'stream/chunk' }),
+      }),
+    )
+    socket.close()
+  })
+
   it('keeps the health response free of document and session data', async () => {
     running = await startLocalHost()
 
@@ -46,13 +98,15 @@ describe('startLocalHost HTTP bootstrap', () => {
 
   it('returns authenticated document summaries without filesystem paths', async () => {
     running = await startLocalHost({
-      documents: [{
-        documentId: 'document-1',
-        title: 'Forecast.xlsx',
-        editorType: 'sheets',
-        revision: 3,
-        path: '/Users/example/secret/Forecast.xlsx',
-      }],
+      documents: [
+        {
+          documentId: 'document-1',
+          title: 'Forecast.xlsx',
+          editorType: 'sheets',
+          revision: 3,
+          path: '/Users/example/secret/Forecast.xlsx',
+        },
+      ],
     })
     const headers = await authenticatedHeaders()
 
@@ -60,7 +114,9 @@ describe('startLocalHost HTTP bootstrap', () => {
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
-      documents: [{ documentId: 'document-1', title: 'Forecast.xlsx', editorType: 'sheets', revision: 3 }],
+      documents: [
+        { documentId: 'document-1', title: 'Forecast.xlsx', editorType: 'sheets', revision: 3 },
+      ],
     })
   })
 

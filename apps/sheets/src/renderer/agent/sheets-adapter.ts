@@ -4,6 +4,7 @@ import type {
   AgentExportResult,
   AgentReadResult,
   AgentSaveResult,
+  AgentToolResult,
   ApprovedEditPlan,
   ClientId,
   DocumentId,
@@ -52,11 +53,19 @@ function failure(code: string, message: string): AgentEditResult {
   return { ok: false, summary: message, warnings: [{ code, message }] }
 }
 
+function agentResult(result: AgentReadResult): AgentToolResult {
+  const { data: _transportDetail, ...projected } = result
+  return projected
+}
+
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   const record = value as Record<string, unknown>
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
+    .join(',')}}`
 }
 
 async function sha256(value: unknown): Promise<string> {
@@ -115,12 +124,18 @@ class SheetsAdapter implements EditorAdapter {
     }
   }
 
-  read(request: { documentId: DocumentId; command: string; arguments: JsonValue }): Promise<AgentReadResult> {
+  read(request: {
+    documentId: DocumentId
+    command: string
+    arguments: JsonValue
+  }): Promise<AgentReadResult> {
     if (request.documentId !== this.options.document().documentId) {
       return Promise.resolve({
         ok: false,
         summary: `document ${request.documentId} is not open`,
-        warnings: [{ code: 'DOCUMENT_NOT_FOUND', message: `document ${request.documentId} is not open` }],
+        warnings: [
+          { code: 'DOCUMENT_NOT_FOUND', message: `document ${request.documentId} is not open` },
+        ],
       })
     }
     return executeSheetsCommand(this.options.handlers, {
@@ -130,7 +145,8 @@ class SheetsAdapter implements EditorAdapter {
   }
 
   async propose(request: EditRequest): Promise<EditPlan> {
-    if (request.command !== 'apply_ops') throw new Error(`unsupported Sheets edit command: ${request.command}`)
+    if (request.command !== 'apply_ops')
+      throw new Error(`unsupported Sheets edit command: ${request.command}`)
     const args = request.arguments as Record<string, unknown>
     const operations = prepareSheetsOperations(this.options.handlers, args.ops)
     const target = {
@@ -187,23 +203,29 @@ class SheetsAdapter implements EditorAdapter {
     if (documentId !== this.options.document().documentId) {
       return failure('DOCUMENT_NOT_FOUND', `document ${documentId} is not open`)
     }
-    return executeSheetsCommand(this.options.handlers, {
-      command: 'save_sheet',
-      arguments: { inPlace: true },
-    })
+    return agentResult(
+      await executeSheetsCommand(this.options.handlers, {
+        command: 'save_sheet',
+        arguments: { inPlace: true },
+      }),
+    )
   }
 
   async export(request: ExportRequest): Promise<AgentExportResult> {
-    if (request.format !== 'xlsx') return failure('UNSUPPORTED_EXPORT', `unsupported export format: ${request.format}`)
-    return executeSheetsCommand(this.options.handlers, {
-      command: 'save_sheet',
-      arguments: { path: request.destination, overwrite: true },
-    })
+    if (request.format !== 'xlsx')
+      return failure('UNSUPPORTED_EXPORT', `unsupported export format: ${request.format}`)
+    return agentResult(
+      await executeSheetsCommand(this.options.handlers, {
+        command: 'save_sheet',
+        arguments: { path: request.destination, overwrite: true },
+      }),
+    )
   }
 
   private async applyOnce(plan: ApprovedEditPlan): Promise<AgentEditResult> {
     const document = this.options.document()
-    if (!document.attached) return failure('DOCUMENT_DETACHED', 'the spreadsheet browser is disconnected')
+    if (!document.attached)
+      return failure('DOCUMENT_DETACHED', 'the spreadsheet browser is disconnected')
     if (document.documentId !== plan.target.documentId) {
       return failure('DOCUMENT_NOT_FOUND', `document ${plan.target.documentId} is not open`)
     }
@@ -229,7 +251,12 @@ class SheetsAdapter implements EditorAdapter {
       return {
         ok: false,
         summary: 'Spreadsheet verification failed; the transaction was rolled back.',
-        warnings: [{ code: 'ROLLED_BACK', message: 'The spreadsheet batch was rolled back after verification failed.' }],
+        warnings: [
+          {
+            code: 'ROLLED_BACK',
+            message: 'The spreadsheet batch was rolled back after verification failed.',
+          },
+        ],
         verification,
         transactionId: id,
       }
@@ -239,7 +266,10 @@ class SheetsAdapter implements EditorAdapter {
     return {
       ok: true,
       summary: `Applied ${String(operations.length)} spreadsheet operation(s).`,
-      changes: { targets: operationTargets(this.options.handlers, operations), count: operations.length },
+      changes: {
+        targets: operationTargets(this.options.handlers, operations),
+        count: operations.length,
+      },
       warnings: [],
       verification,
       transactionId: id,

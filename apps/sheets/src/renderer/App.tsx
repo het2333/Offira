@@ -109,11 +109,7 @@ import '@univerjs/preset-sheets-table/lib/index.css'
 import { greenTheme } from '@univerjs/themes'
 import { createUniver } from './create-univer'
 
-import {
-  COMPLETED_VIA_TOOLS_TEXT,
-  composeSkills,
-  type AgentImage,
-} from '@genoffice/agent-core'
+import { COMPLETED_VIA_TOOLS_TEXT, composeSkills, type AgentImage } from '@genoffice/agent-core'
 import type { ClientId, Revision } from '@nexusdesk/protocol'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import { type WorkbookOperation } from '@genoffice/xlsx-gateway/domain/workbook-dsl'
@@ -143,10 +139,7 @@ import {
 } from './cross-highlight'
 import type { ApplyOutcome, ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
-import {
-  createAgentLoopRuntime,
-  type AgentLoopLike,
-} from './ai/loop-runtime'
+import { createAgentLoopRuntime, type AgentLoopLike } from './ai/loop-runtime'
 import {
   MAX_READ_RANGE_CELLS,
   type ActiveSheetInfo,
@@ -1315,6 +1308,10 @@ export function App(): React.JSX.Element {
   }
 
   function isAgentConfigured(): boolean {
+    // Local Web delegates provider selection and credentials to the Harness
+    // runtime. Requiring an Electron-side API key here would silently route a
+    // connected browser session into the offline regex planner instead.
+    if (window.agentApi !== undefined) return true
     const settings = aiSettingsRef.current
     if (!settings) return false
     const config = settings.providers[settings.provider]
@@ -4198,53 +4195,56 @@ export function App(): React.JSX.Element {
     const uninstallMcp = installSheetsMcpBridge(currentHandlers)
     const browserHost = window.nexusdeskBrowserHost
     if (browserHost !== undefined) {
-      browserHost.attachEditor(createSheetsAdapter({
-        handlers: currentHandlers,
-        document: () => {
-          const connection = browserHost.bridge.client()
-          return {
-            documentId: browserHost.document.documentId,
-            clientId: connection.clientId ?? 'disconnected-client' as ClientId,
-            revision: browserHost.document.revision,
-            title: browserHost.document.title,
-            attached: connection.attached,
-          }
-        },
-        consumeApproval: (approvalId, planHash) =>
-          browserHost.bridge.consumeApproval(approvalId, planHash),
-        verify: async (operations) => {
-          const targets = formulaTargetsFromOps(operations)
-          if (targets.length === 0) return { passed: true, issues: [] }
-          const values = await awaitFormulaValues(targets, (addresses, sheetId) =>
-            readCellsImpl(readContext(), [...addresses], sheetId),
-          )
-          const resolved = new Map(values.map((value) => [
-            `${value.sheetId}!${value.address}`,
-            value.value,
-          ]))
-          const issues = targets.flatMap((target) => {
-            const key = `${target.sheetId}!${target.address}`
-            if (!resolved.has(key)) {
-              return [{
-                code: 'FORMULA_NOT_RESOLVED',
-                message: `${key} did not produce a value before verification timed out.`,
-                target: key,
-              }]
+      browserHost.attachEditor(
+        createSheetsAdapter({
+          handlers: currentHandlers,
+          document: () => {
+            const connection = browserHost.bridge.client()
+            return {
+              documentId: browserHost.document.documentId,
+              clientId: connection.clientId ?? ('disconnected-client' as ClientId),
+              revision: browserHost.document.revision,
+              title: browserHost.document.title,
+              attached: connection.attached,
             }
-            const value = resolved.get(key)
-            return typeof value === 'string' && value.startsWith('#')
-              ? [{ code: 'FORMULA_ERROR', message: `${key} evaluates to ${value}.`, target: key }]
-              : []
-          })
-          return { passed: issues.length === 0, issues }
-        },
-        rollback: async () => {
-          await univerRef.current?.univerAPI.undo()
-        },
-        commitRevision: () => {
-          browserHost.updateRevision((Number(browserHost.document.revision) + 1) as Revision)
-        },
-      }))
+          },
+          consumeApproval: (approvalId, planHash) =>
+            browserHost.bridge.consumeApproval(approvalId, planHash),
+          verify: async (operations) => {
+            const targets = formulaTargetsFromOps(operations)
+            if (targets.length === 0) return { passed: true, issues: [] }
+            const values = await awaitFormulaValues(targets, (addresses, sheetId) =>
+              readCellsImpl(readContext(), [...addresses], sheetId),
+            )
+            const resolved = new Map(
+              values.map((value) => [`${value.sheetId}!${value.address}`, value.value]),
+            )
+            const issues = targets.flatMap((target) => {
+              const key = `${target.sheetId}!${target.address}`
+              if (!resolved.has(key)) {
+                return [
+                  {
+                    code: 'FORMULA_NOT_RESOLVED',
+                    message: `${key} did not produce a value before verification timed out.`,
+                    target: key,
+                  },
+                ]
+              }
+              const value = resolved.get(key)
+              return typeof value === 'string' && value.startsWith('#')
+                ? [{ code: 'FORMULA_ERROR', message: `${key} evaluates to ${value}.`, target: key }]
+                : []
+            })
+            return { passed: issues.length === 0, issues }
+          },
+          rollback: async () => {
+            await univerRef.current?.univerAPI.undo()
+          },
+          commitRevision: () => {
+            browserHost.updateRevision((Number(browserHost.document.revision) + 1) as Revision)
+          },
+        }),
+      )
     }
     return uninstallMcp
   }, [])

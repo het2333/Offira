@@ -48,14 +48,17 @@ describe('AgentRouter', () => {
     })
     await supervisor.ready()
 
-    router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: startRequestId,
-      sessionId,
-      documentId,
-      prompt: 'approval-crash',
-    }, clientId)
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'approval-crash',
+      },
+      clientId,
+    )
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('fatal frame timed out')), 3_000)
@@ -87,22 +90,30 @@ describe('AgentRouter', () => {
       approvalTimeoutMs: 10_000,
     })
     await supervisor.ready()
-    router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: startRequestId,
-      sessionId,
-      documentId,
-      prompt: 'approval-wait',
-    }, clientId)
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'approval-wait',
+      },
+      clientId,
+    )
     await until(() => router.hasApproval('approval-1'))
 
-    expect(() => router.handleClientFrame({
-      type: 'approval:response',
-      protocolVersion: PROTOCOL_VERSION,
-      id: approvalRequestId,
-      outcome: 'allowed-once',
-    }, 'other-client' as ClientId)).toThrow(/does not own approval/)
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'approval:response',
+          protocolVersion: PROTOCOL_VERSION,
+          id: approvalRequestId,
+          outcome: 'allowed-once',
+        },
+        'other-client' as ClientId,
+      ),
+    ).toThrow(/does not own approval/)
     router.dispose()
   })
 
@@ -111,7 +122,12 @@ describe('AgentRouter', () => {
     const otherDocumentId = 'document-2' as DocumentId
     const documents = new DocumentRegistry()
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
-    documents.register({ documentId: otherDocumentId, clientId: otherClientId, editorType: 'sheets', revision })
+    documents.register({
+      documentId: otherDocumentId,
+      clientId: otherClientId,
+      editorType: 'sheets',
+      revision,
+    })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const router = new AgentRouter({
       supervisor,
@@ -120,23 +136,31 @@ describe('AgentRouter', () => {
       sendToClient: () => undefined,
     })
     await supervisor.ready()
-    router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: startRequestId,
-      sessionId,
-      documentId,
-      prompt: 'approval-wait',
-    }, clientId)
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'approval-wait',
+      },
+      clientId,
+    )
 
-    expect(() => router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'start-2' as RequestId,
-      sessionId,
-      documentId: otherDocumentId,
-      prompt: 'hello',
-    }, otherClientId)).toThrow(/does not own session/)
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'agent:start',
+          protocolVersion: PROTOCOL_VERSION,
+          id: 'start-2' as RequestId,
+          sessionId,
+          documentId: otherDocumentId,
+          prompt: 'hello',
+        },
+        otherClientId,
+      ),
+    ).toThrow(/does not own session/)
     router.dispose()
   })
 
@@ -153,37 +177,48 @@ describe('AgentRouter', () => {
       approvalTimeoutMs: 10_000,
     })
     await supervisor.ready()
-    router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: startRequestId,
-      sessionId,
-      documentId,
-      prompt: 'approval-wait',
-    }, clientId)
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'approval-wait',
+      },
+      clientId,
+    )
     await until(() => router.hasApproval('approval-1'))
 
     const nextRevision = 2 as Revision
     documents.commitRevision({ documentId, clientId, revision: nextRevision })
-    router.handleClientFrame({
-      type: 'editor:revision',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'revision-1' as RequestId,
+    router.handleClientFrame(
+      {
+        type: 'editor:revision',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'revision-1' as RequestId,
+        clientId,
+        documentId,
+        revision: nextRevision,
+      },
       clientId,
-      documentId,
-      revision: nextRevision,
-    }, clientId)
+    )
 
-    await until(() => sent.some((frame) => frame.type === 'agent:event'
-      && frame.event.type === 'test/approval-response'))
+    await until(() =>
+      sent.some(
+        (frame) => frame.type === 'agent:event' && frame.event.type === 'test/approval-response',
+      ),
+    )
     expect(router.hasApproval('approval-1')).toBe(false)
-    expect(sent).toContainEqual(expect.objectContaining({
-      type: 'agent:event',
-      event: expect.objectContaining({
-        type: 'test/approval-response',
-        data: { id: 'approval-1', outcome: 'unavailable' },
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: 'agent:event',
+        event: expect.objectContaining({
+          type: 'test/approval-response',
+          data: { id: 'approval-1', outcome: 'unavailable' },
+        }),
       }),
-    }))
+    )
     router.dispose()
   })
 
@@ -200,16 +235,20 @@ describe('AgentRouter', () => {
       sendToClient: (targetClientId, frame) => sent.push({ clientId: targetClientId, frame }),
     })
     await supervisor.ready()
-    router.handleClientFrame({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: startRequestId,
-      sessionId,
-      documentId,
-      prompt: 'editor-wait',
-    }, clientId)
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'editor-wait',
+      },
+      clientId,
+    )
     await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
-    const request = sent.find(({ frame }) => frame.type === 'editor:request')!.frame as EditorRequestFrame
+    const request = sent.find(({ frame }) => frame.type === 'editor:request')!
+      .frame as EditorRequestFrame
     const result = {
       ok: true,
       summary: 'Updated Summary!B2.',
@@ -217,38 +256,78 @@ describe('AgentRouter', () => {
       warnings: [],
     }
 
-    expect(() => router.handleClientFrame({
-      type: 'editor:result',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'wrong-request' as RequestId,
-      target: request.target,
-      result,
-    }, clientId)).toThrow(/does not own operation/)
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'editor:result',
+          protocolVersion: PROTOCOL_VERSION,
+          id: 'wrong-request' as RequestId,
+          target: request.target,
+          result,
+        },
+        clientId,
+      ),
+    ).toThrow(/does not own operation/)
     expect(operations.lookup('operation-1' as OperationId)).toMatchObject({ state: 'reserved' })
 
-    router.handleClientFrame({
-      type: 'editor:result',
-      protocolVersion: PROTOCOL_VERSION,
-      id: request.id,
-      target: request.target,
-      result,
-    }, clientId)
+    // The browser commits its new revision before returning the result for
+    // the operation that was authorized against the previous revision.
+    documents.commitRevision({ documentId, clientId, revision: 2 as Revision })
+    router.handleClientFrame(
+      {
+        type: 'editor:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: request.id,
+        target: request.target,
+        result,
+      },
+      clientId,
+    )
     expect(operations.lookup('operation-1' as OperationId)).toMatchObject({
       state: 'committed',
       result,
     })
-    await until(() => sent.some(({ frame }) => frame.type === 'agent:event'
-      && frame.event.type === 'test/editor-result'))
+    await until(() =>
+      sent.some(
+        ({ frame }) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+      ),
+    )
 
     router.disconnectClient(clientId)
     const reconnectedClientId = 'client-reconnected' as ClientId
-    documents.register({ documentId, clientId: reconnectedClientId, editorType: 'sheets', revision })
-    router.handleClientFrame({
-      type: 'operation:lookup',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'lookup-1' as RequestId,
-      operationId: 'operation-1' as OperationId,
-    }, reconnectedClientId)
+    documents.register({
+      documentId,
+      clientId: reconnectedClientId,
+      editorType: 'sheets',
+      revision: 2 as Revision,
+    })
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'start-retry' as RequestId,
+        sessionId: 'session-retry' as SessionId,
+        documentId,
+        prompt: 'editor-wait',
+      },
+      reconnectedClientId,
+    )
+    await until(
+      () =>
+        sent.filter(
+          ({ frame }) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+        ).length === 2,
+    )
+
+    router.handleClientFrame(
+      {
+        type: 'operation:lookup',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'lookup-1' as RequestId,
+        operationId: 'operation-1' as OperationId,
+      },
+      reconnectedClientId,
+    )
 
     expect(sent.filter(({ frame }) => frame.type === 'editor:request')).toHaveLength(1)
     expect(sent.at(-1)).toEqual({

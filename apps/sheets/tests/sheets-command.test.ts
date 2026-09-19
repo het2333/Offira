@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import {
-  executeSheetsCommand,
-  type McpSheetHandlers,
-} from '../src/renderer/agent/sheets-command'
+import { executeSheetsCommand, type McpSheetHandlers } from '../src/renderer/agent/sheets-command'
 
 function handlersWith(overrides: Partial<McpSheetHandlers> = {}): McpSheetHandlers {
   return {
@@ -73,7 +70,11 @@ describe('executeSheetsCommand', () => {
       arguments: { inPlace: true, path: '/untrusted/other.xlsx' },
     })
 
-    expect(result).toMatchObject({ ok: true, summary: expect.stringContaining('/work/book.xlsx') })
+    expect(result).toMatchObject({
+      ok: true,
+      summary: expect.stringContaining('/work/book.xlsx'),
+      data: { ok: true, path: '/work/book.xlsx' },
+    })
     expect(saveInPlace).toHaveBeenCalledTimes(1)
     expect(saveTo).not.toHaveBeenCalled()
   })

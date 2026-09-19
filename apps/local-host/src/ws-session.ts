@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Duplex } from 'node:stream'
 
-import { parseClientFrame, PROTOCOL_VERSION, type ClientFrame, type ClientId } from '@nexusdesk/protocol'
+import {
+  parseClientFrame,
+  PROTOCOL_VERSION,
+  type AgentServerFrame,
+  type ClientFrame,
+  type ClientId,
+} from '@nexusdesk/protocol'
 import { WebSocket, WebSocketServer } from 'ws'
 
 import { acceptWebSocketOrigin } from './origin-policy'
@@ -19,6 +25,7 @@ export interface WsSessionOptions {
 }
 
 export interface WsSessionServer {
+  send(clientId: ClientId, frame: AgentServerFrame): void
   close(): Promise<void>
 }
 
@@ -43,6 +50,7 @@ export function installWsSessionServer(
   options: WsSessionOptions,
 ): WsSessionServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
+  const clients = new Map<ClientId, WebSocket>()
 
   server.on('upgrade', (request, socket, head) => {
     if (request.url !== '/ws') {
@@ -65,12 +73,15 @@ export function installWsSessionServer(
   })
 
   wss.on('connection', (socket) => {
-    const clientId = randomUUID()
-    socket.send(JSON.stringify({
-      type: 'server:ready',
-      protocolVersion: PROTOCOL_VERSION,
-      clientId,
-    }))
+    const clientId = randomUUID() as ClientId
+    clients.set(clientId, socket)
+    socket.send(
+      JSON.stringify({
+        type: 'server:ready',
+        protocolVersion: PROTOCOL_VERSION,
+        clientId,
+      }),
+    )
     socket.on('message', (data, isBinary) => {
       if (isBinary) {
         socket.close(1008, 'binary frames are not supported')
@@ -103,12 +114,19 @@ export function installWsSessionServer(
       }
     })
     socket.once('close', () => {
+      clients.delete(clientId)
       options.documents.detachClient(clientId as ClientId)
       options.onDisconnect?.(clientId as ClientId)
     })
   })
 
   return {
+    send(clientId, frame) {
+      const client = clients.get(clientId)
+      if (client?.readyState !== WebSocket.OPEN)
+        throw new Error(`client ${clientId} is disconnected`)
+      client.send(JSON.stringify(frame))
+    },
     async close() {
       for (const client of wss.clients) {
         if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {

@@ -9,7 +9,11 @@ import type {
   Revision,
   SessionId,
 } from '@nexusdesk/protocol'
-import { createSheetsAdapter, type SheetsAdapterOptions } from '../src/renderer/agent/sheets-adapter'
+import { parseAgentToolResult } from '@nexusdesk/protocol'
+import {
+  createSheetsAdapter,
+  type SheetsAdapterOptions,
+} from '../src/renderer/agent/sheets-adapter'
 import type { McpSheetHandlers } from '../src/renderer/agent/sheets-command'
 
 const documentId = 'document-1' as DocumentId
@@ -95,7 +99,10 @@ describe('Sheets editor adapter', () => {
 
     const result = await adapter.apply(tampered)
 
-    expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'PLAN_TAMPERED' })] })
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'PLAN_TAMPERED' })],
+    })
     expect(handlers.applyOps).not.toHaveBeenCalled()
   })
 
@@ -106,7 +113,14 @@ describe('Sheets editor adapter', () => {
     const applyOps = vi.fn()
     const { adapter } = setup({
       handlers: handlersWith({ applyOps }),
-      document: () => ({ documentId, clientId, revision, title: 'Forecast', attached: true, ...current }),
+      document: () => ({
+        documentId,
+        clientId,
+        revision,
+        title: 'Forecast',
+        attached: true,
+        ...current,
+      }),
     })
     const proposed = await adapter.propose(editRequest(request))
     const result = await adapter.apply({ ...proposed, approvalId: 'approval-1' })
@@ -133,6 +147,28 @@ describe('Sheets editor adapter', () => {
     })
     expect(JSON.stringify(first)).not.toContain('unsafe')
     expect(JSON.stringify(first)).not.toContain('engine')
+  })
+
+  it('projects save details into the strict Agent result envelope', async () => {
+    const { adapter } = setup()
+
+    const result = await adapter.save(documentId)
+
+    expect(result).not.toHaveProperty('data')
+    expect(() => parseAgentToolResult(result)).not.toThrow()
+  })
+
+  it('projects export details into the strict Agent result envelope', async () => {
+    const { adapter } = setup()
+
+    const result = await adapter.export({
+      documentId,
+      format: 'xlsx',
+      destination: '/work/export.xlsx',
+    })
+
+    expect(result).not.toHaveProperty('data')
+    expect(() => parseAgentToolResult(result)).not.toThrow()
   })
 
   it('rolls back the transaction when post-apply verification fails', async () => {

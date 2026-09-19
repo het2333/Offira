@@ -66,14 +66,17 @@ export class AgentRouter {
 
   handleClientFrame(frame: ClientFrame, clientId: ClientId): void {
     if (frame.type === 'editor:revision') {
-      this.expireApprovals((approval) => approval.clientId === clientId
-        && approval.documentId === frame.documentId)
+      this.expireApprovals(
+        (approval) => approval.clientId === clientId && approval.documentId === frame.documentId,
+      )
       return
     }
     if (frame.type === 'agent:start') {
       const existing = this.sessions.get(frame.sessionId)
-      if (existing !== undefined
-        && (existing.clientId !== clientId || existing.documentId !== frame.documentId)) {
+      if (
+        existing !== undefined &&
+        (existing.clientId !== clientId || existing.documentId !== frame.documentId)
+      ) {
         throw new Error(`client ${clientId} does not own session ${frame.sessionId}`)
       }
       const document = this.options.documents.assertClient(frame.documentId, clientId)
@@ -92,17 +95,20 @@ export class AgentRouter {
     }
     if (frame.type === 'editor:result') {
       const owner = this.editorOperations.get(frame.target.operationId)
-      if (owner === undefined
-        || owner.clientId !== clientId
-        || owner.requestId !== frame.id
-        || !sameTarget(owner.target, frame.target)) {
+      if (
+        owner === undefined ||
+        owner.clientId !== clientId ||
+        owner.requestId !== frame.id ||
+        !sameTarget(owner.target, frame.target)
+      ) {
         throw new Error(`client ${clientId} does not own operation ${frame.target.operationId}`)
       }
-      this.options.documents.assertOwner({
-        documentId: frame.target.documentId,
-        clientId,
-        revision: frame.target.revision,
-      })
+      // routeEditorRequest already authenticated the exact target revision
+      // before reserving the operation. A successful editor applies the
+      // mutation and advances its revision before it can send this result, so
+      // re-check ownership here without requiring the old revision to remain
+      // current.
+      this.options.documents.assertClient(frame.target.documentId, clientId)
       if (frame.result.ok) this.options.operations.commit(frame.target.operationId, frame.result)
       else this.options.operations.fail(frame.target.operationId, frame.result)
       this.options.supervisor.respondEditor(frame)
@@ -214,9 +220,11 @@ export class AgentRouter {
 
   private routeEditorRequest(frame: EditorRequestFrame): void {
     const owner = this.sessions.get(frame.target.sessionId)
-    if (owner === undefined
-      || owner.clientId !== frame.target.clientId
-      || owner.documentId !== frame.target.documentId) {
+    if (
+      owner === undefined ||
+      owner.clientId !== frame.target.clientId ||
+      owner.documentId !== frame.target.documentId
+    ) {
       throw new Error(`runtime request ${frame.id} does not match its agent session`)
     }
     this.options.documents.assertOwner({
@@ -225,7 +233,8 @@ export class AgentRouter {
       revision: frame.target.revision,
     })
     const record = this.options.operations.reserve(frame.target.operationId, {
-      target: frame.target,
+      documentId: frame.target.documentId,
+      editorType: frame.target.editorType,
       command: frame.command,
       arguments: frame.arguments,
     })
@@ -249,10 +258,12 @@ export class AgentRouter {
 }
 
 function sameTarget(left: MutationTarget, right: MutationTarget): boolean {
-  return left.sessionId === right.sessionId
-    && left.documentId === right.documentId
-    && left.editorType === right.editorType
-    && left.revision === right.revision
-    && left.operationId === right.operationId
-    && left.clientId === right.clientId
+  return (
+    left.sessionId === right.sessionId &&
+    left.documentId === right.documentId &&
+    left.editorType === right.editorType &&
+    left.revision === right.revision &&
+    left.operationId === right.operationId &&
+    left.clientId === right.clientId
+  )
 }
