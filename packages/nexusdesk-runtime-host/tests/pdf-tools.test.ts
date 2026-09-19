@@ -24,14 +24,26 @@ describe('official Harness PDF tools', () => {
 
     expect(tools.map((tool) => tool.name)).toEqual([
       'read_pdf',
-      'apply_pdf_operations',
+      'markup_pdf_text',
+      'read_pdf_annotations',
+      'edit_pdf_text',
+      'insert_pdf_text',
+      'add_pdf_note',
+      'list_pdf_page_images',
+      'insert_pdf_image',
+      'transform_pdf_image',
+      'fill_pdf_form',
+      'rotate_pdf_pages',
+      'delete_pdf_page',
+      'reorder_pdf_pages',
+      'set_pdf_metadata',
+      'redact_pdf',
       'save_pdf',
     ])
     expect(tools.some((tool) => /pdfium|electron|renderer|engine/i.test(tool.name))).toBe(false)
   })
 
-  it('binds one approved PDF DSL batch to its exact proposal', async () => {
-    const operations = [{ op: 'rotatePages', pages: [1], dir: 90 }]
+  it('binds one approved semantic PDF markup to its exact renderer proposal', async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce({
@@ -47,22 +59,62 @@ describe('official Harness PDF tools', () => {
       })
       .mockResolvedValueOnce(success)
     const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-1' })
-    const apply = createPdfTools({ request, approve })[1]!
+    const markup = createPdfTools({ request, approve })[1]!
 
-    await expect(apply.execute({ operations }, execution())).resolves.toEqual(success)
-    expect(request).toHaveBeenNthCalledWith(1, 'propose_ops', { ops: operations }, expect.anything())
-    expect(approve).toHaveBeenCalledWith(
-      'apply_pdf_operations',
-      { planHash: 'plan-hash-1', summary: 'Rotate page 1.', targets: ['page:1'], warnings: [] },
-      expect.anything(),
-    )
+    await expect(
+      markup.execute({ page: 1, text: 'NexusDesk', type: 'highlight' }, execution()),
+    ).resolves.toEqual(success)
     expect(request).toHaveBeenNthCalledWith(
-      2,
-      'apply_ops',
-      { ops: operations },
+      1,
+      'propose_ops',
+      {
+        ops: [{ op: 'markup_pdf_text', page: 1, text: 'NexusDesk', type: 'highlight' }],
+      },
       expect.anything(),
-      { approvalId: 'approval-1', planHash: 'plan-hash-1', operationId: 'operation-1' },
     )
+    expect(approve).toHaveBeenCalledWith(
+      'markup_pdf_text',
+      {
+        operationId: 'operation-1',
+        planHash: 'plan-hash-1',
+        summary: 'Rotate page 1.',
+        targets: ['page:1'],
+        warnings: [],
+      },
+      expect.anything(),
+    )
+    expect(request).toHaveBeenNthCalledWith(2, 'apply_ops', {}, expect.anything(), {
+      approvalId: 'approval-1',
+      planHash: 'plan-hash-1',
+      operationId: 'operation-1',
+    })
+  })
+
+  it('proposes the current renderer snapshot before asking approval to save', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        summary: 'Save the current PDF in place.',
+        warnings: [],
+        data: { operationId: 'save-operation', planHash: 'save-plan', targets: ['current PDF'] },
+      })
+      .mockResolvedValueOnce(success)
+    const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-save' })
+    const save = createPdfTools({ request, approve }).at(-1)!
+
+    await expect(save.execute({}, execution())).resolves.toEqual(success)
+    expect(request).toHaveBeenNthCalledWith(1, 'propose_save', {}, expect.anything())
+    expect(approve).toHaveBeenCalledWith(
+      'save_pdf',
+      expect.objectContaining({ planHash: 'save-plan', targets: ['current PDF'] }),
+      expect.anything(),
+    )
+    expect(request).toHaveBeenNthCalledWith(2, 'save_pdf', { inPlace: true }, expect.anything(), {
+      approvalId: 'approval-save',
+      planHash: 'save-plan',
+      operationId: 'save-operation',
+    })
   })
 
   it('projects reads to the AgentToolResult envelope only', async () => {

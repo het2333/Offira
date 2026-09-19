@@ -51,6 +51,8 @@ export interface Pdfium {
   _FPDFText_GetLooseCharBox(textPage: number, index: number, rect: number): number
   _FPDFText_GetCharOrigin(textPage: number, index: number, x: number, y: number): number
   _FPDFText_LoadFont(doc: number, data: number, size: number, fontType: number, cid: number): number
+  /** PDF's built-in Base 14 fonts; no OS font discovery or external asset is needed. */
+  _FPDFText_LoadStandardFont(doc: number, font: number): number
   _FPDFText_SetText(textObj: number, text: number): number
   _FPDFPage_CountObjects(page: number): number
   _FPDFPage_GetObject(page: number, index: number): number
@@ -341,6 +343,7 @@ export function listEditFonts(): string[] {
     resolution for an insert (the chosen edit font, else any fallback face), so the
     renderer can reject an undrawable insert at confirm time instead of at save. */
 export function canDrawText(text: string, font?: string, bold = false, italic = false): boolean {
+  if (base14FontFor(text, bold, italic) !== null) return true
   const drawn = text.replace(/\n/g, '')
   if (font) {
     const style: EditFontStyle =
@@ -351,6 +354,16 @@ export function canDrawText(text: string, font?: string, bold = false, italic = 
     }
   }
   return fallbackFontFor(drawn) !== null
+}
+
+/** PDF's standard Helvetica family is an official, universally available save path for
+    ordinary Latin inserts. Non-Latin text still uses the coverage-checked embed path. */
+function base14FontFor(text: string, bold = false, italic = false): string | null {
+  if (!/^[\x20-\x7e\r\n]*$/.test(text)) return null
+  if (bold && italic) return 'Helvetica-BoldOblique'
+  if (bold) return 'Helvetica-Bold'
+  if (italic) return 'Helvetica-Oblique'
+  return 'Helvetica'
 }
 
 /** Whitespace-insensitive, radical- and NFKC-folded comparison key. pdf.js and pdfium
@@ -665,6 +678,13 @@ const rectCoverage = (o: Rect, r: Rect) =>
 
 function utf16Ptr(m: Pdfium, str: string): number {
   const bytes = Buffer.from(`${str}\0`, 'utf16le')
+  const p = m._malloc(bytes.length)
+  m.HEAPU8.set(bytes, p)
+  return p
+}
+
+function asciiPtr(m: Pdfium, str: string): number {
+  const bytes = Buffer.from(`${str}\0`, 'ascii')
   const p = m._malloc(bytes.length)
   m.HEAPU8.set(bytes, p)
   return p
@@ -2098,23 +2118,29 @@ export function applyTextInserts(
             }
             const created: number[] = []
             let font = 0
+            let fontBytes: Buffer | null = null
             try {
-              const { bytes: fontBytes, syntheticBold } = await resolveRebuildFont(
-                m,
-                0,
-                pseudoEdit,
-                input.text,
-              )
-              const fontPtr = m._malloc(fontBytes.length)
-              m.HEAPU8.set(fontBytes, fontPtr)
-              font = m._FPDFText_LoadFont(
-                doc,
-                fontPtr,
-                fontBytes.length,
-                isTruetype(fontBytes) ? FPDF_FONT_TRUETYPE : FPDF_FONT_TYPE1,
-                1,
-              )
-              m._free(fontPtr)
+              const standardFont = base14FontFor(input.text, input.bold, input.italic)
+              let syntheticBold = false
+              if (standardFont !== null) {
+                const standardFontPtr = asciiPtr(m, standardFont)
+                font = m._FPDFText_LoadStandardFont(doc, standardFontPtr)
+                m._free(standardFontPtr)
+              } else {
+                const resolved = await resolveRebuildFont(m, 0, pseudoEdit, input.text)
+                fontBytes = resolved.bytes
+                syntheticBold = resolved.syntheticBold
+                const fontPtr = m._malloc(fontBytes.length)
+                m.HEAPU8.set(fontBytes, fontPtr)
+                font = m._FPDFText_LoadFont(
+                  doc,
+                  fontPtr,
+                  fontBytes.length,
+                  isTruetype(fontBytes) ? FPDF_FONT_TRUETYPE : FPDF_FONT_TYPE1,
+                  1,
+                )
+                m._free(fontPtr)
+              }
               if (!font) throw new Error('FPDFText_LoadFont failed')
               const matrixPtr = m._malloc(24)
               try {
@@ -2164,7 +2190,7 @@ export function applyTextInserts(
                 m._free(matrixPtr)
               }
               for (const obj of created) m._FPDFPage_InsertObject(page, obj)
-              embeddedCff = !isTruetype(fontBytes) || embeddedCff
+              if (fontBytes !== null) embeddedCff = !isTruetype(fontBytes) || embeddedCff
               applied++
             } catch (err) {
               for (const obj of created) m._FPDFPageObj_Destroy(obj)

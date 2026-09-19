@@ -16,6 +16,8 @@ import {
 
 export interface PdfEditPlan {
   planHash: string
+  /** Fingerprint of the renderer's pending work when the plan was generated. */
+  snapshotHash: string
   summary: string
   targets: string[]
   operations: JsonValue[]
@@ -23,9 +25,13 @@ export interface PdfEditPlan {
 
 export interface PdfEditorAdapter {
   read(arguments_: Record<string, JsonValue>): Promise<AgentToolResult>
-  propose(operations: JsonValue[]): Promise<Omit<PdfEditPlan, 'operations'>>
+  snapshot(): Promise<string>
+  propose(
+    operations: JsonValue[],
+  ): Promise<Omit<PdfEditPlan, 'operations' | 'snapshotHash'> & { operations?: JsonValue[] }>
+  proposeSave(): Promise<Omit<PdfEditPlan, 'operations'>>
   apply(plan: PdfEditPlan & { approvalId: string }): Promise<AgentToolResult>
-  save(approvalId: string): Promise<AgentToolResult>
+  save(plan: PdfEditPlan & { approvalId: string }): Promise<AgentToolResult>
 }
 
 export interface PdfBrowserAgentBridge {
@@ -57,7 +63,10 @@ function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   const record = value as Record<string, unknown>
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
+    .join(',')}}`
 }
 
 function requestFingerprint(frame: EditorRequestFrame): string {
@@ -88,6 +97,7 @@ export function createPdfBrowserAgentBridge(
   let adapter: PdfEditorAdapter | undefined
   const approvals = new Map<string, string>()
   const proposals = new Map<string, PdfEditPlan>()
+  const saveProposals = new Map<string, PdfEditPlan>()
   const storage = options.storage ?? defaultStorage()
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
@@ -119,10 +129,16 @@ export function createPdfBrowserAgentBridge(
     }
     if (frame.command === 'propose_ops') {
       const args = frame.arguments as { ops?: unknown }
-      if (!Array.isArray(args.ops)) return failure('INVALID_REQUEST', 'PDF operations must be an array')
+      if (!Array.isArray(args.ops))
+        return failure('INVALID_REQUEST', 'PDF operations must be an array')
       const operations = args.ops as JsonValue[]
+      const snapshotHash = await adapter.snapshot()
       const proposed = await adapter.propose(operations)
-      const plan: PdfEditPlan = { ...proposed, operations }
+      const plan: PdfEditPlan = {
+        ...proposed,
+        snapshotHash,
+        operations: proposed.operations ?? operations,
+      }
       proposals.set(frame.target.operationId, plan)
       return {
         ok: true,
@@ -131,6 +147,7 @@ export function createPdfBrowserAgentBridge(
         data: {
           operationId: frame.target.operationId,
           planHash: plan.planHash,
+          snapshotHash: plan.snapshotHash,
           summary: plan.summary,
           targets: plan.targets,
         },
@@ -138,8 +155,19 @@ export function createPdfBrowserAgentBridge(
     }
     if (frame.command === 'apply_ops') {
       const plan = proposals.get(frame.target.operationId)
-      if (plan === undefined || frame.approval === undefined || frame.approval.planHash !== plan.planHash) {
+      if (
+        plan === undefined ||
+        frame.approval === undefined ||
+        frame.approval.planHash !== plan.planHash
+      ) {
         return failure('APPROVAL_INVALID', 'apply request is not bound to a proposed PDF plan')
+      }
+      if ((await adapter.snapshot()) !== plan.snapshotHash) {
+        proposals.delete(frame.target.operationId)
+        return failure(
+          'STALE_PLAN',
+          'the PDF changed after this operation was proposed; propose it again',
+        )
       }
       approvals.set(frame.approval.id, plan.planHash)
       try {
@@ -149,15 +177,44 @@ export function createPdfBrowserAgentBridge(
         proposals.delete(frame.target.operationId)
       }
     }
-    if (frame.command === 'save_pdf') {
-      if (frame.approval === undefined || frame.approval.planHash !== 'save-current-pdf-in-place') {
-        return failure('APPROVAL_INVALID', 'save request is not bound to the current PDF')
+    if (frame.command === 'propose_save') {
+      const plan: PdfEditPlan = { ...(await adapter.proposeSave()), operations: [] }
+      saveProposals.set(frame.target.operationId, plan)
+      return {
+        ok: true,
+        summary: plan.summary,
+        warnings: [],
+        data: {
+          operationId: frame.target.operationId,
+          planHash: plan.planHash,
+          snapshotHash: plan.snapshotHash,
+          summary: plan.summary,
+          targets: plan.targets,
+        },
       }
-      approvals.set(frame.approval.id, frame.approval.planHash)
+    }
+    if (frame.command === 'save_pdf') {
+      const plan = saveProposals.get(frame.target.operationId)
+      if (
+        plan === undefined ||
+        frame.approval === undefined ||
+        frame.approval.planHash !== plan.planHash
+      ) {
+        return failure('APPROVAL_INVALID', 'save request is not bound to a proposed PDF save')
+      }
+      if ((await adapter.snapshot()) !== plan.snapshotHash) {
+        saveProposals.delete(frame.target.operationId)
+        return failure(
+          'STALE_PLAN',
+          'the PDF changed after this save was proposed; propose it again',
+        )
+      }
+      approvals.set(frame.approval.id, plan.planHash)
       try {
-        return await adapter.save(frame.approval.id)
+        return await adapter.save({ ...plan, approvalId: frame.approval.id })
       } finally {
         approvals.delete(frame.approval.id)
+        saveProposals.delete(frame.target.operationId)
       }
     }
     return failure('UNAVAILABLE_IN_WEB', `the command ${frame.command} is unavailable in Web PDF`)
@@ -166,7 +223,12 @@ export function createPdfBrowserAgentBridge(
   const journalKey = (operationId: string): string =>
     `nexusdesk:editor-result:${options.documentId}:${operationId}`
   const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (storage === undefined || frame.command === 'propose_ops') return undefined
+    if (
+      storage === undefined ||
+      frame.command === 'propose_ops' ||
+      frame.command === 'propose_save'
+    )
+      return undefined
     const raw = storage.getItem(journalKey(frame.target.operationId))
     if (raw === null) return undefined
     try {
@@ -181,10 +243,19 @@ export function createPdfBrowserAgentBridge(
     }
   }
   const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (storage === undefined || frame.command === 'propose_ops') return
-    storage.setItem(journalKey(frame.target.operationId), JSON.stringify({
-      fingerprint: requestFingerprint(frame), result,
-    } satisfies JournalRecord))
+    if (
+      storage === undefined ||
+      frame.command === 'propose_ops' ||
+      frame.command === 'propose_save'
+    )
+      return
+    storage.setItem(
+      journalKey(frame.target.operationId),
+      JSON.stringify({
+        fingerprint: requestFingerprint(frame),
+        result,
+      } satisfies JournalRecord),
+    )
   }
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
@@ -224,6 +295,7 @@ export function createPdfBrowserAgentBridge(
     dispose() {
       approvals.clear()
       proposals.clear()
+      saveProposals.clear()
       adapter = undefined
       unsubscribe()
       registration.dispose()

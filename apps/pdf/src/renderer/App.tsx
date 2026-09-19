@@ -193,7 +193,7 @@ import {
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
 import { planEditOps, reduceBucket } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
-import type { JsonValue } from '@nexusdesk/protocol'
+import type { AgentToolResult, JsonValue } from '@nexusdesk/protocol'
 import type { PdfEditPlan } from './agent/browser-agent-api'
 import { rectsNear } from './edit-state'
 import type {
@@ -5442,47 +5442,370 @@ export default function App() {
       summary: message,
       warnings: [{ code, message }],
     })
-    const planHash = async (operations: JsonValue[]): Promise<string> => {
-      const encoded = new TextEncoder().encode(JSON.stringify(operations))
+    const hash = async (value: unknown): Promise<string> => {
+      const encoded = new TextEncoder().encode(JSON.stringify(value))
       const digest = await globalThis.crypto.subtle.digest('SHA-256', encoded)
       return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
     }
+    const pendingSnapshot = () =>
+      hash({
+        hostRevision: browserHost.document.revision,
+        filePath,
+        edits: editsPayload(),
+        textDraft,
+        noteEditDraft,
+        pendingTextInsert,
+      })
     const targetsFor = (operations: Op[]): string[] => [
       ...new Set(
         operations.map((operation) => {
           const page = operation.pageIndex
           if (typeof page === 'number') return `page:${String(page + 1)}`
           const pages = operation.pages
-          if (Array.isArray(pages) && typeof pages[0] === 'number') return `page:${String(pages[0])}`
+          if (Array.isArray(pages) && typeof pages[0] === 'number')
+            return `page:${String(pages[0])}`
           return `operation:${operation.op}`
         }),
       ),
     ]
-    return browserHost.attachEditor({
-      async read(arguments_) {
-        const execution = await executePdfTool(
-          { ...aiApi, confirmFileOp: async () => false },
+    const resolveHarnessOperations = async (operations: JsonValue[]): Promise<Op[]> => {
+      const semantic = operations as unknown as Array<Record<string, unknown>>
+      if (semantic.length !== 1) return operations as Op[]
+      const input = semantic[0]
+      if (input?.op === 'insert_pdf_text') {
+        const page = Number(input.page)
+        const text = typeof input.text === 'string' ? input.text : ''
+        const x = Number(input.x)
+        const y = Number(input.y)
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the text insertion page is unavailable')
+        }
+        if (!text || !Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new Error(
+            'text insertion needs non-empty text and finite PDF-space x/y coordinates',
+          )
+        }
+        const fontSize = input.fontSize === undefined ? 14 : Number(input.fontSize)
+        if (!(fontSize > 0)) throw new Error('text insertion fontSize must be positive')
+        const color = /^#?([0-9a-f]{6})$/i.exec(String(input.color ?? '#000000'))
+        if (!color) throw new Error('text insertion color must be #RRGGBB')
+        const value = Number.parseInt(color[1]!, 16)
+        return [
           {
-            id: 'nexusdesk-read-pdf',
-            name: 'read_pages',
-            input: arguments_,
-          } as Parameters<typeof executePdfTool>[1],
+            op: 'addTextInsert',
+            input: {
+              pageIndex: page - 1,
+              origin: [x, y],
+              text,
+              fontSize,
+              color: [(value >> 16) & 255, (value >> 8) & 255, value & 255],
+            },
+          },
+        ]
+      }
+      if (input?.op === 'add_pdf_note') {
+        const page = Number(input.page)
+        const text = typeof input.text === 'string' ? input.text : ''
+        const x = Number(input.x)
+        const y = Number(input.y)
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the note page is unavailable')
+        }
+        if (!text || !Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new Error('a note needs non-empty text and finite PDF-space x/y coordinates')
+        }
+        const color = /^#?([0-9a-f]{6})$/i.exec(String(input.color ?? '#ffff00'))
+        if (!color) throw new Error('note color must be #RRGGBB')
+        const value = Number.parseInt(color[1]!, 16)
+        return [
+          {
+            op: 'addDrawing',
+            drawing: {
+              kind: 'note',
+              pageIndex: page - 1,
+              at: [x, y],
+              contents: text,
+              author: 'AI Assistant',
+              color: [(value >> 16) & 255, (value >> 8) & 255, value & 255],
+            },
+          },
+        ]
+      }
+      if (input?.op === 'insert_pdf_image') {
+        const page = Number(input.page)
+        const image = typeof input.image === 'string' ? input.image : ''
+        const rect = input.rect
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the image insertion page is unavailable')
+        }
+        if (
+          !image ||
+          !Array.isArray(rect) ||
+          rect.length !== 4 ||
+          rect.some((value) => typeof value !== 'number')
+        ) {
+          throw new Error('an image insertion needs PNG base64 and a four-number PDF-space rect')
+        }
+        const layer = input.layer === 'belowText' ? 'belowText' : 'aboveText'
+        return [
+          {
+            op: 'addImageEdit',
+            input: { kind: 'insertImage', pageIndex: page - 1, image, rect, layer },
+          },
+        ]
+      }
+      if (input?.op === 'transform_pdf_image') {
+        const page = Number(input.page)
+        const oldRect = input.oldRect
+        const rect = input.rect
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the image page is unavailable')
+        }
+        if (
+          ![oldRect, rect].every(
+            (value) =>
+              Array.isArray(value) &&
+              value.length === 4 &&
+              value.every((item) => typeof item === 'number'),
+          )
+        ) {
+          throw new Error(
+            'image transformation needs oldRect and rect as four-number PDF-space rectangles',
+          )
+        }
+        return [
+          {
+            op: 'addImageEdit',
+            input: {
+              kind: 'transformImage',
+              pageIndex: page - 1,
+              oldRect,
+              rect,
+              layer: input.layer === 'belowText' ? 'belowText' : 'aboveText',
+            },
+          },
+        ]
+      }
+      if (input?.op === 'fill_pdf_form') {
+        const name = typeof input.name === 'string' ? input.name : ''
+        const kind = input.kind
+        if (!name || !['text', 'checkbox', 'radio', 'choice'].includes(String(kind))) {
+          throw new Error('form edits need a field name and kind text, checkbox, radio, or choice')
+        }
+        return [{ op: 'setFormValue', value: { name, kind, value: input.value } }]
+      }
+      if (input?.op === 'rotate_pdf_pages') {
+        const pages = input.pages
+        const dir = Number(input.dir)
+        if (
+          !Array.isArray(pages) ||
+          !pages.every((page) => Number.isInteger(page) && page >= 1 && page <= sizes.length)
+        ) {
+          throw new Error('rotation needs one or more valid 1-based pages')
+        }
+        if (dir !== 90 && dir !== -90 && dir !== 180)
+          throw new Error('rotation dir must be 90, -90, or 180')
+        return [{ op: 'rotatePages', pages: pages.map((page) => Number(page) - 1), dir }]
+      }
+      if (input?.op === 'delete_pdf_page') {
+        const page = Number(input.page)
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the page to delete is unavailable')
+        }
+        return [{ op: 'deletePage', pageIndex: page - 1 }]
+      }
+      if (input?.op === 'reorder_pdf_pages') {
+        const pages = input.pages
+        if (
+          !Array.isArray(pages) ||
+          pages.length !== sizes.length ||
+          new Set(pages).size !== pages.length ||
+          !pages.every((page) => Number.isInteger(page) && page >= 1 && page <= sizes.length)
+        ) {
+          throw new Error('page order must be a 1-based permutation of every page')
+        }
+        return [{ op: 'setPageOrder', order: pages.map((page) => Number(page) - 1) }]
+      }
+      if (input?.op === 'set_pdf_metadata') {
+        const metadata = Object.fromEntries(
+          ['title', 'author', 'subject', 'keywords']
+            .filter((key) => typeof input[key] === 'string')
+            .map((key) => [key, input[key]]),
         )
+        if (Object.keys(metadata).length === 0)
+          throw new Error('provide at least one metadata field')
+        return [{ op: 'setMetadata', metadata }]
+      }
+      if (input?.op === 'edit_pdf_text') {
+        const page = Number(input.page)
+        const oldText = typeof input.oldText === 'string' ? input.oldText.trim() : ''
+        const newText = typeof input.newText === 'string' ? input.newText : ''
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > sizes.length ||
+          deletedRef.current.has(page - 1)
+        ) {
+          throw new Error('the text edit page is unavailable')
+        }
+        if (!oldText) throw new Error('text edits need non-empty oldText')
+        const index = await getSearchIndex()
+        const match =
+          index && searchInIndex(index, oldText).filter((item) => item.pageIndex === page - 1)[0]
+        if (!match || match.rects.length === 0)
+          throw new Error(`"${oldText}" was not found on page ${String(page)}`)
+        const rect = [
+          Math.min(...match.rects.map((item) => item[0])),
+          Math.min(...match.rects.map((item) => item[1])),
+          Math.max(...match.rects.map((item) => item[2])),
+          Math.max(...match.rects.map((item) => item[3])),
+        ] as [number, number, number, number]
+        return [
+          {
+            op: 'putTextEdit',
+            input: {
+              pageIndex: page - 1,
+              rect,
+              oldText,
+              newText,
+              fontSize: Math.max(1, ...match.rects.map((item) => item[3] - item[1])),
+            },
+          },
+        ]
+      }
+      if (input?.op !== 'markup_pdf_text') return operations as Op[]
+      const page = Number(input.page)
+      const text = typeof input.text === 'string' ? input.text.trim() : ''
+      const type = input.type
+      if (
+        !Number.isInteger(page) ||
+        page < 1 ||
+        page > sizes.length ||
+        deletedRef.current.has(page - 1)
+      ) {
+        throw new Error('the markup page is unavailable')
+      }
+      if (!text) throw new Error('markup text must not be empty')
+      if (type !== 'highlight' && type !== 'underline' && type !== 'strikeout') {
+        throw new Error('markup type must be highlight, underline, or strikeout')
+      }
+      let color: [number, number, number]
+      if (input.color === undefined)
+        color = type === 'highlight' ? highlightColor : MARKUP_COLORS[type]
+      else {
+        const match = /^#?([0-9a-f]{6})$/i.exec(String(input.color))
+        if (!match) throw new Error('markup color must be #RRGGBB')
+        const rgb = Number.parseInt(match[1]!, 16)
+        color = [((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255]
+      }
+      const index = await getSearchIndex()
+      if (!index) throw new Error('the PDF text index is not ready')
+      const matches = searchInIndex(index, text).filter((match) => match.pageIndex === page - 1)
+      const targets = input.all === true ? matches : matches.slice(0, 1)
+      if (targets.length === 0) throw new Error(`"${text}" was not found on page ${String(page)}`)
+      return targets.map((match) => ({
+        op: 'addMarkup',
+        markup: {
+          pageIndex: page - 1,
+          type,
+          color,
+          quads: match.rects.map((rect) => [
+            rect[0],
+            rect[3],
+            rect[2],
+            rect[3],
+            rect[0],
+            rect[1],
+            rect[2],
+            rect[1],
+          ]),
+        },
+      }))
+    }
+    return browserHost.attachEditor({
+      async read(arguments_): Promise<AgentToolResult> {
+        if (arguments_.include === 'annotations') {
+          const execution = await executePdfTool({ ...aiApi, confirmFileOp: async () => false }, {
+            id: 'nexusdesk-read-pdf-annotations',
+            name: 'read_annotations',
+            input: arguments_,
+          } as Parameters<typeof executePdfTool>[1])
+          return {
+            ok: execution.isError !== true,
+            summary: execution.summary,
+            warnings: execution.isError
+              ? [{ code: 'PDF_ANNOTATION_READ_FAILED', message: execution.output }]
+              : [],
+            data: { text: execution.output },
+          }
+        }
+        if (arguments_.include === 'images') {
+          const images = filePath ? await window.pdfApi.listPageImages(filePath) : []
+          return {
+            ok: true,
+            summary: `Read ${String(images.length)} PDF image${images.length === 1 ? '' : 's'}.`,
+            warnings: [],
+            data: { images: images as unknown as JsonValue },
+          }
+        }
+        const execution = await executePdfTool({ ...aiApi, confirmFileOp: async () => false }, {
+          id: 'nexusdesk-read-pdf',
+          name: 'read_pages',
+          input: arguments_,
+        } as Parameters<typeof executePdfTool>[1])
         return {
           ok: execution.isError !== true,
           summary: execution.summary,
-          warnings: execution.isError ? [{ code: 'PDF_READ_FAILED', message: execution.output }] : [],
+          warnings: execution.isError
+            ? [{ code: 'PDF_READ_FAILED', message: execution.output }]
+            : [],
           data: { text: execution.output },
         }
       },
+      snapshot: pendingSnapshot,
       async propose(operations) {
-        const parsed = operations as Op[]
+        const parsed = await resolveHarnessOperations(operations)
         const plan = planEditOps(parsed, editOpContext(), newId)
         if (plan.failures.length > 0) throw new Error(plan.failures[0]!.error)
         return {
-          planHash: await planHash(operations),
+          planHash: await hash({ command: 'apply_ops', operations: plan.ops }),
           summary: `Apply ${String(plan.ops.length)} PDF operation${plan.ops.length === 1 ? '' : 's'}.`,
           targets: targetsFor(plan.ops),
+          operations: plan.ops as JsonValue[],
+        }
+      },
+      async proposeSave() {
+        const snapshotHash = await pendingSnapshot()
+        return {
+          planHash: await hash({ command: 'save_pdf', snapshotHash }),
+          snapshotHash,
+          summary: 'Save the current PDF in place.',
+          targets: ['current PDF'],
         }
       },
       async apply(plan: PdfEditPlan & { approvalId: string }) {
@@ -5501,8 +5824,14 @@ export default function App() {
           verification: { passed: true, issues: [] },
         }
       },
-      async save(approvalId) {
-        if (!browserHost.bridge.consumeApproval(approvalId, 'save-current-pdf-in-place')) {
+      async save(plan: PdfEditPlan & { approvalId: string }) {
+        if ((await pendingSnapshot()) !== plan.snapshotHash) {
+          return failure(
+            'STALE_PLAN',
+            'The PDF changed after this save was proposed; propose it again.',
+          )
+        }
+        if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
           return failure('APPROVAL_INVALID', 'The PDF save is not bound to a live approval.')
         }
         const saved = await save()

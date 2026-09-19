@@ -6,13 +6,17 @@ import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import { PDFDocument } from 'pdf-lib'
 
 import { applySaveRequest } from '../../pdf/src/main/save-pdf'
-import type { SavePdfRequest } from '../../pdf/src/shared/ipc'
+import { listPageImages } from '../../pdf/src/main/image-edit'
+import type { PageImageRef, SavePdfRequest } from '../../pdf/src/shared/ipc'
 import type { LocalDocumentDriver } from './document-driver'
 
 const PDF_CONTENT_TYPE = 'application/pdf'
 const MAX_PDF_BYTES = 512 * 1024 * 1024
 
-export type PdfSaveApplicator = (bytes: Uint8Array, request: SavePdfRequest) => Promise<{
+export type PdfSaveApplicator = (
+  bytes: Uint8Array,
+  request: SavePdfRequest,
+) => Promise<{
   bytes: Uint8Array
   skippedTextEdits: unknown[]
   skippedTextInserts: unknown[]
@@ -89,6 +93,23 @@ function saveRequest(value: unknown): SavePdfRequest {
   return request as SavePdfRequest
 }
 
+function assertCompleteSave(result: Awaited<ReturnType<PdfSaveApplicator>>): void {
+  const skipped = [
+    ...result.skippedTextEdits,
+    ...result.skippedTextInserts,
+    ...result.skippedImageEdits,
+  ]
+  if (skipped.length === 0) return
+  const first = skipped[0] as { pageIndex?: unknown; reason?: unknown }
+  const page = typeof first.pageIndex === 'number' ? ` on page ${String(first.pageIndex + 1)}` : ''
+  const reason = typeof first.reason === 'string' ? `: ${first.reason}` : ''
+  throw new HostError(
+    'PDF_SAVE_INCOMPLETE',
+    `The PDF save skipped ${String(skipped.length)} requested edit${skipped.length === 1 ? '' : 's'}${page}${reason}`,
+    false,
+  )
+}
+
 /** Create one authorized, revisioned driver for a renderer-owned PDF working copy. */
 export async function createPdfDocumentDriver(
   path: string,
@@ -146,8 +167,15 @@ export async function createPdfDocumentDriver(
       }
     },
     async execute(action, payload) {
+      if (action === 'list-page-images') {
+        return { images: await listPageImages(new Uint8Array(await readFile(authorizedPath))) }
+      }
       if (action !== 'save') {
-        throw new HostError('UNSUPPORTED_CAPABILITY', `Unsupported PDF document action: ${action}`, false)
+        throw new HostError(
+          'UNSUPPORTED_CAPABILITY',
+          `Unsupported PDF document action: ${action}`,
+          false,
+        )
       }
       if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
         throw new HostError('INVALID_REQUEST', 'The PDF save request is invalid.', false)
@@ -162,6 +190,7 @@ export async function createPdfDocumentDriver(
           new Uint8Array(await readFile(authorizedPath)),
           request,
         )
+        assertCompleteSave(applied)
         await atomicReplace(authorizedPath, applied.bytes)
         return applied
       })
@@ -173,7 +202,10 @@ export async function createPdfDocumentDriver(
       }
     },
     async readContent() {
-      return { bytes: new Uint8Array(await readFile(authorizedPath)), contentType: PDF_CONTENT_TYPE }
+      return {
+        bytes: new Uint8Array(await readFile(authorizedPath)),
+        contentType: PDF_CONTENT_TYPE,
+      }
     },
     writeContent(bytes, expectedRevision) {
       return write(expectedRevision, async () => {

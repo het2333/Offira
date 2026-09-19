@@ -1,4 +1,5 @@
-import { nativeImage } from 'electron'
+import { PNG } from 'pngjs'
+import { decode as decodeJpeg } from 'jpeg-js'
 import { FPDF_PAGEOBJ_TEXT, chainPdfium, loadPdfium, saveDoc, withDocument } from './text-edit'
 import type { Pdfium } from './text-edit'
 import type {
@@ -67,23 +68,64 @@ function matchImage(objects: PageObj[], rect: Rect): PageObj | null {
 const firstTextIndex = (objects: PageObj[]): number | undefined =>
   objects.find((o) => o.type === FPDF_PAGEOBJ_TEXT)?.index
 
-/** Decode a PNG/JPEG into straight-alpha BGRA (pdfium splits alpha into an SMask itself) */
+/** Decode a browser-produced PNG into straight-alpha BGRA (pdfium splits alpha into an SMask itself).
+    This path runs in both Electron and the Node Local Host, so it must not import Electron. */
+function rgbaToBgra(rgba: Uint8Array): Buffer {
+  const bgra = Buffer.alloc(rgba.length)
+  // pngjs and jpeg-js yield straight-alpha RGBA; PDFium expects straight-alpha BGRA.
+  for (let i = 0; i < rgba.length; i += 4) {
+    bgra[i] = rgba[i + 2]!
+    bgra[i + 1] = rgba[i + 1]!
+    bgra[i + 2] = rgba[i]!
+    bgra[i + 3] = rgba[i + 3]!
+  }
+  return bgra
+}
+
 function decodeImage(b64: string): { width: number; height: number; bgra: Buffer } {
-  const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'))
-  if (img.isEmpty()) throw new Error('could not decode the image data')
-  const { width, height } = img.getSize()
-  // toBitmap() hands back premultiplied BGRA; un-premultiply so translucent pixels
-  // keep their color once pdfium separates them into image + SMask
-  const bgra = Buffer.from(img.toBitmap())
-  for (let i = 0; i < bgra.length; i += 4) {
-    const a = bgra[i + 3]!
-    if (a > 0 && a < 255) {
-      bgra[i] = Math.min(255, Math.round((bgra[i]! * 255) / a))
-      bgra[i + 1] = Math.min(255, Math.round((bgra[i + 1]! * 255) / a))
-      bgra[i + 2] = Math.min(255, Math.round((bgra[i + 2]! * 255) / a))
+  const source = Buffer.from(b64, 'base64')
+  if (source.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    try {
+      const png = PNG.sync.read(source)
+      if (png.width < 1 || png.height < 1) throw new Error('could not decode the image data')
+      return { width: png.width, height: png.height, bgra: rgbaToBgra(png.data) }
+    } catch (error) {
+      throw new Error(
+        error instanceof Error ? error.message : 'could not decode the PNG image data',
+      )
     }
   }
-  return { width, height, bgra }
+  if (source[0] === 0xff && source[1] === 0xd8) {
+    try {
+      const jpeg = decodeJpeg(source, {
+        formatAsRGBA: true,
+        maxResolutionInMP: 64,
+        maxMemoryUsageInMB: 256,
+      })
+      if (jpeg.width < 1 || jpeg.height < 1) throw new Error('could not decode the image data')
+      return { width: jpeg.width, height: jpeg.height, bgra: rgbaToBgra(jpeg.data) }
+    } catch (error) {
+      throw new Error(
+        error instanceof Error ? error.message : 'could not decode the JPEG image data',
+      )
+    }
+  }
+  throw new Error('only PNG and JPEG image data can be saved')
+}
+
+/** PDFium bitmaps are BGRA; pngjs serializes RGBA. Keep this conversion local so the
+    shared Node/Electron save and preview paths never need Electron's nativeImage. */
+function encodePngFromBgra(bgra: Uint8Array, width: number, height: number): Buffer {
+  const rgba = Buffer.alloc(width * height * 4)
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = bgra[i + 2]!
+    rgba[i + 1] = bgra[i + 1]!
+    rgba[i + 2] = bgra[i]!
+    rgba[i + 3] = bgra[i + 3]!
+  }
+  const png = new PNG({ width, height })
+  png.data = rgba
+  return PNG.sync.write(png)
 }
 
 /** Content matrix for a footprint rect, counter-rotated against the page's display
@@ -370,7 +412,7 @@ export function renderImagePng(
               row * w * 4,
             )
           }
-          const png = nativeImage.createFromBitmap(tight, { width: w, height: h }).toPNG()
+          const png = encodePngFromBgra(tight, w, h)
           return png.toString('base64')
         } finally {
           m._FPDFBitmap_Destroy(bmp)
@@ -442,7 +484,7 @@ export function renderPagePreviewPng(
             flags,
           )
           const tight = Buffer.from(m.HEAPU8.subarray(bufPtr, bufPtr + w * h * 4))
-          const png = nativeImage.createFromBitmap(tight, { width: w, height: h }).toPNG()
+          const png = encodePngFromBgra(tight, w, h)
           return png.toString('base64')
         } finally {
           m._FPDFBitmap_Destroy(bmp)

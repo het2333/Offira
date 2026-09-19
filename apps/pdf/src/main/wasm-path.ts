@@ -7,9 +7,20 @@ import { dirname, join } from 'node:path'
  * ships no node_modules (everything is bundled) — electron-builder copies them
  * into Resources/wasm instead (see apps/shell/electron-builder.cjs extraResources).
  */
-const packagedPath = (fileName: string) => join(process.resourcesPath, 'wasm', fileName)
+const packagedPath = (fileName: string) => {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+  if (resourcesPath === undefined) {
+    throw new Error(
+      `PDF wasm asset ${fileName} was not found in node_modules or an Electron bundle`,
+    )
+  }
+  return join(resourcesPath, 'wasm', fileName)
+}
 
-const req = () => createRequire(import.meta.url)
+// Do not use import.meta.url here: the Local Host source is also loaded by the
+// Chromium E2E runner's CommonJS transform. A package.json anchor resolves the
+// workspace dependencies identically in Node and Electron.
+const req = () => createRequire(join(process.cwd(), 'package.json'))
 
 export function pdfiumWasmPath(): string {
   try {

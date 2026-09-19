@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { PDFDocument } from 'pdf-lib'
+import { encode as encodeJpeg } from 'jpeg-js'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createPdfDocumentDriver } from '../src/pdf-document-driver'
+import { listPageImages, renderImagePng } from '../../pdf/src/main/image-edit'
 
 const temporaryPaths: string[] = []
 
@@ -23,7 +25,13 @@ async function temporaryPdf(label: string): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryPaths.splice(0).map((path) => import('node:fs/promises').then(({ unlink }) => unlink(path).catch(() => undefined))))
+  await Promise.all(
+    temporaryPaths
+      .splice(0)
+      .map((path) =>
+        import('node:fs/promises').then(({ unlink }) => unlink(path).catch(() => undefined)),
+      ),
+  )
 })
 
 describe('PDF Local Document Driver', () => {
@@ -58,7 +66,9 @@ describe('PDF Local Document Driver', () => {
     const original = await readFile(path)
     const driver = await createPdfDocumentDriver(path)
 
-    await expect(driver.writeContent?.(new TextEncoder().encode('not a PDF'), 1)).rejects.toMatchObject({
+    await expect(
+      driver.writeContent?.(new TextEncoder().encode('not a PDF'), 1),
+    ).rejects.toMatchObject({
       code: 'INVALID_DOCUMENT_CONTENT',
     })
     expect(await readFile(path)).toEqual(original)
@@ -84,5 +94,130 @@ describe('PDF Local Document Driver', () => {
     ).resolves.toMatchObject({ document: { revision: 2, editorType: 'pdf' } })
     const saved = await PDFDocument.load(await readFile(path))
     expect(saved.getTitle()).toBe('Saved by Local Host')
+  })
+
+  it('persists a real PNG image insert without Electron and never reports skipped edits as saved', async () => {
+    const path = await temporaryPdf('image insert')
+    const driver = await createPdfDocumentDriver(path)
+
+    const result = await driver.execute('save', {
+      expectedRevision: 1,
+      request: {
+        path: 'nexusdesk://pdf',
+        markups: [],
+        drawings: [],
+        formValues: [],
+        stamps: [],
+        imageEdits: [
+          {
+            kind: 'insertImage',
+            pageIndex: 0,
+            image:
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg==',
+            rect: [24, 24, 72, 72],
+            layer: 'aboveText',
+          },
+        ],
+      },
+    })
+
+    expect(result).toMatchObject({
+      document: { revision: 2, editorType: 'pdf' },
+      skippedImageEdits: [],
+    })
+    const savedBytes = new Uint8Array(await readFile(path))
+    const images = await listPageImages(savedBytes)
+    expect(images).toEqual(expect.arrayContaining([expect.objectContaining({ pageIndex: 0 })]))
+    await expect(renderImagePng(savedBytes, 0, images[0]!.rect)).resolves.toMatch(/^iVBORw0KGgo/)
+  })
+
+  it('persists a real JPEG image insert without Electron', async () => {
+    const path = await temporaryPdf('jpeg image insert')
+    const driver = await createPdfDocumentDriver(path)
+    const jpeg = encodeJpeg(
+      {
+        data: Buffer.from([255, 0, 0, 255]),
+        width: 1,
+        height: 1,
+      },
+      80,
+    ).data.toString('base64')
+
+    await expect(
+      driver.execute('save', {
+        expectedRevision: 1,
+        request: {
+          path: 'nexusdesk://pdf',
+          markups: [],
+          drawings: [],
+          formValues: [],
+          stamps: [],
+          imageEdits: [
+            {
+              kind: 'insertImage',
+              pageIndex: 0,
+              image: jpeg,
+              rect: [24, 24, 72, 72],
+              layer: 'aboveText',
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({ document: { revision: 2 }, skippedImageEdits: [] })
+    expect(await listPageImages(new Uint8Array(await readFile(path)))).toEqual(
+      expect.arrayContaining([expect.objectContaining({ pageIndex: 0 })]),
+    )
+  })
+
+  it('persists an ASCII text insert through PDF standard Helvetica without a machine font', async () => {
+    const path = await temporaryPdf('standard text insert')
+    const driver = await createPdfDocumentDriver(path)
+
+    await expect(
+      driver.execute('save', {
+        expectedRevision: 1,
+        request: {
+          path: 'nexusdesk://pdf',
+          markups: [],
+          drawings: [],
+          formValues: [],
+          stamps: [],
+          textInserts: [
+            { pageIndex: 0, origin: [36, 36], text: 'NexusDesk', fontSize: 12, color: [0, 0, 0] },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({ document: { revision: 2 }, skippedTextInserts: [] })
+    expect(await readFile(path, 'utf8')).toContain('/Helvetica')
+  })
+
+  it('rejects every partially skipped save without replacing the authorized file', async () => {
+    const path = await temporaryPdf('partial save')
+    const original = await readFile(path)
+    const driver = await createPdfDocumentDriver(path)
+
+    await expect(
+      driver.execute('save', {
+        expectedRevision: 1,
+        request: {
+          path: 'nexusdesk://pdf',
+          markups: [],
+          drawings: [],
+          formValues: [],
+          stamps: [],
+          textInserts: [
+            {
+              pageIndex: 99,
+              origin: [24, 24],
+              text: 'must not be silently skipped',
+              fontSize: 12,
+              color: [0, 0, 0],
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'PDF_SAVE_INCOMPLETE' })
+    expect(await readFile(path)).toEqual(original)
+    expect(driver.document.revision).toBe(1)
   })
 })

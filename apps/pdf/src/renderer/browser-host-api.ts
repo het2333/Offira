@@ -5,6 +5,7 @@ import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/w
 
 import type {
   ImageEditFailure,
+  PageImageRef,
   PdfApi,
   SavePdfRequest,
   TextEditFailure,
@@ -45,6 +46,7 @@ export interface PdfBrowserWriteResult {
 
 export interface PdfBrowserTransport {
   readContent(): Promise<Uint8Array>
+  listPageImages(): Promise<PageImageRef[]>
   save(request: SavePdfRequest, expectedRevision: number): Promise<PdfBrowserWriteResult>
 }
 
@@ -98,13 +100,14 @@ export async function loadPdfBrowserBootstrap(
     `/api/documents/${encodeURIComponent(documentId)}/bootstrap`,
     { credentials: 'same-origin' },
   )
-  if (!response.ok) throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
+  if (!response.ok)
+    throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
   const value = (await response.json()) as Partial<PdfBrowserBootstrap>
   if (
     typeof value.documentId !== 'string' ||
     typeof value.title !== 'string' ||
     !Number.isSafeInteger(value.revision) ||
-    (typeof value.websocketUrl !== 'string') ||
+    typeof value.websocketUrl !== 'string' ||
     typeof value.language !== 'string' ||
     (value.theme !== 'light' && value.theme !== 'dark' && value.theme !== 'system') ||
     typeof value.contentUrl !== 'string' ||
@@ -126,13 +129,27 @@ export function createHttpPdfBrowserTransport(
       if (!response.ok) throw await hostError(response)
       return new Uint8Array(await response.arrayBuffer())
     },
+    async listPageImages() {
+      const response = await fetchImpl(
+        `/api/documents/${encodeURIComponent(bootstrap.documentId)}/list-page-images`,
+        { method: 'POST', credentials: 'same-origin' },
+      )
+      if (!response.ok) throw await hostError(response)
+      const value = (await response.json()) as { images?: unknown }
+      if (!Array.isArray(value.images))
+        throw new Error('Local Host returned invalid PDF image data')
+      return value.images as PageImageRef[]
+    },
     async save(request, expectedRevision) {
-      const response = await fetchImpl(`/api/documents/${encodeURIComponent(bootstrap.documentId)}/save`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevision, request }),
-      })
+      const response = await fetchImpl(
+        `/api/documents/${encodeURIComponent(bootstrap.documentId)}/save`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedRevision, request }),
+        },
+      )
       if (!response.ok) throw await hostError(response)
       const value = (await response.json()) as Partial<PdfBrowserWriteResult>
       const document = value.document
@@ -151,7 +168,10 @@ export function createHttpPdfBrowserTransport(
 }
 
 /** Build the preload-shaped API required by the existing GenOffice PDF renderer. */
-export function createPdfBrowserApi(state: PdfBrowserHostState, transport: PdfBrowserTransport): PdfApi {
+export function createPdfBrowserApi(
+  state: PdfBrowserHostState,
+  transport: PdfBrowserTransport,
+): PdfApi {
   let pending = true
   let aiPanelPrefs: AiPanelPrefs = DEFAULT_AI_PANEL_PREFS
   const prefsListeners = new Set<(prefs: AiPanelPrefs) => void>()
@@ -163,7 +183,8 @@ export function createPdfBrowserApi(state: PdfBrowserHostState, transport: PdfBr
       return path
     },
     async readFile(candidate) {
-      if (candidate !== path) throw new PdfWebUnavailableError('reading an arbitrary filesystem path')
+      if (candidate !== path)
+        throw new PdfWebUnavailableError('reading an arbitrary filesystem path')
       return toArrayBuffer(await transport.readContent())
     },
     async save(request) {
@@ -176,7 +197,9 @@ export function createPdfBrowserApi(state: PdfBrowserHostState, transport: PdfBr
         state.updateRevision(result.document.revision)
         return {
           ok: true,
-          ...(result.skippedTextEdits === undefined ? {} : { skippedTextEdits: result.skippedTextEdits }),
+          ...(result.skippedTextEdits === undefined
+            ? {}
+            : { skippedTextEdits: result.skippedTextEdits }),
           ...(result.skippedTextInserts === undefined
             ? {}
             : { skippedTextInserts: result.skippedTextInserts }),
@@ -185,14 +208,20 @@ export function createPdfBrowserApi(state: PdfBrowserHostState, transport: PdfBr
             : { skippedImageEdits: result.skippedImageEdits }),
         }
       } catch (error: unknown) {
-        return { ok: false, error: error instanceof Error ? error.message : 'Local Host rejected the PDF save.' }
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : 'Local Host rejected the PDF save.',
+        }
       }
     },
     autoRename: async () => ({ renamed: false }),
     isUntitled: async () => false,
     listEditFonts: async () => [],
-    canDrawText: async () => false,
-    listPageImages: async () => [],
+    // Mirrors text-edit.ts' Base 14 Helvetica path. This is a PDF-standard font,
+    // so Local Web can truthfully enable ordinary Latin insertion without probing
+    // machine fonts that the browser cannot inspect.
+    canDrawText: async (text) => text.length > 0 && /^[\x20-\x7e\r\n]*$/.test(text),
+    listPageImages: () => transport.listPageImages(),
     listStaticFormFills: async () => [],
     ocrPage: async () => null,
     pageImagePng: async () => null,
@@ -319,7 +348,10 @@ export async function selectPdfHost(options: {
   if (parameters.get('host') === 'local-web') {
     const documentId = parameters.get('documentId')
     if (!documentId) {
-      return { kind: 'error', message: 'NexusDesk PDF could not start: local Web mode requires a document id.' }
+      return {
+        kind: 'error',
+        message: 'NexusDesk PDF could not start: local Web mode requires a document id.',
+      }
     }
     return { kind: 'local-web', handle: await options.installBrowser(documentId) }
   }
@@ -327,6 +359,8 @@ export async function selectPdfHost(options: {
   return { kind: 'error', message: 'NexusDesk PDF requires the Local Host or Electron.' }
 }
 
-export async function installPdfBrowserHostApiForDocument(documentId: string): Promise<PdfBrowserHostHandle> {
+export async function installPdfBrowserHostApiForDocument(
+  documentId: string,
+): Promise<PdfBrowserHostHandle> {
   return installPdfBrowserHostApi(await loadPdfBrowserBootstrap(documentId))
 }

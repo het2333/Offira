@@ -22,6 +22,9 @@ import {
 } from '../../apps/sheets/src/shared/desktop-api'
 import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import { PDFDocument, PDFName, PDFArray } from 'pdf-lib'
+import { createPdfDocumentDriver } from '../../apps/local-host/src/pdf-document-driver'
+import { DocumentDriverRegistry } from '../../apps/local-host/src/document-driver'
 
 interface OpenWorkbook {
   file: WorkbookFile
@@ -266,6 +269,60 @@ export async function launchLocalWebHost() {
       await running.close()
       if (opened !== undefined) await client.close(opened.file.sessionId).catch(() => undefined)
       client.stop()
+      await rm(directory, { recursive: true, force: true })
+    },
+  }
+}
+
+/** Real PDF Local Web fixture: the disk file is owned only by the Local Host driver. */
+export async function launchPdfLocalWebHost() {
+  const repositoryRoot = process.cwd()
+  if (!existsSync(resolve(repositoryRoot, 'apps/web/dist/index.html'))) {
+    execFileSync('npm', ['run', 'build:web'], { cwd: repositoryRoot, stdio: 'inherit' })
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'nexusdesk-local-web-pdf-e2e-'))
+  const path = join(directory, 'Review.pdf')
+  const applyCountPath = join(directory, 'apply-count.json')
+  const pdf = await PDFDocument.create()
+  pdf.addPage([612, 792]).drawText('NexusDesk approval target', { x: 72, y: 700, size: 18 })
+  await writeFile(path, await pdf.save())
+  const driver = await createPdfDocumentDriver(path)
+  const original = await readFile(path)
+  const running = await startLocalHost({
+    staticAssets: {
+      webRoot: resolve(repositoryRoot, 'apps/web/dist'),
+      editorRoots: { pdf: resolve(repositoryRoot, 'apps/pdf/out/web') },
+    },
+    runtimeCommand: {
+      entry: resolve(repositoryRoot, 'e2e/fixtures/fake-pdf-harness-runtime.mjs'),
+      args: [applyCountPath],
+    },
+    documentDrivers: new DocumentDriverRegistry([driver]),
+  })
+
+  return {
+    ...running,
+    async readApplyCount() {
+      const state = JSON.parse(await readFile(applyCountPath, 'utf8')) as { applyCount: number }
+      return state.applyCount
+    },
+    async inspectDiskPdf() {
+      const bytes = await readFile(path)
+      const saved = await PDFDocument.load(bytes)
+      const annots = saved.getPage(0).node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+      const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
+      const rendered = await getDocument({ data: new Uint8Array(bytes), disableWorker: true })
+        .promise
+      const text = await (
+        await rendered.getPage(1)
+      )
+        .getTextContent()
+        .then((content) => content.items.map((item) => ('str' in item ? item.str : '')).join(''))
+      await rendered.destroy()
+      return { changed: !bytes.equals(original), annotationCount: annots?.size() ?? 0, text }
+    },
+    async close() {
+      await running.close()
       await rm(directory, { recursive: true, force: true })
     },
   }
