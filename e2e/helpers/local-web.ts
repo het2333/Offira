@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { DocumentDriverRegistry } from '../../apps/local-host/src/document-driver'
 import { startLocalHost } from '../../apps/local-host/src/server'
 import { XlsxSidecarClient } from '../../apps/sheets/src/main/xlsx-sidecar-client'
 import {
@@ -95,132 +96,135 @@ export async function launchLocalWebHost() {
   const running = await startLocalHost({
     staticAssets: {
       webRoot: resolve(repositoryRoot, 'apps/web/dist'),
-      sheetsRoot: resolve(repositoryRoot, 'apps/sheets/out/web'),
-    },
-    documents: [
-      {
-        documentId: 'document-1',
-        title: 'Forecast.xlsx',
-        editorType: 'sheets',
-        revision: 1,
+      editorRoots: {
+        sheets: resolve(repositoryRoot, 'apps/sheets/out/web'),
       },
-    ],
+    },
+    documentDrivers: new DocumentDriverRegistry([
+      {
+        document: {
+          documentId: 'document-1',
+          title: 'Forecast.xlsx',
+          editorType: 'sheets',
+          revision: 1,
+        },
+        async bootstrap(origin) {
+          const state = await ensureOpen()
+          return {
+            documentId: 'document-1',
+            title: 'Forecast.xlsx',
+            revision: 1,
+            websocketUrl: `${origin.replace(/^http/, 'ws')}/ws`,
+            language: 'en',
+            theme: 'light',
+            workbook: state.file,
+          }
+        },
+        async execute(action, payload) {
+          const state = await ensureOpen()
+          if (action === 'read-workbook-range') {
+            const request = workbookRangeRequestSchema.parse(payload)
+            return workbookRangeResultSchema.parse(await client.readRange(request))
+          }
+          if (action === 'read-workbook-formulas') {
+            const request = workbookFormulaCellsRequestSchema.parse(payload)
+            return workbookFormulaCellsResultSchema.parse(await client.readFormulaCells(request))
+          }
+          if (action === 'recalculate-workbook') {
+            const request = workbookRecalcRequestSchema.parse(payload)
+            const result = (await client.recalcCells({
+              path,
+              edits: request.edits.map((edit) => ({
+                sheet: sheetName(state, edit.sheetId),
+                row: edit.row,
+                column: edit.column,
+                input: edit.input,
+              })),
+              reads: request.reads.map((read) => ({
+                sheet: sheetName(state, read.sheetId),
+                range: read.range,
+              })),
+            })) as { cells: Array<Record<string, unknown> & { sheet: string }> }
+            const idsByName = new Map([...state.sheetNames].map(([id, name]) => [name, id]))
+            return workbookRecalcResultSchema.parse({
+              cells: result.cells
+                .flatMap((cell) => {
+                  const sheetId = idsByName.get(cell.sheet)
+                  return sheetId === undefined ? [] : [{ ...cell, sheetId, sheet: undefined }]
+                })
+                .map(({ sheet: _sheet, ...cell }) => cell),
+            })
+          }
+          if (action === 'save-workbook') {
+            const request = workbookSaveRequestSchema.parse(payload)
+            const mutation = await saveWorkbookViaSidecar({
+              client,
+              sourcePath: path,
+              targetPath: path,
+              edits: request.edits.map((edit) => ({
+                sheetName: sheetName(state, edit.sheetId),
+                row: edit.row,
+                column: edit.column,
+                writeValue: edit.writeValue,
+                cell: { value: edit.value, formula: edit.formula },
+                style: edit.style,
+                rich: edit.rich,
+                styleReset: edit.styleReset,
+              })),
+              bulkConstantFills: (request.bulkConstantFills ?? []).map(({ sheetId, ...fill }) => ({
+                sheetName: sheetName(state, sheetId),
+                ...fill,
+              })),
+              chartEdits: request.chartEdits,
+              visualEdits: request.visualEdits,
+              visualAdditions: request.visualAdditions.map(({ sheetId, ...addition }) => ({
+                sheetName: sheetName(state, sheetId),
+                ...addition,
+              })),
+              formulaValues:
+                request.formulaValues.length === 0
+                  ? []
+                  : [
+                      ...new Map(
+                        request.formulaValues.map((cell) => [
+                          sheetName(state, cell.sheetId),
+                          [] as typeof request.formulaValues,
+                        ]),
+                      ),
+                    ].map(([name]) => ({
+                      sheetName: name,
+                      cells: request.formulaValues
+                        .filter((cell) => sheetName(state, cell.sheetId) === name)
+                        .map(({ sheetId: _sheetId, ...cell }) => cell),
+                    })),
+            })
+            await client.close(state.file.sessionId)
+            opened = await workbookFile(client, path)
+            return workbookSaveResultSchema.parse({
+              canceled: false,
+              file: opened.file,
+              touchedEntries: mutation.touchedEntries,
+            })
+          }
+          if (action === 'close-workbook') {
+            const sessionId =
+              typeof payload === 'object' && payload !== null
+                ? (payload as { sessionId?: unknown }).sessionId
+                : undefined
+            if (sessionId === state.file.sessionId) {
+              await client.close(state.file.sessionId)
+              opened = undefined
+            }
+            return { ok: true }
+          }
+          throw new Error(`Unsupported E2E document action: ${action}`)
+        },
+        async close() {},
+      },
+    ]),
     runtimeCommand: {
       entry: resolve(repositoryRoot, 'e2e/fixtures/fake-harness-runtime.mjs'),
       args: [applyCountPath],
-    },
-    documentService: {
-      async bootstrap(document, origin) {
-        const state = await ensureOpen()
-        return {
-          documentId: document.documentId,
-          title: document.title,
-          revision: document.revision,
-          websocketUrl: `${origin.replace(/^http/, 'ws')}/ws`,
-          language: 'en',
-          theme: 'light',
-          workbook: state.file,
-        }
-      },
-      async execute(_document, action, payload) {
-        const state = await ensureOpen()
-        if (action === 'read-workbook-range') {
-          const request = workbookRangeRequestSchema.parse(payload)
-          return workbookRangeResultSchema.parse(await client.readRange(request))
-        }
-        if (action === 'read-workbook-formulas') {
-          const request = workbookFormulaCellsRequestSchema.parse(payload)
-          return workbookFormulaCellsResultSchema.parse(await client.readFormulaCells(request))
-        }
-        if (action === 'recalculate-workbook') {
-          const request = workbookRecalcRequestSchema.parse(payload)
-          const result = (await client.recalcCells({
-            path,
-            edits: request.edits.map((edit) => ({
-              sheet: sheetName(state, edit.sheetId),
-              row: edit.row,
-              column: edit.column,
-              input: edit.input,
-            })),
-            reads: request.reads.map((read) => ({
-              sheet: sheetName(state, read.sheetId),
-              range: read.range,
-            })),
-          })) as { cells: Array<Record<string, unknown> & { sheet: string }> }
-          const idsByName = new Map([...state.sheetNames].map(([id, name]) => [name, id]))
-          return workbookRecalcResultSchema.parse({
-            cells: result.cells
-              .flatMap((cell) => {
-                const sheetId = idsByName.get(cell.sheet)
-                return sheetId === undefined ? [] : [{ ...cell, sheetId, sheet: undefined }]
-              })
-              .map(({ sheet: _sheet, ...cell }) => cell),
-          })
-        }
-        if (action === 'save-workbook') {
-          const request = workbookSaveRequestSchema.parse(payload)
-          const mutation = await saveWorkbookViaSidecar({
-            client,
-            sourcePath: path,
-            targetPath: path,
-            edits: request.edits.map((edit) => ({
-              sheetName: sheetName(state, edit.sheetId),
-              row: edit.row,
-              column: edit.column,
-              writeValue: edit.writeValue,
-              cell: { value: edit.value, formula: edit.formula },
-              style: edit.style,
-              rich: edit.rich,
-              styleReset: edit.styleReset,
-            })),
-            bulkConstantFills: (request.bulkConstantFills ?? []).map(({ sheetId, ...fill }) => ({
-              sheetName: sheetName(state, sheetId),
-              ...fill,
-            })),
-            chartEdits: request.chartEdits,
-            visualEdits: request.visualEdits,
-            visualAdditions: request.visualAdditions.map(({ sheetId, ...addition }) => ({
-              sheetName: sheetName(state, sheetId),
-              ...addition,
-            })),
-            formulaValues:
-              request.formulaValues.length === 0
-                ? []
-                : [
-                    ...new Map(
-                      request.formulaValues.map((cell) => [
-                        sheetName(state, cell.sheetId),
-                        [] as typeof request.formulaValues,
-                      ]),
-                    ),
-                  ].map(([name]) => ({
-                    sheetName: name,
-                    cells: request.formulaValues
-                      .filter((cell) => sheetName(state, cell.sheetId) === name)
-                      .map(({ sheetId: _sheetId, ...cell }) => cell),
-                  })),
-          })
-          await client.close(state.file.sessionId)
-          opened = await workbookFile(client, path)
-          return workbookSaveResultSchema.parse({
-            canceled: false,
-            file: opened.file,
-            touchedEntries: mutation.touchedEntries,
-          })
-        }
-        if (action === 'close-workbook') {
-          const sessionId =
-            typeof payload === 'object' && payload !== null
-              ? (payload as { sessionId?: unknown }).sessionId
-              : undefined
-          if (sessionId === state.file.sessionId) {
-            await client.close(state.file.sessionId)
-            opened = undefined
-          }
-          return { ok: true }
-        }
-        throw new Error(`Unsupported E2E document action: ${action}`)
-      },
     },
   })
 

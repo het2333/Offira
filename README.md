@@ -468,12 +468,11 @@ change must pass and how pull requests land.
 
 ### NexusDesk local Web milestone
 
-The NexusDesk path combines a loopback-only Local Host, the shared GenOffice
-Shell UI, isolated editor bundles, and DeepSeek Harness as a supervised native
-runtime. The Web and Electron composition roots mount the same
-`@nexusdesk/shell-ui` package through different `OfficeHost` adapters. Local
-Host is authoritative for documents, tabs, settings, approvals, operation
-journals, and runtime lifecycle in the browser build.
+The NexusDesk local Web path combines a loopback-only Local Host, the shared
+GenOffice Shell UI, isolated Docs/Sheets editor bundles, and DeepSeek Harness as
+a supervised runtime. Local Host is authoritative for documents, tabs,
+settings, approvals, operation journals, filesystem authorization, and runtime
+lifecycle. Desktop packaging is outside the current Web-only scope.
 
 Harness provider/model selection remains intact. Existing editor operation DSLs
 are exposed as curated native Tools whose results are written for the Agent and
@@ -482,15 +481,17 @@ GenOffice compatibility product; it is not NexusDesk transport.
 
 ```bash
 npm run build:web
-npm run start:web -- /absolute/path/to/Forecast.xlsx
+npm run start:web -- /absolute/path/to/Report.docx /absolute/path/to/Forecast.xlsx
 npm run test:e2e:local-web
 ```
 
 Open the one-time bootstrap URL printed by `start:web`; opening
 `apps/web/index.html` through `file://` is diagnostic-only and cannot start the
-product. The current milestone is a Chromium/Sheets vertical slice. Docs,
-Slides, NexusDesk desktop packaging, Safari, Keychain-backed credentials,
-file-picker startup, and collaboration follow separate implementation plans.
+product. Docs and Sheets now have Chromium vertical slices with manual editing,
+native Harness tools, exact approvals, in-place save, refresh persistence, and
+idempotent operation replay. Slides, PDF, Markdown, HTML, Safari,
+Keychain-backed credentials, file-picker startup, and collaboration follow
+separate Web implementation milestones.
 See
 [local Web development](docs/nexusdesk/local-web-development.md) for startup
 and debugging, the [Office Host contract](docs/nexusdesk/office-host-contract.md)

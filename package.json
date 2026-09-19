@@ -37,7 +37,7 @@
     "build:all": "npm run build -w @genoffice/docs && npm run build -w @genoffice/sheets && npm run build -w @genoffice/slides && npm run build -w @genoffice/pdf && npm run build -w @genoffice/markdown && npm run build -w @genoffice/html && npm run build -w @genoffice/cli && npm run build -w @genoffice/shell",
     "shell": "npm run build:all && electron apps/shell",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
-    "test:e2e:local-web": "playwright test e2e/local-web-sheets-agent.spec.ts --project=chromium",
+    "test:e2e:local-web": "node scripts/run-local-web-e2e.mjs",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",
     "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @genoffice/sheets && npm run dist:mac -w @genoffice/shell",

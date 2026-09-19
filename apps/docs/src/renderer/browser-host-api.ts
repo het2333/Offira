@@ -351,7 +351,6 @@ export function installDocsBrowserHostApi(
   }
   const settings = { language: bootstrap.language, theme: bootstrap.theme }
   let disposed = false
-  let desktopApi!: DesktopApi
   const handle: DocsBrowserHostHandle = {
     document,
     capabilities,
@@ -377,7 +376,7 @@ export function installDocsBrowserHostApi(
       if (target.nexusdeskDocsHost === handle) delete target.nexusdeskDocsHost
     },
   }
-  desktopApi = createDocsBrowserDesktopApi(handle, transport)
+  const desktopApi = createDocsBrowserDesktopApi(handle, transport)
   target.desktop = desktopApi
   target.agentApi = bridge.agentApi
   target.nexusdeskDocsHost = handle

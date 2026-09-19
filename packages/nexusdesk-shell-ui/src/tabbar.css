@@ -301,6 +301,27 @@ body.overlay-title-bar .tab-bar-drag-spacer {
   padding-top: 40px;
 }
 
+/* Browser editors occupy the same content rectangle as Electron's
+ * WebContentsView: the viewport below the shared 40px tab strip. Without an
+ * explicit rectangle an iframe falls back to 300×150, so its rendered editor
+ * extends outside the hit-testable frame and the Shell intercepts clicks. */
+.editor-frame,
+.editor-loading,
+.editor-unavailable {
+  position: fixed;
+  inset: 40px 0 0;
+  width: 100%;
+  height: calc(100vh - 40px);
+  border: 0;
+  background: var(--surface);
+}
+
+.editor-loading,
+.editor-unavailable {
+  display: grid;
+  place-items: center;
+}
+
 /* ── Dark mode tab bar overrides ─────────────────────────── */
 
 [data-theme='dark'] .tab-bar {
