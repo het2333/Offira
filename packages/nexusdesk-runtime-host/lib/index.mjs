@@ -1381,7 +1381,7 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
-  const result2 = { errors: [] };
+  const result = { errors: [] };
   const processError = (error52, path = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
@@ -1394,10 +1394,10 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
       } else {
         const fullpath = [...path, ...issue2.path];
         if (fullpath.length === 0) {
-          result2.errors.push(mapper(issue2));
+          result.errors.push(mapper(issue2));
           continue;
         }
-        let curr = result2;
+        let curr = result;
         let i = 0;
         while (i < fullpath.length) {
           const el = fullpath[i];
@@ -1420,7 +1420,7 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
     }
   };
   processError(error51);
-  return result2;
+  return result;
 }
 function toDotPath(_path) {
   const segs = [];
@@ -1454,52 +1454,52 @@ function prettifyError(error51) {
 // ../../node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx2 = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result2 = schema._zod.run({ value, issues: [] }, ctx2);
-  if (result2 instanceof Promise) {
+  const result = schema._zod.run({ value, issues: [] }, ctx2);
+  if (result instanceof Promise) {
     throw new $ZodAsyncError();
   }
-  if (result2.issues.length) {
-    const e = new (_params?.Err ?? _Err)(result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())));
+  if (result.issues.length) {
+    const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx2, config())));
     captureStackTrace(e, _params?.callee);
     throw e;
   }
-  return result2.value;
+  return result.value;
 };
 var parse = /* @__PURE__ */ _parse($ZodRealError);
 var _parseAsync = (_Err) => async (schema, value, _ctx, params) => {
   const ctx2 = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result2 = schema._zod.run({ value, issues: [] }, ctx2);
-  if (result2 instanceof Promise)
-    result2 = await result2;
-  if (result2.issues.length) {
-    const e = new (params?.Err ?? _Err)(result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())));
+  let result = schema._zod.run({ value, issues: [] }, ctx2);
+  if (result instanceof Promise)
+    result = await result;
+  if (result.issues.length) {
+    const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx2, config())));
     captureStackTrace(e, params?.callee);
     throw e;
   }
-  return result2.value;
+  return result.value;
 };
 var parseAsync = /* @__PURE__ */ _parseAsync($ZodRealError);
 var _safeParse = (_Err) => (schema, value, _ctx) => {
   const ctx2 = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result2 = schema._zod.run({ value, issues: [] }, ctx2);
-  if (result2 instanceof Promise) {
+  const result = schema._zod.run({ value, issues: [] }, ctx2);
+  if (result instanceof Promise) {
     throw new $ZodAsyncError();
   }
-  return result2.issues.length ? {
+  return result.issues.length ? {
     success: false,
-    error: new (_Err ?? $ZodError)(result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
-  } : { success: true, data: result2.value };
+    error: new (_Err ?? $ZodError)(result.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
+  } : { success: true, data: result.value };
 };
 var safeParse = /* @__PURE__ */ _safeParse($ZodRealError);
 var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
   const ctx2 = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result2 = schema._zod.run({ value, issues: [] }, ctx2);
-  if (result2 instanceof Promise)
-    result2 = await result2;
-  return result2.issues.length ? {
+  let result = schema._zod.run({ value, issues: [] }, ctx2);
+  if (result instanceof Promise)
+    result = await result;
+  return result.issues.length ? {
     success: false,
-    error: new _Err(result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
-  } : { success: true, data: result2.value };
+    error: new _Err(result.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
+  } : { success: true, data: result.value };
 };
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 var _encode = (_Err) => (schema, value, _ctx) => {
@@ -2202,22 +2202,22 @@ var $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst,
     });
   };
 });
-function handleCheckPropertyResult(result2, payload, property) {
-  if (result2.issues.length) {
-    payload.issues.push(...prefixIssues(property, result2.issues));
+function handleCheckPropertyResult(result, payload, property) {
+  if (result.issues.length) {
+    payload.issues.push(...prefixIssues(property, result.issues));
   }
 }
 var $ZodCheckProperty = /* @__PURE__ */ $constructor("$ZodCheckProperty", (inst, def) => {
   $ZodCheck.init(inst, def);
   inst._zod.check = (payload) => {
-    const result2 = def.schema._zod.run({
+    const result = def.schema._zod.run({
       value: payload.value[def.property],
       issues: []
     }, {});
-    if (result2 instanceof Promise) {
-      return result2.then((result3) => handleCheckPropertyResult(result3, payload, def.property));
+    if (result instanceof Promise) {
+      return result.then((result2) => handleCheckPropertyResult(result2, payload, def.property));
     }
-    handleCheckPropertyResult(result2, payload, def.property);
+    handleCheckPropertyResult(result, payload, def.property);
     return;
   };
 });
@@ -2379,13 +2379,13 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
         }
         return handleCanaryResult(canary, payload, ctx2);
       }
-      const result2 = inst._zod.parse(payload, ctx2);
-      if (result2 instanceof Promise) {
+      const result = inst._zod.parse(payload, ctx2);
+      if (result instanceof Promise) {
         if (ctx2.async === false)
           throw new $ZodAsyncError();
-        return result2.then((result3) => runChecks(result3, checks, ctx2));
+        return result.then((result2) => runChecks(result2, checks, ctx2));
       }
-      return runChecks(result2, checks, ctx2);
+      return runChecks(result, checks, ctx2);
     };
   }
   defineLazy(inst, "~standard", () => ({
@@ -2907,11 +2907,11 @@ var $ZodDate = /* @__PURE__ */ $constructor("$ZodDate", (inst, def) => {
     return payload;
   };
 });
-function handleArrayResult(result2, final, index) {
-  if (result2.issues.length) {
-    final.issues.push(...prefixIssues(index, result2.issues));
+function handleArrayResult(result, final, index) {
+  if (result.issues.length) {
+    final.issues.push(...prefixIssues(index, result.issues));
   }
-  final.value[index] = result2.value;
+  final.value[index] = result.value;
 }
 var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
   $ZodType.init(inst, def);
@@ -2930,14 +2930,14 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     const proms = [];
     for (let i = 0; i < input.length; i++) {
       const item = input[i];
-      const result2 = def.element._zod.run({
+      const result = def.element._zod.run({
         value: item,
         issues: []
       }, ctx2);
-      if (result2 instanceof Promise) {
-        proms.push(result2.then((result3) => handleArrayResult(result3, payload, i)));
+      if (result instanceof Promise) {
+        proms.push(result.then((result2) => handleArrayResult(result2, payload, i)));
       } else {
-        handleArrayResult(result2, payload, i);
+        handleArrayResult(result, payload, i);
       }
     }
     if (proms.length) {
@@ -2946,16 +2946,16 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     return payload;
   };
 });
-function handlePropertyResult(result2, final, key, input, isOptionalIn, isOptionalOut) {
+function handlePropertyResult(result, final, key, input, isOptionalIn, isOptionalOut) {
   const isPresent = key in input;
-  if (result2.issues.length) {
+  if (result.issues.length) {
     if (isOptionalIn && isOptionalOut && !isPresent) {
       return;
     }
-    final.issues.push(...prefixIssues(key, result2.issues));
+    final.issues.push(...prefixIssues(key, result.issues));
   }
   if (!isPresent && !isOptionalIn) {
-    if (!result2.issues.length) {
+    if (!result.issues.length) {
       final.issues.push({
         code: "invalid_type",
         expected: "nonoptional",
@@ -2965,12 +2965,12 @@ function handlePropertyResult(result2, final, key, input, isOptionalIn, isOption
     }
     return;
   }
-  if (result2.value === void 0) {
+  if (result.value === void 0) {
     if (isPresent) {
       final.value[key] = void 0;
     }
   } else {
-    final.value[key] = result2.value;
+    final.value[key] = result.value;
   }
 }
 function normalizeDef(def) {
@@ -3218,9 +3218,9 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   };
 });
 function handleUnionResults(results, final, inst, ctx2) {
-  for (const result2 of results) {
-    if (result2.issues.length === 0) {
-      final.value = result2.value;
+  for (const result of results) {
+    if (result.issues.length === 0) {
+      final.value = result.value;
       return final;
     }
   }
@@ -3233,7 +3233,7 @@ function handleUnionResults(results, final, inst, ctx2) {
     code: "invalid_union",
     input: final.value,
     inst,
-    errors: results.map((result2) => result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
+    errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
   });
   return final;
 }
@@ -3262,17 +3262,17 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
     let async = false;
     const results = [];
     for (const option of def.options) {
-      const result2 = option._zod.run({
+      const result = option._zod.run({
         value: payload.value,
         issues: []
       }, ctx2);
-      if (result2 instanceof Promise) {
-        results.push(result2);
+      if (result instanceof Promise) {
+        results.push(result);
         async = true;
       } else {
-        if (result2.issues.length === 0)
-          return result2;
-        results.push(result2);
+        if (result.issues.length === 0)
+          return result;
+        results.push(result);
       }
     }
     if (!async)
@@ -3293,7 +3293,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx2) {
       code: "invalid_union",
       input: final.value,
       inst,
-      errors: results.map((result2) => result2.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
+      errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx2, config())))
     });
   } else {
     final.issues.push({
@@ -3317,15 +3317,15 @@ var $ZodXor = /* @__PURE__ */ $constructor("$ZodXor", (inst, def) => {
     let async = false;
     const results = [];
     for (const option of def.options) {
-      const result2 = option._zod.run({
+      const result = option._zod.run({
         value: payload.value,
         issues: []
       }, ctx2);
-      if (result2 instanceof Promise) {
-        results.push(result2);
+      if (result instanceof Promise) {
+        results.push(result);
         async = true;
       } else {
-        results.push(result2);
+        results.push(result);
       }
     }
     if (!async)
@@ -3461,7 +3461,7 @@ function mergeValues(a, b) {
   }
   return { valid: false, mergeErrorPath: [] };
 }
-function handleIntersectionResults(result2, left, right) {
+function handleIntersectionResults(result, left, right) {
   const unrecKeys = /* @__PURE__ */ new Map();
   let unrecIssue;
   for (const iss of left.issues) {
@@ -3473,7 +3473,7 @@ function handleIntersectionResults(result2, left, right) {
         unrecKeys.get(k).l = true;
       }
     } else {
-      result2.issues.push(iss);
+      result.issues.push(iss);
     }
   }
   for (const iss of right.issues) {
@@ -3484,21 +3484,21 @@ function handleIntersectionResults(result2, left, right) {
         unrecKeys.get(k).r = true;
       }
     } else {
-      result2.issues.push(iss);
+      result.issues.push(iss);
     }
   }
   const bothKeys = [...unrecKeys].filter(([, f]) => f.l && f.r).map(([k]) => k);
   if (bothKeys.length && unrecIssue) {
-    result2.issues.push({ ...unrecIssue, keys: bothKeys });
+    result.issues.push({ ...unrecIssue, keys: bothKeys });
   }
-  if (aborted(result2))
-    return result2;
+  if (aborted(result))
+    return result;
   const merged = mergeValues(left.value, right.value);
   if (!merged.valid) {
     throw new Error(`Unmergable intersection. Error path: ${JSON.stringify(merged.mergeErrorPath)}`);
   }
-  result2.value = merged.data;
-  return result2;
+  result.value = merged.data;
+  return result;
 }
 var $ZodTuple = /* @__PURE__ */ $constructor("$ZodTuple", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3557,11 +3557,11 @@ var $ZodTuple = /* @__PURE__ */ $constructor("$ZodTuple", (inst, def) => {
       const rest = input.slice(items.length);
       for (const el of rest) {
         i++;
-        const result2 = def.rest._zod.run({ value: el, issues: [] }, ctx2);
-        if (result2 instanceof Promise) {
-          proms.push(result2.then((r) => handleTupleResult(r, payload, i)));
+        const result = def.rest._zod.run({ value: el, issues: [] }, ctx2);
+        if (result instanceof Promise) {
+          proms.push(result.then((r) => handleTupleResult(r, payload, i)));
         } else {
-          handleTupleResult(result2, payload, i);
+          handleTupleResult(result, payload, i);
         }
       }
     }
@@ -3578,11 +3578,11 @@ function getTupleOptStart(items, key) {
   }
   return 0;
 }
-function handleTupleResult(result2, final, index) {
-  if (result2.issues.length) {
-    final.issues.push(...prefixIssues(index, result2.issues));
+function handleTupleResult(result, final, index) {
+  if (result.issues.length) {
+    final.issues.push(...prefixIssues(index, result.issues));
   }
-  final.value[index] = result2.value;
+  final.value[index] = result.value;
 }
 function handleTupleResults(itemResults, final, items, input, optoutStart) {
   for (let i = 0; i < items.length; i++) {
@@ -3643,19 +3643,19 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
             continue;
           }
           const outKey = keyResult.value;
-          const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx2);
-          if (result2 instanceof Promise) {
-            proms.push(result2.then((result3) => {
-              if (result3.issues.length) {
-                payload.issues.push(...prefixIssues(key, result3.issues));
+          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx2);
+          if (result instanceof Promise) {
+            proms.push(result.then((result2) => {
+              if (result2.issues.length) {
+                payload.issues.push(...prefixIssues(key, result2.issues));
               }
-              payload.value[outKey] = result3.value;
+              payload.value[outKey] = result2.value;
             }));
           } else {
-            if (result2.issues.length) {
-              payload.issues.push(...prefixIssues(key, result2.issues));
+            if (result.issues.length) {
+              payload.issues.push(...prefixIssues(key, result.issues));
             }
-            payload.value[outKey] = result2.value;
+            payload.value[outKey] = result.value;
           }
         }
       }
@@ -3710,19 +3710,19 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
           }
           continue;
         }
-        const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx2);
-        if (result2 instanceof Promise) {
-          proms.push(result2.then((result3) => {
-            if (result3.issues.length) {
-              payload.issues.push(...prefixIssues(key, result3.issues));
+        const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx2);
+        if (result instanceof Promise) {
+          proms.push(result.then((result2) => {
+            if (result2.issues.length) {
+              payload.issues.push(...prefixIssues(key, result2.issues));
             }
-            payload.value[keyResult.value] = result3.value;
+            payload.value[keyResult.value] = result2.value;
           }));
         } else {
-          if (result2.issues.length) {
-            payload.issues.push(...prefixIssues(key, result2.issues));
+          if (result.issues.length) {
+            payload.issues.push(...prefixIssues(key, result.issues));
           }
-          payload.value[keyResult.value] = result2.value;
+          payload.value[keyResult.value] = result.value;
         }
       }
     }
@@ -3809,22 +3809,22 @@ var $ZodSet = /* @__PURE__ */ $constructor("$ZodSet", (inst, def) => {
     const proms = [];
     payload.value = /* @__PURE__ */ new Set();
     for (const item of input) {
-      const result2 = def.valueType._zod.run({ value: item, issues: [] }, ctx2);
-      if (result2 instanceof Promise) {
-        proms.push(result2.then((result3) => handleSetResult(result3, payload)));
+      const result = def.valueType._zod.run({ value: item, issues: [] }, ctx2);
+      if (result instanceof Promise) {
+        proms.push(result.then((result2) => handleSetResult(result2, payload)));
       } else
-        handleSetResult(result2, payload);
+        handleSetResult(result, payload);
     }
     if (proms.length)
       return Promise.all(proms).then(() => payload);
     return payload;
   };
 });
-function handleSetResult(result2, final) {
-  if (result2.issues.length) {
-    final.issues.push(...result2.issues);
+function handleSetResult(result, final) {
+  if (result.issues.length) {
+    final.issues.push(...result.issues);
   }
-  final.value.add(result2.value);
+  final.value.add(result.value);
 }
 var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3892,9 +3892,9 @@ var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) =>
     }
     const _out = def.transform(payload.value, payload);
     if (ctx2.async) {
-      const output3 = _out instanceof Promise ? _out : Promise.resolve(_out);
-      return output3.then((output4) => {
-        payload.value = output4;
+      const output = _out instanceof Promise ? _out : Promise.resolve(_out);
+      return output.then((output2) => {
+        payload.value = output2;
         payload.fallback = true;
         return payload;
       });
@@ -3907,11 +3907,11 @@ var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) =>
     return payload;
   };
 });
-function handleOptionalResult(result2, input) {
-  if (input === void 0 && (result2.issues.length || result2.fallback)) {
+function handleOptionalResult(result, input) {
+  if (input === void 0 && (result.issues.length || result.fallback)) {
     return { issues: [], value: void 0 };
   }
-  return result2;
+  return result;
 }
 var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3927,10 +3927,10 @@ var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
   inst._zod.parse = (payload, ctx2) => {
     if (def.innerType._zod.optin === "optional") {
       const input = payload.value;
-      const result2 = def.innerType._zod.run(payload, ctx2);
-      if (result2 instanceof Promise)
-        return result2.then((r) => handleOptionalResult(r, input));
-      return handleOptionalResult(result2, input);
+      const result = def.innerType._zod.run(payload, ctx2);
+      if (result instanceof Promise)
+        return result.then((r) => handleOptionalResult(r, input));
+      return handleOptionalResult(result, input);
     }
     if (payload.value === void 0) {
       return payload;
@@ -3975,11 +3975,11 @@ var $ZodDefault = /* @__PURE__ */ $constructor("$ZodDefault", (inst, def) => {
       payload.value = def.defaultValue;
       return payload;
     }
-    const result2 = def.innerType._zod.run(payload, ctx2);
-    if (result2 instanceof Promise) {
-      return result2.then((result3) => handleDefaultResult(result3, def));
+    const result = def.innerType._zod.run(payload, ctx2);
+    if (result instanceof Promise) {
+      return result.then((result2) => handleDefaultResult(result2, def));
     }
-    return handleDefaultResult(result2, def);
+    return handleDefaultResult(result, def);
   };
 });
 function handleDefaultResult(payload, def) {
@@ -4009,11 +4009,11 @@ var $ZodNonOptional = /* @__PURE__ */ $constructor("$ZodNonOptional", (inst, def
     return v ? new Set([...v].filter((x) => x !== void 0)) : void 0;
   });
   inst._zod.parse = (payload, ctx2) => {
-    const result2 = def.innerType._zod.run(payload, ctx2);
-    if (result2 instanceof Promise) {
-      return result2.then((result3) => handleNonOptionalResult(result3, inst));
+    const result = def.innerType._zod.run(payload, ctx2);
+    if (result instanceof Promise) {
+      return result.then((result2) => handleNonOptionalResult(result2, inst));
     }
-    return handleNonOptionalResult(result2, inst);
+    return handleNonOptionalResult(result, inst);
   };
 });
 function handleNonOptionalResult(payload, inst) {
@@ -4033,14 +4033,14 @@ var $ZodSuccess = /* @__PURE__ */ $constructor("$ZodSuccess", (inst, def) => {
     if (ctx2.direction === "backward") {
       throw new $ZodEncodeError("ZodSuccess");
     }
-    const result2 = def.innerType._zod.run(payload, ctx2);
-    if (result2 instanceof Promise) {
-      return result2.then((result3) => {
-        payload.value = result3.issues.length === 0;
+    const result = def.innerType._zod.run(payload, ctx2);
+    if (result instanceof Promise) {
+      return result.then((result2) => {
+        payload.value = result2.issues.length === 0;
         return payload;
       });
     }
-    payload.value = result2.issues.length === 0;
+    payload.value = result.issues.length === 0;
     return payload;
   };
 });
@@ -4053,15 +4053,15 @@ var $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
     if (ctx2.direction === "backward") {
       return def.innerType._zod.run(payload, ctx2);
     }
-    const result2 = def.innerType._zod.run(payload, ctx2);
-    if (result2 instanceof Promise) {
-      return result2.then((result3) => {
-        payload.value = result3.value;
-        if (result3.issues.length) {
+    const result = def.innerType._zod.run(payload, ctx2);
+    if (result instanceof Promise) {
+      return result.then((result2) => {
+        payload.value = result2.value;
+        if (result2.issues.length) {
           payload.value = def.catchValue({
             ...payload,
             error: {
-              issues: result3.issues.map((iss) => finalizeIssue(iss, ctx2, config()))
+              issues: result2.issues.map((iss) => finalizeIssue(iss, ctx2, config()))
             },
             input: payload.value
           });
@@ -4071,12 +4071,12 @@ var $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
         return payload;
       });
     }
-    payload.value = result2.value;
-    if (result2.issues.length) {
+    payload.value = result.value;
+    if (result.issues.length) {
       payload.value = def.catchValue({
         ...payload,
         error: {
-          issues: result2.issues.map((iss) => finalizeIssue(iss, ctx2, config()))
+          issues: result.issues.map((iss) => finalizeIssue(iss, ctx2, config()))
         },
         input: payload.value
       });
@@ -4152,24 +4152,24 @@ var $ZodCodec = /* @__PURE__ */ $constructor("$ZodCodec", (inst, def) => {
     }
   };
 });
-function handleCodecAResult(result2, def, ctx2) {
-  if (result2.issues.length) {
-    result2.aborted = true;
-    return result2;
+function handleCodecAResult(result, def, ctx2) {
+  if (result.issues.length) {
+    result.aborted = true;
+    return result;
   }
   const direction = ctx2.direction || "forward";
   if (direction === "forward") {
-    const transformed = def.transform(result2.value, result2);
+    const transformed = def.transform(result.value, result);
     if (transformed instanceof Promise) {
-      return transformed.then((value) => handleCodecTxResult(result2, value, def.out, ctx2));
+      return transformed.then((value) => handleCodecTxResult(result, value, def.out, ctx2));
     }
-    return handleCodecTxResult(result2, transformed, def.out, ctx2);
+    return handleCodecTxResult(result, transformed, def.out, ctx2);
   } else {
-    const transformed = def.reverseTransform(result2.value, result2);
+    const transformed = def.reverseTransform(result.value, result);
     if (transformed instanceof Promise) {
-      return transformed.then((value) => handleCodecTxResult(result2, value, def.in, ctx2));
+      return transformed.then((value) => handleCodecTxResult(result, value, def.in, ctx2));
     }
-    return handleCodecTxResult(result2, transformed, def.in, ctx2);
+    return handleCodecTxResult(result, transformed, def.in, ctx2);
   }
 }
 function handleCodecTxResult(left, value, nextSchema, ctx2) {
@@ -4192,11 +4192,11 @@ var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
     if (ctx2.direction === "backward") {
       return def.innerType._zod.run(payload, ctx2);
     }
-    const result2 = def.innerType._zod.run(payload, ctx2);
-    if (result2 instanceof Promise) {
-      return result2.then(handleReadonlyResult);
+    const result = def.innerType._zod.run(payload, ctx2);
+    if (result instanceof Promise) {
+      return result.then(handleReadonlyResult);
     }
-    return handleReadonlyResult(result2);
+    return handleReadonlyResult(result);
   };
 });
 function handleReadonlyResult(payload) {
@@ -4258,11 +4258,11 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
     }
     return function(...args) {
       const parsedArgs = inst._def.input ? parse(inst._def.input, args) : args;
-      const result2 = Reflect.apply(func, this, parsedArgs);
+      const result = Reflect.apply(func, this, parsedArgs);
       if (inst._def.output) {
-        return parse(inst._def.output, result2);
+        return parse(inst._def.output, result);
       }
-      return result2;
+      return result;
     };
   };
   inst.implementAsync = (func) => {
@@ -4271,11 +4271,11 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
     }
     return async function(...args) {
       const parsedArgs = inst._def.input ? await parseAsync(inst._def.input, args) : args;
-      const result2 = await Reflect.apply(func, this, parsedArgs);
+      const result = await Reflect.apply(func, this, parsedArgs);
       if (inst._def.output) {
-        return await parseAsync(inst._def.output, result2);
+        return await parseAsync(inst._def.output, result);
       }
-      return result2;
+      return result;
     };
   };
   inst._zod.parse = (payload, _ctx) => {
@@ -4315,12 +4315,12 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
       output: inst._def.output
     });
   };
-  inst.output = (output3) => {
+  inst.output = (output) => {
     const F = inst.constructor;
     return new F({
       type: "function",
       input: inst._def.input,
-      output: output3
+      output
     });
   };
   return inst;
@@ -4364,8 +4364,8 @@ var $ZodCustom = /* @__PURE__ */ $constructor("$ZodCustom", (inst, def) => {
     return;
   };
 });
-function handleRefineResult(result2, payload, input, inst) {
-  if (!result2) {
+function handleRefineResult(result, payload, input, inst) {
+  if (!result) {
     const _iss = {
       code: "custom",
       input,
@@ -7740,12 +7740,12 @@ var error28 = () => {
     }
   };
   function getSizing(origin, unitType, inclusive, targetShouldBe) {
-    const result2 = Sizable[origin] ?? null;
-    if (result2 === null)
-      return result2;
+    const result = Sizable[origin] ?? null;
+    if (result === null)
+      return result;
     return {
-      unit: result2.unit[unitType],
-      verb: result2.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
+      unit: result.unit[unitType],
+      verb: result.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
     };
   }
   const FormatDictionary = {
@@ -11460,11 +11460,11 @@ function process2(schema, ctx2, _params = { path: [], schemaPath: [] }) {
     }
     return seen.schema;
   }
-  const result2 = { schema: {}, count: 1, cycle: void 0, path: _params.path };
-  ctx2.seen.set(schema, result2);
+  const result = { schema: {}, count: 1, cycle: void 0, path: _params.path };
+  ctx2.seen.set(schema, result);
   const overrideSchema = schema._zod.toJSONSchema?.();
   if (overrideSchema) {
-    result2.schema = overrideSchema;
+    result.schema = overrideSchema;
   } else {
     const params = {
       ..._params,
@@ -11472,9 +11472,9 @@ function process2(schema, ctx2, _params = { path: [], schemaPath: [] }) {
       path: _params.path
     };
     if (schema._zod.processJSONSchema) {
-      schema._zod.processJSONSchema(ctx2, result2.schema, params);
+      schema._zod.processJSONSchema(ctx2, result.schema, params);
     } else {
-      const _json = result2.schema;
+      const _json = result.schema;
       const processor = ctx2.processors[def.type];
       if (!processor) {
         throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
@@ -11483,22 +11483,22 @@ function process2(schema, ctx2, _params = { path: [], schemaPath: [] }) {
     }
     const parent = schema._zod.parent;
     if (parent) {
-      if (!result2.ref)
-        result2.ref = parent;
+      if (!result.ref)
+        result.ref = parent;
       process2(parent, ctx2, params);
       ctx2.seen.get(parent).isParent = true;
     }
   }
   const meta3 = ctx2.metadataRegistry.get(schema);
   if (meta3)
-    Object.assign(result2.schema, meta3);
+    Object.assign(result.schema, meta3);
   if (ctx2.io === "input" && isTransforming(schema)) {
-    delete result2.schema.examples;
-    delete result2.schema.default;
+    delete result.schema.examples;
+    delete result.schema.default;
   }
-  if (ctx2.io === "input" && "_prefault" in result2.schema)
-    (_a3 = result2.schema).default ?? (_a3.default = result2.schema._prefault);
-  delete result2.schema._prefault;
+  if (ctx2.io === "input" && "_prefault" in result.schema)
+    (_a3 = result.schema).default ?? (_a3.default = result.schema._prefault);
+  delete result.schema._prefault;
   const _result = ctx2.seen.get(schema);
   return _result.schema;
 }
@@ -11661,13 +11661,13 @@ function finalize(ctx2, schema) {
   for (const entry of [...ctx2.seen.entries()].reverse()) {
     flattenRef(entry[0]);
   }
-  const result2 = {};
+  const result = {};
   if (ctx2.target === "draft-2020-12") {
-    result2.$schema = "https://json-schema.org/draft/2020-12/schema";
+    result.$schema = "https://json-schema.org/draft/2020-12/schema";
   } else if (ctx2.target === "draft-07") {
-    result2.$schema = "http://json-schema.org/draft-07/schema#";
+    result.$schema = "http://json-schema.org/draft-07/schema#";
   } else if (ctx2.target === "draft-04") {
-    result2.$schema = "http://json-schema.org/draft-04/schema#";
+    result.$schema = "http://json-schema.org/draft-04/schema#";
   } else if (ctx2.target === "openapi-3.0") {
   } else {
   }
@@ -11675,12 +11675,12 @@ function finalize(ctx2, schema) {
     const id = ctx2.external.registry.get(schema)?.id;
     if (!id)
       throw new Error("Schema is missing an `id` property");
-    result2.$id = ctx2.external.uri(id);
+    result.$id = ctx2.external.uri(id);
   }
-  Object.assign(result2, root.def ?? root.schema);
+  Object.assign(result, root.def ?? root.schema);
   const rootMetaId = ctx2.metadataRegistry.get(schema)?.id;
-  if (rootMetaId !== void 0 && result2.id === rootMetaId)
-    delete result2.id;
+  if (rootMetaId !== void 0 && result.id === rootMetaId)
+    delete result.id;
   const defs = ctx2.external?.defs ?? {};
   for (const entry of ctx2.seen.entries()) {
     const seen = entry[1];
@@ -11694,14 +11694,14 @@ function finalize(ctx2, schema) {
   } else {
     if (Object.keys(defs).length > 0) {
       if (ctx2.target === "draft-2020-12") {
-        result2.$defs = defs;
+        result.$defs = defs;
       } else {
-        result2.definitions = defs;
+        result.definitions = defs;
       }
     }
   }
   try {
-    const finalized = JSON.parse(JSON.stringify(result2));
+    const finalized = JSON.parse(JSON.stringify(result));
     Object.defineProperty(finalized, "~standard", {
       value: {
         ...schema["~standard"],
@@ -12398,8 +12398,8 @@ var JSONSchemaGenerator = class {
         this.ctx.external = _params.external;
     }
     extractDefs(this.ctx, schema);
-    const result2 = finalize(this.ctx, schema);
-    const { "~standard": _, ...plainResult } = result2;
+    const result = finalize(this.ctx, schema);
+    const { "~standard": _, ...plainResult } = result;
     return plainResult;
   }
 };
@@ -13694,15 +13694,15 @@ var ZodTransform = /* @__PURE__ */ $constructor("ZodTransform", (inst, def) => {
         payload.issues.push(util_exports.issue(_issue));
       }
     };
-    const output3 = def.transform(payload.value, payload);
-    if (output3 instanceof Promise) {
-      return output3.then((output4) => {
-        payload.value = output4;
+    const output = def.transform(payload.value, payload);
+    if (output instanceof Promise) {
+      return output.then((output2) => {
+        payload.value = output2;
         payload.fallback = true;
         return payload;
       });
     }
-    payload.value = output3;
+    payload.value = output;
     payload.fallback = true;
     return payload;
   };
@@ -14348,11 +14348,11 @@ function convertBaseSchema(schema, ctx2) {
         } else if (schemasToIntersect.length === 1) {
           zodSchema = schemasToIntersect[0];
         } else {
-          let result2 = z.intersection(schemasToIntersect[0], schemasToIntersect[1]);
+          let result = z.intersection(schemasToIntersect[0], schemasToIntersect[1]);
           for (let i = 2; i < schemasToIntersect.length; i++) {
-            result2 = z.intersection(result2, schemasToIntersect[i]);
+            result = z.intersection(result, schemasToIntersect[i]);
           }
-          zodSchema = result2;
+          zodSchema = result;
         }
         break;
       }
@@ -14437,12 +14437,12 @@ function convertSchema(schema, ctx2) {
     if (schema.allOf.length === 0) {
       baseSchema = hasExplicitType ? baseSchema : z.any();
     } else {
-      let result2 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx2);
+      let result = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx2);
       const startIdx = hasExplicitType ? 0 : 1;
       for (let i = startIdx; i < schema.allOf.length; i++) {
-        result2 = z.intersection(result2, convertSchema(schema.allOf[i], ctx2));
+        result = z.intersection(result, convertSchema(schema.allOf[i], ctx2));
       }
-      baseSchema = result2;
+      baseSchema = result;
     }
   }
   if (schema.nullable === true && ctx2.version === "openapi-3.0") {
@@ -14576,9 +14576,9 @@ var agentToolResultSchema = external_exports.object({
   }).strict().optional(),
   transactionId: nonEmptyString.optional(),
   data: jsonValueSchema.optional()
-}).strict().superRefine((result2, context) => {
-  if (result2.data === void 0) return;
-  if (new TextEncoder().encode(JSON.stringify(result2.data)).byteLength > MAX_AGENT_DATA_BYTES) {
+}).strict().superRefine((result, context) => {
+  if (result.data === void 0) return;
+  if (new TextEncoder().encode(JSON.stringify(result.data)).byteLength > MAX_AGENT_DATA_BYTES) {
     context.addIssue({
       code: "custom",
       path: ["data"],
@@ -14710,17 +14710,17 @@ function projectDurableEvent(sessionId, event) {
     const message = recordOf(data.message);
     const source = recordOf(message.source);
     const messageContent = Array.isArray(message.content) ? message.content : [];
-    const result2 = recordOf(messageContent[0]);
-    if (messageContent.length !== 1 || result2.type !== "tool-result" || typeof result2.toolCallId !== "string" || source.kind !== "tool" || source.callId !== result2.toolCallId) {
+    const result = recordOf(messageContent[0]);
+    if (messageContent.length !== 1 || result.type !== "tool-result" || typeof result.toolCallId !== "string" || source.kind !== "tool" || source.callId !== result.toolCallId) {
       return void 0;
     }
     return eventFrame(
       sessionId,
       event.type,
       {
-        callId: result2.toolCallId,
-        isError: result2.isError === true || Object.keys(recordOf(data.error)).length > 0,
-        contentText: boundedText(textContent(result2.content))
+        callId: result.toolCallId,
+        isError: result.isError === true || Object.keys(recordOf(data.error)).length > 0,
+        contentText: boundedText(textContent(result.content))
       },
       event.seq
     );
@@ -14783,32 +14783,12 @@ var DOCS_TOOL_NAMES = [
   "apply_document_operations",
   "save_document"
 ];
-var MARKDOWN_TOOL_NAMES = [
-  "read_markdown",
-  "apply_markdown_operations",
-  "save_markdown"
-];
-var HTML_TOOL_NAMES = ["read_html", "apply_html_operations", "save_html"];
-var SLIDES_TOOL_NAMES = [
-  "read_presentation",
-  "apply_presentation_operations",
-  "save_presentation",
-  "undo_presentation",
-  "redo_presentation"
-];
-var OFFICE_TOOL_NAMES = [
-  ...SHEETS_TOOL_NAMES,
-  ...DOCS_TOOL_NAMES,
-  ...SLIDES_TOOL_NAMES,
-  ...MARKDOWN_TOOL_NAMES,
-  ...HTML_TOOL_NAMES
-];
+var PDF_TOOL_NAMES = ["read_pdf", "apply_pdf_operations", "save_pdf"];
+var OFFICE_TOOL_NAMES = [...SHEETS_TOOL_NAMES, ...DOCS_TOOL_NAMES, ...PDF_TOOL_NAMES];
 function officeToolNames(editorType) {
   if (editorType === "docs") return DOCS_TOOL_NAMES;
   if (editorType === "sheets") return SHEETS_TOOL_NAMES;
-  if (editorType === "slides") return SLIDES_TOOL_NAMES;
-  if (editorType === "markdown") return MARKDOWN_TOOL_NAMES;
-  if (editorType === "html") return HTML_TOOL_NAMES;
+  if (editorType === "pdf") return PDF_TOOL_NAMES;
   throw new Error(`unsupported Office editor: ${editorType}`);
 }
 function configureOfficeToolScope(agentContext, editorType) {
@@ -14818,7 +14798,7 @@ function configureOfficeToolScope(agentContext, editorType) {
   agentContext.tools.guard(
     (execution) => allowed.has(execution.name) ? void 0 : `NexusDesk Agents may execute only official Office tools; ${execution.name} is denied.`
   );
-  const effective = agentContext.tools.schemas(agentContext.scope).map(({ name }) => name).sort();
+  const effective = agentContext.tools.schemas().map(({ name }) => name).sort();
   const expected = [...toolNames].sort();
   if (effective.length !== expected.length || effective.some((name, index) => name !== expected[index])) {
     throw new Error(`unsafe Agent tool catalog: ${effective.join(", ")}`);
@@ -14848,8 +14828,8 @@ function agentResult(value) {
     ...value.data === void 0 ? {} : { data: value.data }
   });
 }
-function proposalFrom(result2) {
-  const data = result2.data ?? {};
+function proposalFrom(result) {
+  const data = result.data ?? {};
   const planHash = data.planHash;
   const operationId = data.operationId;
   if (typeof planHash !== "string" || typeof operationId !== "string") {
@@ -14858,11 +14838,10 @@ function proposalFrom(result2) {
   return {
     operationId,
     proposal: {
-      operationId,
       planHash,
-      summary: typeof data.summary === "string" ? data.summary : result2.summary,
+      summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
-      warnings: result2.warnings
+      warnings: result.warnings
     }
   };
 }
@@ -14905,15 +14884,15 @@ function createDocsTools(bridge) {
         await bridge.request("propose_ops", { ops: args.operations }, exec)
       );
       if (!proposalResult.ok) return proposalResult;
-      const { operationId, proposal: proposal3 } = proposalFrom(proposalResult);
-      const approval = await bridge.approve("apply_document_operations", proposal3, exec);
+      const { operationId, proposal } = proposalFrom(proposalResult);
+      const approval = await bridge.approve("apply_document_operations", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("document mutation was not approved");
       }
       return agentResult(
         await bridge.request("apply_ops", { ops: args.operations }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal3.planHash,
+          planHash: proposal.planHash,
           operationId
         })
       );
@@ -14925,20 +14904,20 @@ function createDocsTools(bridge) {
     parameters: {},
     output: agentOutput,
     async execute(_args, exec) {
-      const proposal3 = {
+      const proposal = {
         planHash: "save-current-document-in-place",
         summary: "Save the current document in place.",
         targets: ["current document"],
         warnings: []
       };
-      const approval = await bridge.approve("save_document", proposal3, exec);
+      const approval = await bridge.approve("save_document", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("document save was not approved");
       }
       return agentResult(
         await bridge.request("save_document", { inPlace: true }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal3.planHash
+          planHash: proposal.planHash
         })
       );
     }
@@ -14946,30 +14925,12 @@ function createDocsTools(bridge) {
   return [read, apply, save];
 }
 
-// src/markdown-tools.ts
+// src/pdf-tools.ts
 import { defineTool as defineTool2 } from "@deepseek-ai/dsh-tools";
 var agentOutput2 = {
   schema: { type: "json" },
   render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
 };
-var MARKDOWN_DSL_GUIDE = [
-  "Markdown DSL (ordered and atomic):",
-  'insertContent {after: number|"selection", markdown}',
-  'replaceBlocks {target: "selection"|{start,end?}, markdown}',
-  "deleteBlocks {target}",
-  "replaceText {target, find, replace}",
-  'setStyle {target, style: "bold"|"italic"|"strike"|"code", find?, mode?}',
-  "setLink {target, href: string|null, find?}",
-  'setBlockType {target, type: "paragraph"|"heading"|"blockquote"|"codeBlock", level?, language?}',
-  'toggleList {target, list: "bullet"|"ordered"|"task"}',
-  "moveBlocks {target, after}",
-  "duplicateBlocks {target}",
-  "insertTable {after, rows?, cols?, headerRow?}",
-  "insertHorizontalRule {after}",
-  "insertImage {after, src, alt?}",
-  "editTable {target, action, row?, col?}",
-  "setFrontmatter {yaml}"
-].join("\n");
 function agentResult2(value) {
   return parseAgentToolResult({
     ok: value.ok,
@@ -14982,90 +14943,97 @@ function agentResult2(value) {
     ...value.data === void 0 ? {} : { data: value.data }
   });
 }
-function approvalDenied(action) {
-  return agentResult2({
-    ok: false,
-    summary: `${action} was not approved.`,
-    warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }]
-  });
-}
-function proposalFrom2(result2) {
-  const data = result2.data ?? {};
-  if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
-    throw new Error("Markdown editor returned an invalid edit proposal");
+function proposalFrom2(result) {
+  const data = result.data ?? {};
+  const planHash = data.planHash;
+  const operationId = data.operationId;
+  if (typeof planHash !== "string" || typeof operationId !== "string") {
+    throw new Error("PDF editor returned an invalid edit proposal");
   }
   return {
-    operationId: data.operationId,
+    operationId,
     proposal: {
-      operationId: data.operationId,
-      planHash: data.planHash,
-      summary: typeof data.summary === "string" ? data.summary : result2.summary,
+      planHash,
+      summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
-      warnings: result2.warnings
+      warnings: result.warnings
     }
   };
 }
-function createMarkdownTools(bridge) {
+function createPdfTools(bridge) {
   const read = defineTool2({
-    name: "read_markdown",
-    description: "Read a bounded structural view of the current Markdown document.",
-    parameters: {},
+    name: "read_pdf",
+    description: "Read a bounded page range from the open PDF, including extracted text.",
+    parameters: {
+      start: { type: "integer", description: "First page number (1-based)." },
+      end: { type: "integer", description: "Last page number (inclusive); omit for one page." }
+    },
     output: agentOutput2,
     isConcurrencySafe: () => true,
-    async execute(_args, execution) {
-      return agentResult2(await bridge.request("read_markdown", {}, execution));
+    async execute(args, exec) {
+      return agentResult2(
+        await bridge.request(
+          "read_pdf",
+          {
+            ...args.start === void 0 ? {} : { start: args.start },
+            ...args.end === void 0 ? {} : { end: args.end }
+          },
+          exec
+        )
+      );
     }
   });
   const apply = defineTool2({
-    name: "apply_markdown_operations",
-    description: "Apply one ordered batch of existing GenOffice Markdown apply_ops operations after exact user approval.",
+    name: "apply_pdf_operations",
+    description: "Apply one ordered batch of supported GenOffice PDF operations after exact user approval.",
     parameters: {
       operations: {
         type: "array",
         required: true,
         items: { type: "json" },
-        description: `Use only the curated GenOffice operations below. Block indexes come from read_markdown.
-${MARKDOWN_DSL_GUIDE}`
+        description: "Ordered PDF apply_ops operations. Read the PDF first and use only operations it advertises."
       }
     },
     output: agentOutput2,
-    async execute(args, execution) {
-      const proposed = agentResult2(await bridge.request("propose_ops", { ops: args.operations }, execution));
-      if (!proposed.ok) return proposed;
-      const { operationId, proposal: proposal3 } = proposalFrom2(proposed);
-      const approval = await bridge.approve("apply_markdown_operations", proposal3, execution);
+    async execute(args, exec) {
+      const proposalResult = agentResult2(
+        await bridge.request("propose_ops", { ops: args.operations }, exec)
+      );
+      if (!proposalResult.ok) return proposalResult;
+      const { operationId, proposal } = proposalFrom2(proposalResult);
+      const approval = await bridge.approve("apply_pdf_operations", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
-        return approvalDenied("Markdown mutation");
+        throw new Error("PDF mutation was not approved");
       }
       return agentResult2(
-        await bridge.request("apply_ops", { ops: args.operations }, execution, {
+        await bridge.request("apply_ops", { ops: args.operations }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal3.planHash,
+          planHash: proposal.planHash,
           operationId
         })
       );
     }
   });
   const save = defineTool2({
-    name: "save_markdown",
-    description: "Save the current Markdown document in place. The model cannot choose the path.",
+    name: "save_pdf",
+    description: "Save the open PDF in place. The model cannot choose or change the authorized path.",
     parameters: {},
     output: agentOutput2,
-    async execute(_args, execution) {
-      const proposal3 = {
-        planHash: "save-current-markdown-in-place",
-        summary: "Save the current Markdown document in place.",
-        targets: ["current document"],
+    async execute(_args, exec) {
+      const proposal = {
+        planHash: "save-current-pdf-in-place",
+        summary: "Save the current PDF in place.",
+        targets: ["current PDF"],
         warnings: []
       };
-      const approval = await bridge.approve("save_markdown", proposal3, execution);
+      const approval = await bridge.approve("save_pdf", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
-        return approvalDenied("Markdown save");
+        throw new Error("PDF save was not approved");
       }
       return agentResult2(
-        await bridge.request("save_markdown", { inPlace: true }, execution, {
+        await bridge.request("save_pdf", { inPlace: true }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal3.planHash
+          planHash: proposal.planHash
         })
       );
     }
@@ -15073,59 +15041,8 @@ ${MARKDOWN_DSL_GUIDE}`
   return [read, apply, save];
 }
 
-// src/html-tools.ts
-import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
-var output = { schema: { type: "json" }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] };
-var HTML_DSL_GUIDE = [
-  "HTML DSL (stable sid targets from read_html):",
-  "str_replace {old, new, sid?, replace_all?}",
-  "replace_element {sid, html}",
-  "set_inner_html {sid, html}",
-  "set_text {sid, text}",
-  'insert_html {sid, position: "before"|"after"|"prepend"|"append", html}',
-  "remove {sid}",
-  'move {sid, position: "before"|"after", ref_sid}',
-  "set_attr {sid, name, value: string|null}",
-  "set_style {sid, styles: {property: string|null}}",
-  "set_tag {sid, tag}",
-  "set_text_node {sid, index, text}",
-  "wrap_text {sid, start, end, tag, attrs?}",
-  "unwrap {sid}"
-].join("\n");
-function bounded(value) {
-  return parseAgentToolResult({ ok: value.ok, summary: value.summary, warnings: value.warnings, ...value.changes ? { changes: value.changes } : {}, ...value.verification ? { verification: value.verification } : {}, ...value.transactionId ? { transactionId: value.transactionId } : {}, ...value.data ? { data: value.data } : {} });
-}
-function approvalDenied2(action) {
-  return bounded({ ok: false, summary: `${action} was not approved.`, warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }] });
-}
-function proposal(result2) {
-  const data = result2.data ?? {};
-  if (typeof data.operationId !== "string" || typeof data.planHash !== "string") throw new Error("HTML editor returned an invalid edit proposal");
-  return { operationId: data.operationId, proposal: { operationId: data.operationId, planHash: data.planHash, summary: typeof data.summary === "string" ? data.summary : result2.summary, targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [], warnings: result2.warnings } };
-}
-function createHtmlTools(bridge) {
-  const read = defineTool3({ name: "read_html", description: "Read a bounded structural view of the current HTML document.", parameters: {}, output, isConcurrencySafe: () => true, async execute(_args, execution) {
-    return bounded(await bridge.request("read_html", {}, execution));
-  } });
-  const apply = defineTool3({ name: "apply_html_operations", description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.", parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: `Use only the curated GenOffice operations below. Stable sid values come from read_html.
-${HTML_DSL_GUIDE}` } }, output, async execute(args, execution) {
-    const proposed = bounded(await bridge.request("propose_ops", { ops: args.operations }, execution));
-    if (!proposed.ok) return proposed;
-    const value = proposal(proposed);
-    const approval = await bridge.approve("apply_html_operations", value.proposal, execution);
-    if (!approval.approved || approval.approvalId === void 0) return approvalDenied2("HTML mutation");
-    return bounded(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: value.proposal.planHash, operationId: value.operationId }));
-  } });
-  const save = defineTool3({ name: "save_html", description: "Save the current HTML document in place. The model cannot choose the path.", parameters: {}, output, async execute(_args, execution) {
-    const approved = await bridge.approve("save_html", { planHash: "save-current-html-in-place", summary: "Save the current HTML document in place.", targets: ["current document"], warnings: [] }, execution);
-    if (!approved.approved || approved.approvalId === void 0) return approvalDenied2("HTML save");
-    return bounded(await bridge.request("save_html", { inPlace: true }, execution, { approvalId: approved.approvalId, planHash: "save-current-html-in-place" }));
-  } });
-  return [read, apply, save];
-}
-
 // src/sheets-tools.ts
-import { defineTool as defineTool4 } from "@deepseek-ai/dsh-tools";
+import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
 var agentOutput3 = {
   schema: { type: "json" },
   render: (_args, value) => [
@@ -15136,7 +15053,7 @@ var agentOutput3 = {
   ]
 };
 function createSheetsTools(bridge) {
-  const read = defineTool4({
+  const read = defineTool3({
     name: "read_sheet",
     description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
     parameters: {
@@ -15154,7 +15071,7 @@ function createSheetsTools(bridge) {
     output: agentOutput3,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const result2 = await bridge.request(
+      const result = await bridge.request(
         "read_sheet",
         {
           ...args.sheet === void 0 ? {} : { sheet: args.sheet },
@@ -15163,10 +15080,10 @@ function createSheetsTools(bridge) {
         },
         exec
       );
-      return result2;
+      return result;
     }
   });
-  const apply = defineTool4({
+  const apply = defineTool3({
     name: "apply_sheet_operations",
     description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.",
     parameters: {
@@ -15187,161 +15104,48 @@ function createSheetsTools(bridge) {
       if (typeof planHash !== "string" || typeof operationId !== "string") {
         throw new Error("spreadsheet editor returned an invalid edit proposal");
       }
-      const proposal3 = {
-        operationId,
+      const proposal = {
         planHash,
         summary: typeof proposalData.summary === "string" ? proposalData.summary : proposalResult.summary,
         targets: Array.isArray(proposalData.targets) ? proposalData.targets.filter((value) => typeof value === "string") : [],
         warnings: proposalResult.warnings
       };
-      const approval = await bridge.approve("apply_sheet_operations", proposal3, exec);
+      const approval = await bridge.approve("apply_sheet_operations", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet mutation was not approved");
       }
-      const result2 = await bridge.request("apply_ops", { ops: args.operations }, exec, {
+      const result = await bridge.request("apply_ops", { ops: args.operations }, exec, {
         approvalId: approval.approvalId,
         planHash,
         operationId
       });
-      return result2;
+      return result;
     }
   });
-  const save = defineTool4({
+  const save = defineTool3({
     name: "save_sheet",
     description: "Save the open spreadsheet in place. The model cannot choose or change the destination path.",
     parameters: {},
     output: agentOutput3,
     async execute(_args, exec) {
-      const proposal3 = {
+      const proposal = {
         planHash: "save-current-workbook-in-place",
         summary: "Save the current spreadsheet in place.",
         targets: ["current workbook"],
         warnings: []
       };
-      const approval = await bridge.approve("save_sheet", proposal3, exec);
+      const approval = await bridge.approve("save_sheet", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet save was not approved");
       }
-      const result2 = await bridge.request("save_sheet", { inPlace: true }, exec, {
+      const result = await bridge.request("save_sheet", { inPlace: true }, exec, {
         approvalId: approval.approvalId,
-        planHash: proposal3.planHash
+        planHash: proposal.planHash
       });
-      return result2;
+      return result;
     }
   });
   return [read, apply, save];
-}
-
-// src/slides-tools.ts
-import { defineTool as defineTool5 } from "@deepseek-ai/dsh-tools";
-var output2 = {
-  schema: { type: "json" },
-  render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
-};
-function result(value) {
-  return parseAgentToolResult({
-    ok: value.ok,
-    summary: value.summary,
-    warnings: value.warnings,
-    ...value.changes === void 0 ? {} : { changes: value.changes },
-    ...value.verification === void 0 ? {} : { verification: value.verification },
-    ...value.continuation === void 0 ? {} : { continuation: value.continuation },
-    ...value.transactionId === void 0 ? {} : { transactionId: value.transactionId },
-    ...value.data === void 0 ? {} : { data: value.data }
-  });
-}
-function proposal2(value) {
-  const data = value.data ?? {};
-  if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
-    throw new Error("presentation editor returned an invalid edit proposal");
-  }
-  return {
-    operationId: data.operationId,
-    proposal: {
-      operationId: data.operationId,
-      planHash: data.planHash,
-      summary: typeof data.summary === "string" ? data.summary : value.summary,
-      targets: Array.isArray(data.targets) ? data.targets.filter((item) => typeof item === "string") : [],
-      warnings: value.warnings
-    }
-  };
-}
-function saveProposal(value) {
-  const pending = proposal2(value);
-  const data = value.data ?? {};
-  const contentVersion = data.contentVersion;
-  if (typeof contentVersion !== "number" || !Number.isSafeInteger(contentVersion) || contentVersion < 1) {
-    throw new Error("presentation editor returned an invalid save proposal");
-  }
-  return { ...pending, contentVersion };
-}
-function historyTool(name, action, bridge) {
-  return defineTool5({
-    name,
-    description: `${action === "undo" ? "Undo" : "Redo"} the latest presentation change after exact user approval.`,
-    parameters: {},
-    output: output2,
-    async execute(_args, execution) {
-      const proposed = result(await bridge.request("propose_history", { action }, execution));
-      if (!proposed.ok) return proposed;
-      const pending = proposal2(proposed);
-      const approval = await bridge.approve(name, pending.proposal, execution);
-      if (!approval.approved || approval.approvalId === void 0) throw new Error(`presentation ${action} was not approved`);
-      return result(await bridge.request("apply_history", { action }, execution, {
-        approvalId: approval.approvalId,
-        planHash: pending.proposal.planHash,
-        operationId: pending.operationId
-      }));
-    }
-  });
-}
-function createSlidesTools(bridge) {
-  return [
-    defineTool5({
-      name: "read_presentation",
-      description: "Read a bounded structural view of the current presentation, including slide and element identities.",
-      parameters: {},
-      output: output2,
-      isConcurrencySafe: () => true,
-      async execute(_args, execution) {
-        return result(await bridge.request("read_presentation", {}, execution));
-      }
-    }),
-    defineTool5({
-      name: "apply_presentation_operations",
-      description: "Apply one ordered GenOffice presentation transaction after exact user approval.",
-      parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: "Ordered GenOffice PPTX transaction operations using identities from read_presentation." } },
-      output: output2,
-      async execute(args, execution) {
-        const proposed = result(await bridge.request("propose_ops", { ops: args.operations }, execution));
-        if (!proposed.ok) return proposed;
-        const pending = proposal2(proposed);
-        const approval = await bridge.approve("apply_presentation_operations", pending.proposal, execution);
-        if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation mutation was not approved");
-        return result(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: pending.proposal.planHash, operationId: pending.operationId }));
-      }
-    }),
-    defineTool5({
-      name: "save_presentation",
-      description: "Save the open presentation in place. The model cannot choose or change the authorized path.",
-      parameters: {},
-      output: output2,
-      async execute(_args, execution) {
-        const proposed = result(await bridge.request("propose_save", {}, execution));
-        if (!proposed.ok) return proposed;
-        const pending = saveProposal(proposed);
-        const approval = await bridge.approve("save_presentation", pending.proposal, execution);
-        if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation save was not approved");
-        return result(await bridge.request("save_presentation", { inPlace: true, contentVersion: pending.contentVersion }, execution, {
-          approvalId: approval.approvalId,
-          planHash: pending.proposal.planHash,
-          operationId: pending.operationId
-        }));
-      }
-    }),
-    historyTool("undo_presentation", "undo", bridge),
-    historyTool("redo_presentation", "redo", bridge)
-  ];
 }
 
 // src/index.ts
@@ -15435,13 +15239,12 @@ async function openAgent(frame) {
   const existing = agents.get(frame.sessionId);
   if (existing !== void 0) return existing;
   const ctx2 = asRuntimeContext((await boot).ctx);
-  const agentOptions = frame.provider !== void 0 && frame.model !== void 0 ? { provider: frame.provider, model: frame.model } : ctx2.agentDefaultModel.currentSelection();
   const created = await ctx2.agents.create({
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
-    agentOptions,
-    setup(agentContext, agent) {
-      configureOfficeToolScope({ tools: agentContext.tools, scope: agent }, frame.editorType);
+    ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } },
+    setup(agentContext) {
+      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType);
     }
   });
   agents.set(frame.sessionId, created);
@@ -15504,7 +15307,7 @@ function createEditorToolBridge(editorType) {
           `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`
         );
       }
-      const operationId = authorization?.operationId ?? `operation-${String(execution.callId)}`;
+      const operationId = authorization?.operationId ?? `operation-${randomUUID()}`;
       const reply = await requestParent({
         type: "editor:request",
         target: { ...target, operationId },
@@ -15523,15 +15326,15 @@ function createEditorToolBridge(editorType) {
       target.revision = reply.currentRevision;
       return reply.result;
     },
-    async approve(toolName, proposal3, execution) {
+    async approve(toolName, proposal, execution) {
       if (execution.agent === void 0) return { approved: false };
       const sessionId = String(execution.agent.id ?? "");
       const pending = requestParentTracked({
         type: "approval:request",
         sessionId,
         toolName,
-        reason: proposal3.summary,
-        proposal: proposal3
+        reason: proposal.summary,
+        proposal
       });
       const reply = await pending.reply;
       return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
@@ -15541,9 +15344,7 @@ function createEditorToolBridge(editorType) {
 disposeOfficeTools = [
   ...createSheetsTools(createEditorToolBridge("sheets")),
   ...createDocsTools(createEditorToolBridge("docs")),
-  ...createMarkdownTools(createEditorToolBridge("markdown")),
-  ...createHtmlTools(createEditorToolBridge("html")),
-  ...createSlidesTools(createEditorToolBridge("slides"))
+  ...createPdfTools(createEditorToolBridge("pdf"))
 ].map((tool) => ctx.tools.register(tool));
 ctx.on(
   "approval/request",
@@ -15581,11 +15382,5 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles,
-  toolCatalogs: {
-    docs: DOCS_TOOL_NAMES,
-    sheets: SHEETS_TOOL_NAMES,
-    slides: SLIDES_TOOL_NAMES,
-    markdown: MARKDOWN_TOOL_NAMES,
-    html: HTML_TOOL_NAMES
-  }
+  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES, pdf: PDF_TOOL_NAMES }
 });

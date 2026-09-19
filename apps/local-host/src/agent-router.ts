@@ -351,6 +351,7 @@ export class AgentRouter {
       frame.command === 'save_sheet' ||
       frame.command === 'save_document' ||
       frame.command === 'save_presentation' ||
+      frame.command === 'save_pdf' ||
       frame.command === 'save_markdown' ||
       frame.command === 'save_html'
     ) {

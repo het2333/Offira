@@ -22,12 +22,14 @@ import {
   DOCS_TOOL_NAMES,
   HTML_TOOL_NAMES,
   MARKDOWN_TOOL_NAMES,
+  PDF_TOOL_NAMES,
   SHEETS_TOOL_NAMES,
   SLIDES_TOOL_NAMES,
 } from './runtime-policy'
 import { createDocsTools, type DocsToolBridge } from './docs-tools'
 import { createMarkdownTools } from './markdown-tools'
 import { createHtmlTools } from './html-tools'
+import { createPdfTools } from './pdf-tools'
 import { createSheetsTools } from './sheets-tools'
 import { createSlidesTools } from './slides-tools'
 import {
@@ -272,7 +274,7 @@ process.once('disconnect', () => {
 const ctx = asRuntimeContext((await boot).ctx)
 
 function createEditorToolBridge(
-  editorType: 'docs' | 'sheets' | 'slides' | 'markdown' | 'html',
+  editorType: 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
 ): DocsToolBridge {
   return {
     async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
@@ -328,6 +330,7 @@ function createEditorToolBridge(
 disposeOfficeTools = [
   ...createSheetsTools(createEditorToolBridge('sheets')),
   ...createDocsTools(createEditorToolBridge('docs')),
+  ...createPdfTools(createEditorToolBridge('pdf')),
   ...createMarkdownTools(createEditorToolBridge('markdown')),
   ...createHtmlTools(createEditorToolBridge('html')),
   ...createSlidesTools(createEditorToolBridge('slides')),
@@ -376,6 +379,7 @@ send({
     docs: DOCS_TOOL_NAMES,
     sheets: SHEETS_TOOL_NAMES,
     slides: SLIDES_TOOL_NAMES,
+    pdf: PDF_TOOL_NAMES,
     markdown: MARKDOWN_TOOL_NAMES,
     html: HTML_TOOL_NAMES,
   },

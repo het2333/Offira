@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { nexusdeskAppDataDirectory } from './app-data'
 import { DocumentDriverRegistry } from './document-driver'
 import { createDocsDocumentDriver } from './docs-document-driver'
+import { createPdfDocumentDriver } from './pdf-document-driver'
 import { createSlidesDocumentDriver } from './slides-document-driver'
 import { startLocalHost } from './server'
 import { createSheetsDocumentService } from './sheets-document-service'
@@ -21,6 +22,8 @@ for (const startup of startupDocuments) {
   } else if (startup.editorType === 'sheets') {
     const sheets = await createSheetsDocumentService(repositoryRoot, startup.path)
     drivers.push(...sheets.drivers)
+  } else if (startup.editorType === 'pdf') {
+    drivers.push(await createPdfDocumentDriver(startup.path))
   } else {
     drivers.push(await createTextDocumentDriver(startup.path, startup.editorType))
   }
@@ -33,6 +36,7 @@ const running = await startLocalHost({
       docs: resolve(process.cwd(), 'apps/docs/out/web'),
       sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
       slides: resolve(process.cwd(), 'apps/slides/out/web'),
+      pdf: resolve(process.cwd(), 'apps/pdf/out/web'),
       markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
       html: resolve(process.cwd(), 'apps/html/out/web'),
     },

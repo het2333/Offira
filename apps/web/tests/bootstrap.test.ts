@@ -76,4 +76,10 @@ describe('NexusDesk Web bootstrap', () => {
     expect(href).not.toContain('Users')
     expect(href).not.toContain('Forecast.xlsx')
   })
+
+  it('builds the PDF editor route from the same authorized document id', () => {
+    expect(
+      documentRoute({ documentId: 'pdf-1', title: 'review.pdf', editorType: 'pdf', revision: 1 }),
+    ).toBe('/pdf/?host=local-web&documentId=pdf-1')
+  })
 })

@@ -17,6 +17,7 @@
     "@nexusdesk/runtime-host": "*",
     "fast-xml-parser": "^5.3.4",
     "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "ws": "^8.21.1"
   },
   "devDependencies": {

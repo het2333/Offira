@@ -16,7 +16,14 @@ import {
   renderPageForOcr,
   type OcrPageData,
 } from './ocr-layer'
-import type { CropRect, FileOpCanceled, FileOpResult, PdfAppDeps, RotateDelta } from './ai/tools'
+import {
+  executePdfTool,
+  type CropRect,
+  type FileOpCanceled,
+  type FileOpResult,
+  type PdfAppDeps,
+  type RotateDelta,
+} from './ai/tools'
 import {
   MARKUP_COLORS,
   geomDispSize,
@@ -186,6 +193,8 @@ import {
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
 import { planEditOps, reduceBucket } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
+import type { JsonValue } from '@nexusdesk/protocol'
+import type { PdfEditPlan } from './agent/browser-agent-api'
 import { rectsNear } from './edit-state'
 import type {
   StampConfig,
@@ -5421,6 +5430,93 @@ export default function App() {
     splitPages: splitPagesToFile,
     mergePages: mergePagesToFile,
   }
+
+  // The Local Web Host owns the Agent session; this adapter gives it only the
+  // renderer's real, already-pending edit operations and save path. It never
+  // exposes pdf.js, PDFium, Electron, or React state objects to Harness.
+  useEffect(() => {
+    const browserHost = window.nexusdeskPdfHost
+    if (!browserHost) return
+    const failure = (code: string, message: string) => ({
+      ok: false as const,
+      summary: message,
+      warnings: [{ code, message }],
+    })
+    const planHash = async (operations: JsonValue[]): Promise<string> => {
+      const encoded = new TextEncoder().encode(JSON.stringify(operations))
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', encoded)
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+    }
+    const targetsFor = (operations: Op[]): string[] => [
+      ...new Set(
+        operations.map((operation) => {
+          const page = operation.pageIndex
+          if (typeof page === 'number') return `page:${String(page + 1)}`
+          const pages = operation.pages
+          if (Array.isArray(pages) && typeof pages[0] === 'number') return `page:${String(pages[0])}`
+          return `operation:${operation.op}`
+        }),
+      ),
+    ]
+    return browserHost.attachEditor({
+      async read(arguments_) {
+        const execution = await executePdfTool(
+          { ...aiApi, confirmFileOp: async () => false },
+          {
+            id: 'nexusdesk-read-pdf',
+            name: 'read_pages',
+            input: arguments_,
+          } as Parameters<typeof executePdfTool>[1],
+        )
+        return {
+          ok: execution.isError !== true,
+          summary: execution.summary,
+          warnings: execution.isError ? [{ code: 'PDF_READ_FAILED', message: execution.output }] : [],
+          data: { text: execution.output },
+        }
+      },
+      async propose(operations) {
+        const parsed = operations as Op[]
+        const plan = planEditOps(parsed, editOpContext(), newId)
+        if (plan.failures.length > 0) throw new Error(plan.failures[0]!.error)
+        return {
+          planHash: await planHash(operations),
+          summary: `Apply ${String(plan.ops.length)} PDF operation${plan.ops.length === 1 ? '' : 's'}.`,
+          targets: targetsFor(plan.ops),
+        }
+      },
+      async apply(plan: PdfEditPlan & { approvalId: string }) {
+        if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
+          return failure('APPROVAL_INVALID', 'The PDF operation is not bound to a live approval.')
+        }
+        const applied = applyEditOpsRef.current(plan.operations as Op[])
+        if (applied.failures.length > 0) {
+          return failure('PDF_OPERATION_FAILED', applied.failures[0]!.error)
+        }
+        return {
+          ok: true,
+          summary: `Applied ${String(applied.ops.length)} PDF operation${applied.ops.length === 1 ? '' : 's'}.`,
+          warnings: [],
+          changes: { targets: targetsFor(applied.ops), count: applied.ops.length },
+          verification: { passed: true, issues: [] },
+        }
+      },
+      async save(approvalId) {
+        if (!browserHost.bridge.consumeApproval(approvalId, 'save-current-pdf-in-place')) {
+          return failure('APPROVAL_INVALID', 'The PDF save is not bound to a live approval.')
+        }
+        const saved = await save()
+        return saved
+          ? {
+              ok: true,
+              summary: 'Saved the current PDF in place.',
+              warnings: [],
+              verification: { passed: true, issues: [] },
+            }
+          : failure('PDF_SAVE_FAILED', 'The Local Host rejected the PDF save.')
+      },
+    })
+  })
 
   /**
    * After an AI run that mutated a shell-created blank still carrying its untitled

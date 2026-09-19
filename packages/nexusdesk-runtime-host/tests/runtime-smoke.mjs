@@ -169,6 +169,7 @@ const expectedCatalogs = {
     'undo_presentation',
     'redo_presentation',
   ],
+  pdf: ['read_pdf', 'apply_pdf_operations', 'save_pdf'],
   markdown: ['read_markdown', 'apply_markdown_operations', 'save_markdown'],
   html: ['read_html', 'apply_html_operations', 'save_html'],
 }

@@ -3,6 +3,7 @@ import { htmlLang, type Lang } from '@genoffice/i18n'
 import App from './App'
 import { LocaleProvider } from './i18n/locale'
 import type { UiTheme } from '../shared/ipc'
+import { installPdfBrowserHostApiForDocument, selectPdfHost } from './browser-host-api'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/color-picker.css'
@@ -22,6 +23,17 @@ function applyTheme(theme: UiTheme): void {
 }
 
 void (async () => {
+  const rootElement = document.getElementById('root')!
+  const selection = await selectPdfHost({
+    search: window.location.search,
+    electronApi: (window as Partial<Window>).pdfApi,
+    installBrowser: installPdfBrowserHostApiForDocument,
+  })
+  if (selection.kind === 'error') {
+    rootElement.textContent = selection.message
+    rootElement.setAttribute('role', 'alert')
+    return
+  }
   const [lang, theme] = await Promise.all([
     window.pdfApi.getLanguage().catch(() => 'zh' as const),
     window.pdfApi.getTheme().catch(() => 'system' as const),
@@ -34,7 +46,7 @@ void (async () => {
     .then(applyAiPanelPrefs)
     .catch(() => {})
   window.pdfApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
-  createRoot(document.getElementById('root')!).render(
+  createRoot(rootElement).render(
     <LocaleProvider initial={lang}>
       <App />
     </LocaleProvider>,

@@ -3,7 +3,7 @@ import { shellBootstrapSchema } from '@nexusdesk/office-host'
 export interface WebDocumentSummary {
   documentId: string
   title: string
-  editorType: 'sheets'
+  editorType: 'docs' | 'sheets' | 'pdf'
   revision: number
 }
 
@@ -36,5 +36,5 @@ export async function loadBootstrap(
 export function documentRoute<T extends Pick<WebDocumentSummary, 'documentId' | 'editorType'>>(
   document: T,
 ): string {
-  return `/sheets/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
+  return `/${document.editorType}/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
 }

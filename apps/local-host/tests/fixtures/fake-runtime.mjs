@@ -9,6 +9,7 @@ process.send?.({
   toolCatalogs: {
     docs: ['read_document', 'apply_document_operations', 'save_document'],
     sheets: ['read_sheet', 'apply_sheet_operations', 'save_sheet'],
+    pdf: ['read_pdf', 'apply_pdf_operations', 'save_pdf'],
   },
 })
 

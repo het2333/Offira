@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   configureOfficeToolScope,
   DOCS_TOOL_NAMES,
-  MARKDOWN_TOOL_NAMES,
   HTML_TOOL_NAMES,
+  MARKDOWN_TOOL_NAMES,
   OFFICE_TOOL_NAMES,
+  PDF_TOOL_NAMES,
   SHEETS_TOOL_NAMES,
 } from '../src/runtime-policy'
 
@@ -85,9 +86,17 @@ describe('Office-only Agent capability policy', () => {
     expect(tools.guardCallback?.({ name: 'read_markdown' })).toMatch(/Office tools/)
   })
 
+  it('exposes only PDF tools for a PDF session', () => {
+    const tools = new EffectiveToolCatalog()
+    configureOfficeToolScope({ tools }, 'pdf')
+    expect(tools.schemas().map(({ name }) => name).sort()).toEqual([...PDF_TOOL_NAMES].sort())
+    expect(tools.guardCallback?.({ name: 'read_pdf' })).toBeUndefined()
+    expect(tools.guardCallback?.({ name: 'read_document' })).toMatch(/Office tools/)
+  })
+
   it('rejects an unknown editor kind instead of widening the catalog', () => {
     const tools = new EffectiveToolCatalog()
 
-    expect(() => configureOfficeToolScope({ tools }, 'pdf')).toThrow(/unsupported Office editor/i)
+    expect(() => configureOfficeToolScope({ tools }, 'unknown')).toThrow(/unsupported Office editor/i)
   })
 })

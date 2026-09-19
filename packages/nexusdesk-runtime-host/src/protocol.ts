@@ -50,6 +50,7 @@ export type RuntimeResponseFrame =
         docs: readonly string[]
         sheets: readonly string[]
         slides: readonly string[]
+        pdf: readonly string[]
         markdown: readonly string[]
         html: readonly string[]
       }

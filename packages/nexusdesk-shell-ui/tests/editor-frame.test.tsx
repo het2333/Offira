@@ -72,6 +72,9 @@ it('routes Docs by document id and keeps every open editor frame mounted', () =>
   expect(
     editorRoute(shellDocumentSummarySchema.parse({ documentId: 'slides 1', title: 'Deck.pptx', editorType: 'slides', revision: 1 })),
   ).toBe('/slides/?host=local-web&documentId=slides%201')
+  expect(
+    editorRoute(shellDocumentSummarySchema.parse({ documentId: 'pdf 1', title: 'Review.pdf', editorType: 'pdf', revision: 1 })),
+  ).toBe('/pdf/?host=local-web&documentId=pdf%201')
 
   const withDocs = shellBootstrapSchema.parse({
     ...bootstrap,

@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build:web-renderer": "vite build --config vite.renderer.config.ts",
     "build": "electron-vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
@@ -22,6 +23,8 @@
     "@genoffice/font-metrics": "*",
     "@genoffice/i18n": "*",
     "@genoffice/ui": "*",
+    "@nexusdesk/protocol": "*",
+    "@nexusdesk/web-client": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",

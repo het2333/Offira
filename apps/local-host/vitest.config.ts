@@ -4,5 +4,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    server: {
+      deps: {
+        inline: ['pdf-lib'],
+      },
+    },
   },
 })

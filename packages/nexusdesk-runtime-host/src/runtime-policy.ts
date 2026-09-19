@@ -17,15 +17,17 @@ export const SLIDES_TOOL_NAMES = [
   'undo_presentation',
   'redo_presentation',
 ] as const
+export const PDF_TOOL_NAMES = ['read_pdf', 'apply_pdf_operations', 'save_pdf'] as const
 export const OFFICE_TOOL_NAMES = [
   ...SHEETS_TOOL_NAMES,
   ...DOCS_TOOL_NAMES,
   ...SLIDES_TOOL_NAMES,
+  ...PDF_TOOL_NAMES,
   ...MARKDOWN_TOOL_NAMES,
   ...HTML_TOOL_NAMES,
 ] as const
 
-export type OfficeEditorType = 'docs' | 'sheets' | 'slides' | 'markdown' | 'html'
+export type OfficeEditorType = 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html'
 
 interface ToolScope {
   restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): () => void
@@ -38,6 +40,7 @@ export function officeToolNames(editorType: string): readonly string[] {
   if (editorType === 'docs') return DOCS_TOOL_NAMES
   if (editorType === 'sheets') return SHEETS_TOOL_NAMES
   if (editorType === 'slides') return SLIDES_TOOL_NAMES
+  if (editorType === 'pdf') return PDF_TOOL_NAMES
   if (editorType === 'markdown') return MARKDOWN_TOOL_NAMES
   if (editorType === 'html') return HTML_TOOL_NAMES
   throw new Error(`unsupported Office editor: ${editorType}`)
