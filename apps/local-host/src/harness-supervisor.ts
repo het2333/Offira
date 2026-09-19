@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   ClientId,
   DocumentId,
+  EditorResponseFrame,
   Revision,
   SessionId,
 } from '@nexusdesk/protocol'
@@ -95,6 +96,10 @@ export class HarnessSupervisor {
 
   respondApproval(id: string, outcome: import('@nexusdesk/protocol').ApprovalOutcome): void {
     this.send({ type: 'approval:response', protocolVersion: PROTOCOL_VERSION, id, outcome })
+  }
+
+  respondEditor(frame: EditorResponseFrame): void {
+    this.send(frame)
   }
 
   async shutdown(): Promise<void> {

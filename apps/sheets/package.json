@@ -34,6 +34,7 @@
     "@genoffice/ui": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/xlsx-gateway": "*",
+    "@nexusdesk/protocol": "*",
     "@univerjs/core": "^0.25.1",
     "@univerjs/data-validation": "^0.25.1",
     "@univerjs/engine-render": "^0.25.1",

@@ -4160,6 +4160,13 @@ export function App(): React.JSX.Element {
       return { ...outcome, formulaValues: values }
     },
     saveTo: async (path, overwrite) => handleSave('save-as', true, { path, overwrite }),
+    // Native agent saves never choose a destination; they overwrite the file
+    // the user already opened, or fail when the workbook has no path yet.
+    saveInPlace: async () => {
+      const path = lazyWorkbookRef.current?.file.path
+      if (path === undefined) return { ok: false, error: 'this workbook has no file yet' }
+      return handleSave('save-as', true, { path, overwrite: true })
+    },
   }
   useEffect(() => {
     const handlers = mcpSheetHandlersRef
@@ -4171,6 +4178,11 @@ export function App(): React.JSX.Element {
       focusSheet: (sheetId, address) => handlers.current?.focusSheet(sheetId, address),
       applyOps: async (ops, dryRun) =>
         (await handlers.current?.applyOps(ops, dryRun)) ?? { ok: false, reason: 'not ready' },
+      saveInPlace: async () =>
+        (await handlers.current?.saveInPlace?.()) ?? {
+          ok: false,
+          error: 'the spreadsheet is not ready',
+        },
       saveTo: async (path, overwrite) =>
         (await handlers.current?.saveTo(path, overwrite)) ?? {
           ok: false,

@@ -3,6 +3,10 @@ import type {
   ClientFrame,
   ClientId,
   DocumentId,
+  EditorRequestFrame,
+  MutationTarget,
+  OperationId,
+  RequestId,
   SessionId,
 } from '@nexusdesk/protocol'
 import type { RuntimeResponseFrame } from '@nexusdesk/runtime-host/protocol'
@@ -21,6 +25,12 @@ interface ApprovalOwner extends SessionOwner {
   timer: NodeJS.Timeout
 }
 
+interface EditorOperationOwner {
+  clientId: ClientId
+  requestId: RequestId
+  target: MutationTarget
+}
+
 export interface AgentRouterOptions {
   supervisor: HarnessSupervisor
   documents: DocumentRegistry
@@ -33,6 +43,7 @@ export interface AgentRouterOptions {
 export class AgentRouter {
   private readonly sessions = new Map<SessionId, SessionOwner>()
   private readonly approvals = new Map<string, ApprovalOwner>()
+  private readonly editorOperations = new Map<OperationId, EditorOperationOwner>()
   private readonly offFrame: () => void
   private readonly offExit: () => void
 
@@ -79,6 +90,41 @@ export class AgentRouter {
       })
       return
     }
+    if (frame.type === 'editor:result') {
+      const owner = this.editorOperations.get(frame.target.operationId)
+      if (owner === undefined
+        || owner.clientId !== clientId
+        || owner.requestId !== frame.id
+        || !sameTarget(owner.target, frame.target)) {
+        throw new Error(`client ${clientId} does not own operation ${frame.target.operationId}`)
+      }
+      this.options.documents.assertOwner({
+        documentId: frame.target.documentId,
+        clientId,
+        revision: frame.target.revision,
+      })
+      if (frame.result.ok) this.options.operations.commit(frame.target.operationId, frame.result)
+      else this.options.operations.fail(frame.target.operationId, frame.result)
+      this.options.supervisor.respondEditor(frame)
+      return
+    }
+    if (frame.type === 'operation:lookup') {
+      const owner = this.editorOperations.get(frame.operationId)
+      if (owner === undefined) throw new Error(`operation ${frame.operationId} is not available`)
+      this.options.documents.assertClient(owner.target.documentId, clientId)
+      const record = this.options.operations.lookup(frame.operationId)
+      if (record === undefined || record.state === 'reserved') {
+        throw new Error(`operation ${frame.operationId} has no terminal result`)
+      }
+      this.options.sendToClient(clientId, {
+        type: 'operation:result',
+        protocolVersion: 1,
+        id: frame.id,
+        operationId: frame.operationId,
+        result: record.result,
+      })
+      return
+    }
     if (frame.type === 'agent:cancel') {
       this.assertSessionOwner(frame.sessionId, clientId)
       this.options.supervisor.cancelTurn(frame.sessionId)
@@ -113,6 +159,10 @@ export class AgentRouter {
       }, this.options.approvalTimeoutMs ?? 120_000)
       this.approvals.set(frame.id, { ...owner, sessionId: frame.sessionId, timer })
       this.options.sendToClient(owner.clientId, frame as AgentServerFrame)
+      return
+    }
+    if (frame.type === 'editor:request') {
+      this.routeEditorRequest(frame)
     }
   }
 
@@ -161,4 +211,48 @@ export class AgentRouter {
       this.options.supervisor.respondApproval(id, 'unavailable')
     }
   }
+
+  private routeEditorRequest(frame: EditorRequestFrame): void {
+    const owner = this.sessions.get(frame.target.sessionId)
+    if (owner === undefined
+      || owner.clientId !== frame.target.clientId
+      || owner.documentId !== frame.target.documentId) {
+      throw new Error(`runtime request ${frame.id} does not match its agent session`)
+    }
+    this.options.documents.assertOwner({
+      documentId: frame.target.documentId,
+      clientId: owner.clientId,
+      revision: frame.target.revision,
+    })
+    const record = this.options.operations.reserve(frame.target.operationId, {
+      target: frame.target,
+      command: frame.command,
+      arguments: frame.arguments,
+    })
+    this.editorOperations.set(frame.target.operationId, {
+      clientId: owner.clientId,
+      requestId: frame.id,
+      target: frame.target,
+    })
+    if (record.state !== 'reserved') {
+      this.options.supervisor.respondEditor({
+        type: 'editor:result',
+        protocolVersion: 1,
+        id: frame.id,
+        target: frame.target,
+        result: record.result,
+      })
+      return
+    }
+    this.options.sendToClient(owner.clientId, frame)
+  }
+}
+
+function sameTarget(left: MutationTarget, right: MutationTarget): boolean {
+  return left.sessionId === right.sessionId
+    && left.documentId === right.documentId
+    && left.editorType === right.editorType
+    && left.revision === right.revision
+    && left.operationId === right.operationId
+    && left.clientId === right.clientId
 }

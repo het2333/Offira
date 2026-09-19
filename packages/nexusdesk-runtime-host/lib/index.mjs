@@ -14682,6 +14682,76 @@ function projectStreamChunk(sessionId, chunk, openTextBlocks) {
   return eventFrame(sessionId, "stream/chunk", data);
 }
 
+// src/sheets-tools.ts
+import { defineTool } from "@deepseek-ai/dsh-tools";
+var agentOutput = {
+  schema: { type: "json" },
+  render: (_args, value) => [{
+    type: "text",
+    text: JSON.stringify(value)
+  }]
+};
+function createSheetsTools(bridge) {
+  const read = defineTool({
+    name: "read_sheet",
+    description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
+    parameters: {
+      sheet: { type: "string", description: "Worksheet name. Prefer this stable identifier when known." },
+      sheetId: { type: "string", description: "Current worksheet id returned by a prior read." },
+      addresses: {
+        type: "array",
+        items: { type: "string" },
+        description: "A bounded list of A1 cell or range addresses."
+      }
+    },
+    output: agentOutput,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const result = await bridge.request("read_sheet", {
+        ...args.sheet === void 0 ? {} : { sheet: args.sheet },
+        ...args.sheetId === void 0 ? {} : { sheetId: args.sheetId },
+        ...args.addresses === void 0 ? {} : { addresses: args.addresses }
+      }, exec);
+      return result;
+    }
+  });
+  const apply = defineTool({
+    name: "apply_sheet_operations",
+    description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.",
+    parameters: {
+      operations: {
+        type: "array",
+        required: true,
+        items: { type: "json" },
+        description: "Ordered GenOffice spreadsheet DSL operations. Use worksheet names from read_sheet."
+      }
+    },
+    output: agentOutput,
+    async execute(args, exec) {
+      const approvalArgs = { operations: args.operations };
+      if (!await bridge.approve("apply_sheet_operations", approvalArgs, exec)) {
+        throw new Error("spreadsheet mutation was not approved");
+      }
+      const result = await bridge.request("apply_ops", { ops: args.operations }, exec);
+      return result;
+    }
+  });
+  const save = defineTool({
+    name: "save_sheet",
+    description: "Save the open spreadsheet in place. The model cannot choose or change the destination path.",
+    parameters: {},
+    output: agentOutput,
+    async execute(_args, exec) {
+      if (!await bridge.approve("save_sheet", { inPlace: true }, exec)) {
+        throw new Error("spreadsheet save was not approved");
+      }
+      const result = await bridge.request("save_sheet", { inPlace: true }, exec);
+      return result;
+    }
+  });
+  return [read, apply, save];
+}
+
 // src/index.ts
 function asRuntimeContext(value) {
   return value;
@@ -14697,8 +14767,10 @@ function send(frame) {
 }
 var replies = /* @__PURE__ */ new Map();
 var agents = /* @__PURE__ */ new Map();
+var editorTargets = /* @__PURE__ */ new Map();
 var textBlocks = /* @__PURE__ */ new Map();
 var stopping;
+var disposeSheetsTools = [];
 process.on("message", (frame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== "shutdown") {
     send({ type: "fatal", protocolVersion: PROTOCOL_VERSION, message: "runtime protocol version mismatch" });
@@ -14719,7 +14791,7 @@ process.on("message", (frame) => {
   });
 });
 function requestParent(frame, timeoutMs = 12e4) {
-  const id = `approval-${randomUUID()}`;
+  const id = `request-${randomUUID()}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       replies.delete(id);
@@ -14729,7 +14801,7 @@ function requestParent(frame, timeoutMs = 12e4) {
       clearTimeout(timer);
       resolve(reply);
     });
-    send({ ...frame, type: "approval:request", protocolVersion: PROTOCOL_VERSION, id });
+    send({ ...frame, protocolVersion: PROTOCOL_VERSION, id });
   });
 }
 var boot = runProfile({
@@ -14758,6 +14830,12 @@ async function openAgent(frame) {
 async function handle(frame) {
   switch (frame.type) {
     case "agent:start": {
+      editorTargets.set(frame.sessionId, {
+        sessionId: frame.sessionId,
+        documentId: frame.documentId,
+        clientId: frame.clientId,
+        revision: frame.revision
+      });
       const handle2 = await openAgent(frame);
       handle2.agent.followup(createUserMessage({
         content: [{ type: "text", text: frame.prompt }],
@@ -14780,6 +14858,8 @@ var stop = () => stopping ??= (async () => {
   const running = await boot.catch(() => void 0);
   for (const handle2 of agents.values()) await handle2.dispose().catch(() => void 0);
   agents.clear();
+  editorTargets.clear();
+  for (const dispose of disposeSheetsTools.splice(0)) dispose();
   await running?.shutdown.shutdown(0);
   send({ type: "shutdown-complete", protocolVersion: PROTOCOL_VERSION });
   if (process.connected) process.disconnect();
@@ -14788,6 +14868,35 @@ process.once("disconnect", () => {
   void stop();
 });
 var ctx = asRuntimeContext((await boot).ctx);
+disposeSheetsTools = createSheetsTools({
+  async request(command, arguments_, execution) {
+    const sessionId = String(execution.agent?.id ?? "");
+    const target = editorTargets.get(sessionId);
+    if (target === void 0) throw new Error("no spreadsheet editor is bound to this agent session");
+    const operationId = `operation-${randomUUID()}`;
+    const reply = await requestParent({
+      type: "editor:request",
+      target: { ...target, editorType: "sheets", operationId },
+      command,
+      arguments: arguments_
+    });
+    if (reply.type !== "editor:result" || reply.target.operationId !== operationId) {
+      throw new Error("spreadsheet editor returned a mismatched operation result");
+    }
+    return reply.result;
+  },
+  async approve(toolName, arguments_, execution) {
+    if (execution.agent === void 0) return false;
+    const outcome = await ctx.approval.request({
+      agent: execution.agent,
+      toolName,
+      callId: execution.callId,
+      reason: `Approve this exact spreadsheet action: ${JSON.stringify(arguments_)}`,
+      signal: execution.signal
+    });
+    return outcome === "allowed-once";
+  }
+}).map((tool) => ctx.tools.register(tool));
 ctx.on("approval/request", (request) => {
   const sessionId = String(request.agent?.session?.id ?? agents.keys().next().value ?? "");
   return requestParent({

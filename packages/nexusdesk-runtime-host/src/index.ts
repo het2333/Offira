@@ -5,9 +5,16 @@ import { loadLayeredEnv, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
-import type { ApprovalOutcome, SessionId } from '@nexusdesk/protocol'
+import type {
+  AgentToolResult,
+  ApprovalOutcome,
+  JsonValue,
+  OperationId,
+  SessionId,
+} from '@nexusdesk/protocol'
 
 import { projectDurableEvent, projectStreamChunk } from './projection'
+import { createSheetsTools } from './sheets-tools'
 import {
   PROTOCOL_VERSION,
   type HarnessDurableEvent,
@@ -30,6 +37,18 @@ interface RuntimeContext {
   }
   profileContext: {
     startedBundles: unknown
+  }
+  tools: {
+    register(tool: import('@deepseek-ai/dsh-tools').ToolDefinition): () => void
+  }
+  approval: {
+    request(input: {
+      agent: unknown
+      toolName: string
+      callId?: unknown
+      reason?: string
+      signal?: AbortSignal
+    }): Promise<ApprovalOutcome>
   }
   on(
     event: 'approval/request',
@@ -68,8 +87,15 @@ function send(frame: RuntimeResponseFrame): void {
 
 const replies = new Map<string, (frame: RuntimeRequestFrame) => void>()
 const agents = new Map<string, AgentHandle>()
+const editorTargets = new Map<string, {
+  sessionId: SessionId
+  documentId: import('@nexusdesk/protocol').DocumentId
+  clientId: import('@nexusdesk/protocol').ClientId
+  revision: import('@nexusdesk/protocol').Revision
+}>()
 const textBlocks = new Map<string, Set<number>>()
 let stopping: Promise<void> | undefined
+let disposeSheetsTools: Array<() => void> = []
 
 process.on('message', (frame: RuntimeRequestFrame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== 'shutdown') {
@@ -91,11 +117,15 @@ process.on('message', (frame: RuntimeRequestFrame) => {
   })
 })
 
+type ParentRequest =
+  | Omit<Extract<RuntimeResponseFrame, { type: 'approval:request' }>, 'id' | 'protocolVersion'>
+  | Omit<Extract<RuntimeResponseFrame, { type: 'editor:request' }>, 'id' | 'protocolVersion'>
+
 function requestParent(
-  frame: Omit<Extract<RuntimeResponseFrame, { type: 'approval:request' }>, 'id' | 'protocolVersion'>,
+  frame: ParentRequest,
   timeoutMs = 120_000,
 ): Promise<RuntimeRequestFrame> {
-  const id = `approval-${randomUUID()}`
+  const id = `request-${randomUUID()}`
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       replies.delete(id)
@@ -105,7 +135,7 @@ function requestParent(
       clearTimeout(timer)
       resolve(reply)
     })
-    send({ ...frame, type: 'approval:request', protocolVersion: PROTOCOL_VERSION, id })
+    send({ ...frame, protocolVersion: PROTOCOL_VERSION, id } as RuntimeResponseFrame)
   })
 }
 
@@ -139,6 +169,12 @@ async function openAgent(frame: Extract<RuntimeRequestFrame, { type: 'agent:star
 async function handle(frame: RuntimeRequestFrame): Promise<void> {
   switch (frame.type) {
     case 'agent:start': {
+      editorTargets.set(frame.sessionId, {
+        sessionId: frame.sessionId,
+        documentId: frame.documentId,
+        clientId: frame.clientId,
+        revision: frame.revision,
+      })
       const handle = await openAgent(frame)
       handle.agent.followup(createUserMessage({
         content: [{ type: 'text', text: frame.prompt }],
@@ -162,6 +198,8 @@ const stop = (): Promise<void> => (stopping ??= (async () => {
   const running = await boot.catch(() => undefined)
   for (const handle of agents.values()) await handle.dispose().catch(() => undefined)
   agents.clear()
+  editorTargets.clear()
+  for (const dispose of disposeSheetsTools.splice(0)) dispose()
   await running?.shutdown.shutdown(0)
   send({ type: 'shutdown-complete', protocolVersion: PROTOCOL_VERSION })
   if (process.connected) process.disconnect()
@@ -170,6 +208,36 @@ const stop = (): Promise<void> => (stopping ??= (async () => {
 process.once('disconnect', () => { void stop() })
 
 const ctx = asRuntimeContext((await boot).ctx)
+
+disposeSheetsTools = createSheetsTools({
+  async request(command, arguments_, execution): Promise<AgentToolResult> {
+    const sessionId = String(execution.agent?.id ?? '')
+    const target = editorTargets.get(sessionId)
+    if (target === undefined) throw new Error('no spreadsheet editor is bound to this agent session')
+    const operationId = `operation-${randomUUID()}` as OperationId
+    const reply = await requestParent({
+      type: 'editor:request',
+      target: { ...target, editorType: 'sheets', operationId },
+      command,
+      arguments: arguments_ as JsonValue,
+    })
+    if (reply.type !== 'editor:result' || reply.target.operationId !== operationId) {
+      throw new Error('spreadsheet editor returned a mismatched operation result')
+    }
+    return reply.result
+  },
+  async approve(toolName, arguments_, execution): Promise<boolean> {
+    if (execution.agent === undefined) return false
+    const outcome = await ctx.approval.request({
+      agent: execution.agent,
+      toolName,
+      callId: execution.callId,
+      reason: `Approve this exact spreadsheet action: ${JSON.stringify(arguments_)}`,
+      signal: execution.signal,
+    })
+    return outcome === 'allowed-once'
+  },
+}).map((tool) => ctx.tools.register(tool))
 
 ctx.on('approval/request', (request: {
   toolName: string

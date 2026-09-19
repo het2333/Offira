@@ -37,6 +37,24 @@ process.on('message', (frame) => {
       })
       return
     }
+    if (frame.prompt === 'editor-wait') {
+      process.send?.({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'editor-request-1',
+        target: {
+          sessionId: frame.sessionId,
+          documentId: frame.documentId,
+          editorType: 'sheets',
+          revision: frame.revision,
+          operationId: 'operation-1',
+          clientId: frame.clientId,
+        },
+        command: 'apply_ops',
+        arguments: { ops: [{ op: 'set_cell', sheet: 'Summary', address: 'B2', value: 5 }] },
+      })
+      return
+    }
     if (frame.prompt === 'crash') {
       process.exit(18)
       return
@@ -66,6 +84,13 @@ process.on('message', (frame) => {
       protocolVersion: 1,
       sessionId: activeSession,
       event: { type: 'test/approval-response', data: { id: frame.id, outcome: frame.outcome } },
+    })
+  } else if (frame.type === 'editor:result') {
+    process.send?.({
+      type: 'agent:event',
+      protocolVersion: 1,
+      sessionId: activeSession,
+      event: { type: 'test/editor-result', data: frame.result },
     })
   } else if (frame.type === 'shutdown') {
     process.send?.({ type: 'shutdown-complete', protocolVersion: 1 }, () => process.disconnect())

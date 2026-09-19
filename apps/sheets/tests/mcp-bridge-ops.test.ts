@@ -75,4 +75,41 @@ describe('mcp bridge apply_ops validation', () => {
     const reply = reportMcpResult.mock.calls[0]![0] as { ok: boolean }
     expect(reply.ok).toBe(true)
   })
+
+  it('passes dry-run batches to the planner without committing them', async () => {
+    const applyOpsFn = vi.fn().mockResolvedValue({ ok: true, dryRun: true })
+    const uninstall = installSheetsMcpBridge(bridgeWith({ applyOps: applyOpsFn }))
+    commandListener!({
+      requestId: 3,
+      command: 'apply_ops',
+      payload: {
+        dryRun: true,
+        ops: [{ op: 'set_cell', sheetId: 'sheet-1', address: 'A1', value: 'preview' }],
+      },
+    })
+    uninstall()
+    await vi.waitFor(() => expect(reportMcpResult).toHaveBeenCalledTimes(1))
+    expect(applyOpsFn).toHaveBeenCalledWith(
+      [{ op: 'set_cell', sheetId: 'sheet-1', address: 'A1', value: 'preview' }],
+      true,
+    )
+  })
+
+  it('saves in place through the dialog-free save handler', async () => {
+    const saveTo = vi.fn().mockResolvedValue({ ok: true, path: '/work/book.xlsx' })
+    const uninstall = installSheetsMcpBridge(bridgeWith({ saveTo }))
+    commandListener!({
+      requestId: 4,
+      command: 'save_sheet',
+      payload: { path: '/work/book.xlsx', overwrite: true },
+    })
+    uninstall()
+    await vi.waitFor(() => expect(reportMcpResult).toHaveBeenCalledTimes(1))
+    expect(saveTo).toHaveBeenCalledWith('/work/book.xlsx', true)
+    expect(reportMcpResult).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 4,
+      ok: true,
+      result: { ok: true, path: '/work/book.xlsx' },
+    }))
+  })
 })

@@ -1,0 +1,158 @@
+import { describe, expect, it, vi } from 'vitest'
+
+import type {
+  ApprovedEditPlan,
+  ClientId,
+  DocumentId,
+  EditRequest,
+  OperationId,
+  Revision,
+  SessionId,
+} from '@nexusdesk/protocol'
+import { createSheetsAdapter, type SheetsAdapterOptions } from '../src/renderer/agent/sheets-adapter'
+import type { McpSheetHandlers } from '../src/renderer/agent/sheets-command'
+
+const documentId = 'document-1' as DocumentId
+const clientId = 'client-1' as ClientId
+const revision = 1 as Revision
+
+function handlersWith(overrides: Partial<McpSheetHandlers> = {}): McpSheetHandlers {
+  return {
+    hasWorkbook: () => true,
+    context: () => ({ title: 'Forecast' }),
+    readCells: () => ({}),
+    sheets: () => [{ id: 'sheet-1', name: 'Summary' }],
+    focusSheet: vi.fn(),
+    applyOps: vi.fn().mockResolvedValue({ ok: true }),
+    saveTo: vi.fn().mockResolvedValue({ ok: true }),
+    saveInPlace: vi.fn().mockResolvedValue({ ok: true }),
+    ...overrides,
+  }
+}
+
+function editRequest(overrides: Partial<EditRequest> = {}): EditRequest {
+  return {
+    sessionId: 'session-1' as SessionId,
+    documentId,
+    editorType: 'sheets',
+    revision,
+    operationId: 'operation-1' as OperationId,
+    clientId,
+    command: 'apply_ops',
+    arguments: {
+      ops: [{ op: 'set_cell', sheet: 'Summary', address: 'B2', value: 5 }],
+    },
+    ...overrides,
+  }
+}
+
+function setup(overrides: Partial<SheetsAdapterOptions> = {}) {
+  const handlers = overrides.handlers ?? handlersWith()
+  const options: SheetsAdapterOptions = {
+    handlers,
+    document: () => ({ documentId, clientId, revision, title: 'Forecast', attached: true }),
+    consumeApproval: () => true,
+    verify: async () => ({ passed: true, issues: [] }),
+    rollback: vi.fn().mockResolvedValue(undefined),
+    commitRevision: vi.fn(),
+    ...overrides,
+  }
+  return { adapter: createSheetsAdapter(options), handlers, options }
+}
+
+async function approvedPlan(options: Partial<SheetsAdapterOptions> = {}) {
+  const fixture = setup(options)
+  const plan = await fixture.adapter.propose(editRequest())
+  return {
+    ...fixture,
+    plan: { ...plan, approvalId: 'approval-1' } as ApprovedEditPlan,
+  }
+}
+
+describe('Sheets editor adapter', () => {
+  it('proposes normalized operations without mutating the workbook', async () => {
+    const applyOps = vi.fn()
+    const { adapter } = setup({ handlers: handlersWith({ applyOps }) })
+
+    const plan = await adapter.propose(editRequest())
+
+    expect(plan.operations).toEqual([
+      { op: 'set_cell', sheetId: 'sheet-1', address: 'B2', value: 5 },
+    ])
+    expect(plan.planHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(applyOps).not.toHaveBeenCalled()
+  })
+
+  it('requires approval for the exact immutable plan hash', async () => {
+    let allowedHash = ''
+    const consumeApproval = vi.fn((_id: string, hash: string) => hash === allowedHash)
+    const { adapter, plan, handlers } = await approvedPlan({ consumeApproval })
+    allowedHash = plan.planHash
+    const tampered = {
+      ...plan,
+      operations: [{ op: 'set_cell', sheetId: 'sheet-1', address: 'B2', value: 999 }],
+    } as ApprovedEditPlan
+
+    const result = await adapter.apply(tampered)
+
+    expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'PLAN_TAMPERED' })] })
+    expect(handlers.applyOps).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['stale revision', { revision: 2 as Revision }, { revision: 1 as Revision }, 'STALE_REVISION'],
+    ['wrong browser client', { clientId: 'client-2' as ClientId }, {}, 'WRONG_CLIENT'],
+  ])('rejects %s immediately before applying', async (_label, current, request, code) => {
+    const applyOps = vi.fn()
+    const { adapter } = setup({
+      handlers: handlersWith({ applyOps }),
+      document: () => ({ documentId, clientId, revision, title: 'Forecast', attached: true, ...current }),
+    })
+    const proposed = await adapter.propose(editRequest(request))
+    const result = await adapter.apply({ ...proposed, approvalId: 'approval-1' })
+
+    expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code })] })
+    expect(applyOps).not.toHaveBeenCalled()
+  })
+
+  it('applies one operation batch once and replays its recorded agent result by operation id', async () => {
+    const applyOps = vi.fn().mockResolvedValue({ ok: true, engine: { unsafe: true } })
+    const { adapter, plan } = await approvedPlan({ handlers: handlersWith({ applyOps }) })
+
+    const first = await adapter.apply(plan)
+    const replayed = await adapter.apply(plan)
+
+    expect(applyOps).toHaveBeenCalledTimes(1)
+    expect(applyOps).toHaveBeenCalledWith(plan.operations, false)
+    expect(first).toEqual(replayed)
+    expect(first).toMatchObject({
+      ok: true,
+      changes: { targets: ['Summary!B2'], count: 1 },
+      verification: { passed: true, issues: [] },
+      transactionId: expect.any(String),
+    })
+    expect(JSON.stringify(first)).not.toContain('unsafe')
+    expect(JSON.stringify(first)).not.toContain('engine')
+  })
+
+  it('rolls back the transaction when post-apply verification fails', async () => {
+    const rollback = vi.fn().mockResolvedValue(undefined)
+    const { adapter, plan } = await approvedPlan({
+      verify: async () => ({
+        passed: false,
+        issues: [{ code: 'FORMULA_ERROR', message: 'B2 evaluates to #REF!', target: 'Summary!B2' }],
+      }),
+      rollback,
+    })
+
+    const result = await adapter.apply(plan)
+
+    expect(rollback).toHaveBeenCalledTimes(1)
+    expect(rollback).toHaveBeenCalledWith(result.transactionId)
+    expect(result).toMatchObject({
+      ok: false,
+      verification: { passed: false, issues: [expect.objectContaining({ code: 'FORMULA_ERROR' })] },
+      warnings: [expect.objectContaining({ code: 'ROLLED_BACK' })],
+    })
+  })
+})

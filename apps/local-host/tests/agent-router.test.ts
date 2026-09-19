@@ -7,6 +7,8 @@ import {
   type AgentServerFrame,
   type ClientId,
   type DocumentId,
+  type EditorRequestFrame,
+  type OperationId,
   type RequestId,
   type Revision,
   type SessionId,
@@ -182,6 +184,83 @@ describe('AgentRouter', () => {
         data: { id: 'approval-1', outcome: 'unavailable' },
       }),
     }))
+    router.dispose()
+  })
+
+  it('records an editor result before delivery and serves it after browser reconnect', async () => {
+    const documents = new DocumentRegistry()
+    const operations = new OperationStore()
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: Array<{ clientId: ClientId; frame: AgentServerFrame }> = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations,
+      sendToClient: (targetClientId, frame) => sent.push({ clientId: targetClientId, frame }),
+    })
+    await supervisor.ready()
+    router.handleClientFrame({
+      type: 'agent:start',
+      protocolVersion: PROTOCOL_VERSION,
+      id: startRequestId,
+      sessionId,
+      documentId,
+      prompt: 'editor-wait',
+    }, clientId)
+    await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
+    const request = sent.find(({ frame }) => frame.type === 'editor:request')!.frame as EditorRequestFrame
+    const result = {
+      ok: true,
+      summary: 'Updated Summary!B2.',
+      changes: { targets: ['Summary!B2'], count: 1 },
+      warnings: [],
+    }
+
+    expect(() => router.handleClientFrame({
+      type: 'editor:result',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'wrong-request' as RequestId,
+      target: request.target,
+      result,
+    }, clientId)).toThrow(/does not own operation/)
+    expect(operations.lookup('operation-1' as OperationId)).toMatchObject({ state: 'reserved' })
+
+    router.handleClientFrame({
+      type: 'editor:result',
+      protocolVersion: PROTOCOL_VERSION,
+      id: request.id,
+      target: request.target,
+      result,
+    }, clientId)
+    expect(operations.lookup('operation-1' as OperationId)).toMatchObject({
+      state: 'committed',
+      result,
+    })
+    await until(() => sent.some(({ frame }) => frame.type === 'agent:event'
+      && frame.event.type === 'test/editor-result'))
+
+    router.disconnectClient(clientId)
+    const reconnectedClientId = 'client-reconnected' as ClientId
+    documents.register({ documentId, clientId: reconnectedClientId, editorType: 'sheets', revision })
+    router.handleClientFrame({
+      type: 'operation:lookup',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'lookup-1' as RequestId,
+      operationId: 'operation-1' as OperationId,
+    }, reconnectedClientId)
+
+    expect(sent.filter(({ frame }) => frame.type === 'editor:request')).toHaveLength(1)
+    expect(sent.at(-1)).toEqual({
+      clientId: reconnectedClientId,
+      frame: {
+        type: 'operation:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'lookup-1',
+        operationId: 'operation-1',
+        result,
+      },
+    })
     router.dispose()
   })
 })
