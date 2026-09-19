@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./conformance": "./src/conformance.ts",
     "./schemas": "./src/schemas.ts"
   },
   "scripts": {

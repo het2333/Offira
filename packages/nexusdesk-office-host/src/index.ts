@@ -133,7 +133,7 @@ export interface FileSummary {
   readonly modifiedAt: number
   readonly sizeBytes: number
   readonly starred: boolean
-  readonly missing?: boolean
+  readonly missing?: boolean | undefined
 }
 
 export interface FileService {

@@ -173,4 +173,18 @@ export const reorderTabRequestSchema = z
   })
   .readonly()
 
+export const fileSummarySchema = z
+  .object({
+    fileId: z.string().min(1).max(512),
+    name: z.string().min(1).max(512),
+    editorType: editorKindSchema,
+    modifiedAt: z.number().nonnegative(),
+    sizeBytes: z.number().int().nonnegative(),
+    starred: z.boolean(),
+    missing: z.boolean().optional(),
+  })
+  .readonly()
+
+export const fileListResponseSchema = z.object({ files: z.array(fileSummarySchema) }).readonly()
+
 export type ShellBootstrapWire = z.infer<typeof shellBootstrapSchema>
