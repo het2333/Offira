@@ -187,4 +187,12 @@ export const fileSummarySchema = z
 
 export const fileListResponseSchema = z.object({ files: z.array(fileSummarySchema) }).readonly()
 
+export const shellChangedEventSchema = z
+  .object({
+    type: z.literal('shell:changed'),
+    sequence: z.number().int().positive(),
+  })
+  .strict()
+  .readonly()
+
 export type ShellBootstrapWire = z.infer<typeof shellBootstrapSchema>

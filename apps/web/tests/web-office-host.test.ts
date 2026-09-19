@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { HostError } from '@nexusdesk/office-host'
 import type { DocumentId } from '@nexusdesk/protocol'
-import { createWebOfficeHost, type WebFetch } from '../src/web-office-host'
+import { createWebOfficeHost, type WebFetch, type WebSocketFactory } from '../src/web-office-host'
 
 const bootstrap = {
   capabilities: {
@@ -125,5 +125,24 @@ describe('createWebOfficeHost', () => {
       documentId: 'd1',
     })
     expect(requests).toEqual(['/api/documents/d1/save', '/api/shell/bootstrap'])
+  })
+
+  it('refreshes subscribers when another client broadcasts a sequenced Shell change', async () => {
+    const listeners = new Map<string, (event: { data?: string }) => void>()
+    const socketFactory: WebSocketFactory = () => ({
+      addEventListener(type, listener) {
+        listeners.set(type, listener)
+      },
+      close() {},
+    })
+    const host = createWebOfficeHost(() => Promise.resolve(json(bootstrap)), socketFactory)
+    const events: unknown[] = []
+    host.tabs.onChanged((tabs) => events.push(tabs))
+
+    listeners.get('message')?.({ data: JSON.stringify({ type: 'shell:changed', sequence: 1 }) })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toEqual(bootstrap.tabs)
   })
 })

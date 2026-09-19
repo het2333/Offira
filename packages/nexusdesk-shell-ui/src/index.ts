@@ -1,4 +1,5 @@
 export { AppFrame, AppFrame as SharedShell } from './AppFrame'
+export { EditorFrame, editorRoute } from './EditorFrame'
 export { Home } from './Home'
 export { IntegrationsPane, mcpClaudeCommand, mcpConfigJson, mcpLaunch } from './IntegrationsPane'
 export { McpServerSection } from './McpServerSection'

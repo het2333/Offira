@@ -51,6 +51,12 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
       updater: false,
       credentialStore: false,
     },
+    bootstrap: async () => ({
+      capabilities: host.capabilities,
+      documents: [],
+      tabs,
+      settings: { language: 'zh', theme: 'system', onboardingSeen: true },
+    }),
     tabs: { list: async () => tabs, onChanged: () => () => {} },
   } as unknown as OfficeHost
   const platform = {

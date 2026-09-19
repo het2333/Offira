@@ -3,6 +3,7 @@ import { Home } from './Home'
 import { Onboarding } from './Onboarding'
 import { StarPromptCard } from './StarPromptCard'
 import { TabBar } from './TabBar'
+import { EditorFrame } from './EditorFrame'
 import { useOfficeHost, useShellPlatform } from './office-host-context'
 import type { ProductConfig } from '@nexusdesk/office-host'
 import { GENOFFICE_PRODUCT_CONFIG, ProductConfigProvider } from './product-config'
@@ -16,7 +17,8 @@ interface AppFrameProps {
 function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
   const host = useOfficeHost()
   const { home: homeApi } = useShellPlatform()
-  const [homeActive, setHomeActive] = useState(true)
+  const [homeActive, setHomeActive] = useState<boolean | null>(null)
+  const [bootstrap, setBootstrap] = useState<Awaited<ReturnType<typeof host.bootstrap>>>()
   const [showOnboarding, setShowOnboarding] = useState(!initialOnboardingSeen)
   const [starPromptDocOpens, setStarPromptDocOpens] = useState<number | null>(null)
 
@@ -24,8 +26,12 @@ function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
     const applyTabs = (tabs: Awaited<ReturnType<typeof host.tabs.list>>) => {
       const active = tabs.find((tab) => tab.active)
       setHomeActive(!active || active.kind === 'home')
+      setBootstrap((current) => (current === undefined ? current : { ...current, tabs }))
     }
-    void host.tabs.list().then(applyTabs)
+    void host.bootstrap().then((next) => {
+      setBootstrap(next)
+      applyTabs(next.tabs)
+    })
     return host.tabs.onChanged(applyTabs)
   }, [host])
 
@@ -59,9 +65,13 @@ function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
       <TabBar />
       {/* docs/sheets tabs render as WebContentsView children of this window, positioned
        * by the main process to cover this area — only Home paints its own content here. */}
-      <div className="app-frame-content" style={{ visibility: homeActive ? 'visible' : 'hidden' }}>
+      <div
+        className="app-frame-content"
+        style={{ visibility: homeActive === true ? 'visible' : 'hidden' }}
+      >
         <Home />
       </div>
+      {homeActive !== true && <EditorFrame bootstrap={bootstrap} />}
       {/* editor WebContentsViews paint above ALL shell DOM, so the overlay only
        * renders while the home tab is active — it comes back when home does */}
       {showOnboarding && homeActive && <Onboarding onDone={finishOnboarding} />}

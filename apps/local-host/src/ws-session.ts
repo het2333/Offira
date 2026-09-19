@@ -26,6 +26,7 @@ export interface WsSessionOptions {
 
 export interface WsSessionServer {
   send(clientId: ClientId, frame: AgentServerFrame): void
+  broadcastShellChanged(): void
   close(): Promise<void>
 }
 
@@ -51,6 +52,7 @@ export function installWsSessionServer(
 ): WsSessionServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
   const clients = new Map<ClientId, WebSocket>()
+  let shellSequence = 0
 
   server.on('upgrade', (request, socket, head) => {
     if (request.url !== '/ws') {
@@ -126,6 +128,13 @@ export function installWsSessionServer(
       if (client?.readyState !== WebSocket.OPEN)
         throw new Error(`client ${clientId} is disconnected`)
       client.send(JSON.stringify(frame))
+    },
+    broadcastShellChanged() {
+      shellSequence += 1
+      const frame = JSON.stringify({ type: 'shell:changed', sequence: shellSequence })
+      for (const client of clients.values()) {
+        if (client.readyState === WebSocket.OPEN) client.send(frame)
+      }
     },
     async close() {
       for (const client of wss.clients) {

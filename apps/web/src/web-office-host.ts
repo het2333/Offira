@@ -2,6 +2,7 @@ import {
   HostError,
   fileListResponseSchema,
   hostErrorSchema,
+  shellChangedEventSchema,
   shellBootstrapSchema,
   shellSettingsSchema,
   type HostCapabilities,
@@ -14,6 +15,13 @@ import {
 import { parseAgentToolResult, type DocumentId } from '@nexusdesk/protocol'
 
 export type WebFetch = (input: string, init?: RequestInit) => Promise<Response>
+
+export interface WebSocketConnection {
+  addEventListener(type: 'message' | 'close', listener: (event: { data?: string }) => void): void
+  close(): void
+}
+
+export type WebSocketFactory = (url: string) => WebSocketConnection
 
 interface Parser<T> {
   parse(value: unknown): T
@@ -38,10 +46,71 @@ function unsupported(message: string): never {
   throw new HostError('UNSUPPORTED_CAPABILITY', message, false)
 }
 
-export function createWebOfficeHost(fetcher: WebFetch = globalThis.fetch): OfficeHost {
+export function createWebOfficeHost(
+  fetcher: WebFetch = globalThis.fetch,
+  socketFactory?: WebSocketFactory,
+): OfficeHost {
   let current: ShellBootstrap | undefined
+  let socket: WebSocketConnection | undefined
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let lastShellSequence = 0
   const tabListeners = new Set<(tabs: readonly ShellTabSummary[]) => void>()
   const settingsListeners = new Set<(settings: ShellSettings) => void>()
+
+  function resolvedSocketFactory(): WebSocketFactory | undefined {
+    if (socketFactory !== undefined) return socketFactory
+    if (typeof globalThis.WebSocket === 'undefined' || typeof globalThis.location === 'undefined') {
+      return undefined
+    }
+    return (url) => new globalThis.WebSocket(url) as WebSocketConnection
+  }
+
+  function socketUrl(): string {
+    if (typeof globalThis.location === 'undefined') return '/ws'
+    const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${globalThis.location.host}/ws`
+  }
+
+  function hasSubscribers(): boolean {
+    return tabListeners.size > 0 || settingsListeners.size > 0
+  }
+
+  function ensureSocket(): void {
+    if (socket !== undefined || !hasSubscribers()) return
+    const factory = resolvedSocketFactory()
+    if (factory === undefined) return
+    const next = factory(socketUrl())
+    socket = next
+    next.addEventListener('message', (event) => {
+      if (typeof event.data !== 'string') return
+      try {
+        const parsed = shellChangedEventSchema.safeParse(JSON.parse(event.data))
+        if (!parsed.success || parsed.data.sequence <= lastShellSequence) return
+        const value = parsed.data
+        lastShellSequence = value.sequence
+        void bootstrap().catch(() => {})
+      } catch {
+        // Ignore unrelated or malformed frames; editor/Agent frames share this transport.
+      }
+    })
+    next.addEventListener('close', () => {
+      if (socket !== next) return
+      socket = undefined
+      if (!hasSubscribers()) return
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined
+        ensureSocket()
+      }, 500)
+    })
+  }
+
+  function closeSocketWithoutSubscribers(): void {
+    if (hasSubscribers()) return
+    if (reconnectTimer !== undefined) clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+    socket?.close()
+    socket = undefined
+  }
 
   async function request<T>(
     path: string,
@@ -154,7 +223,11 @@ export function createWebOfficeHost(fetcher: WebFetch = globalThis.fetch): Offic
       },
       onChanged(listener) {
         tabListeners.add(listener)
-        return () => tabListeners.delete(listener)
+        ensureSocket()
+        return () => {
+          tabListeners.delete(listener)
+          closeSocketWithoutSubscribers()
+        }
       },
     },
     settings: {
@@ -173,7 +246,11 @@ export function createWebOfficeHost(fetcher: WebFetch = globalThis.fetch): Offic
       },
       onChanged(listener) {
         settingsListeners.add(listener)
-        return () => settingsListeners.delete(listener)
+        ensureSocket()
+        return () => {
+          settingsListeners.delete(listener)
+          closeSocketWithoutSubscribers()
+        }
       },
     },
     agent: {

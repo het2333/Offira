@@ -181,12 +181,14 @@ describe('startLocalHost HTTP bootstrap', () => {
     const headers = await authenticatedHeaders()
 
     const asset = await fetch(`${running.origin}/assets/index-a1b2c3.js`, { headers })
-    const route = await fetch(`${running.origin}/edit/sheets/document-1`, { headers })
+    const route = await fetch(`${running.origin}/sheets/?host=local-web&documentId=document-1`, {
+      headers,
+    })
     const unknownApi = await fetch(`${running.origin}/api/unknown`, { headers })
 
     expect(asset.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
     expect(route.headers.get('cache-control')).toBe('no-store')
-    expect(await route.text()).toContain('shell')
+    expect(await route.text()).toContain('sheets')
     expect(unknownApi.status).toBe(404)
     expect(unknownApi.headers.get('content-type')).toContain('application/json')
   })

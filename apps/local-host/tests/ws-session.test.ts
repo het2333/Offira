@@ -28,7 +28,9 @@ function wsUrl(origin: string): string {
   return `${origin.replace('http:', 'ws:')}/ws`
 }
 
-async function openSession(host: RunningLocalHost): Promise<{ socket: WebSocket; clientId: ClientId }> {
+async function openSession(
+  host: RunningLocalHost,
+): Promise<{ socket: WebSocket; clientId: ClientId }> {
   const cookie = await sessionCookie(host)
   const socket = new WebSocket(wsUrl(host.origin), {
     headers: { Cookie: cookie, Origin: host.origin },
@@ -105,15 +107,17 @@ describe('authenticated WebSocket session', () => {
     const revision = 1 as Revision
     running = await startLocalHost({ documentRegistry: documents })
     const { socket, clientId } = await openSession(running)
-    socket.send(JSON.stringify({
-      type: 'editor:register',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'register-1',
-      clientId,
-      documentId,
-      editorType: 'sheets',
-      revision,
-    }))
+    socket.send(
+      JSON.stringify({
+        type: 'editor:register',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'register-1',
+        clientId,
+        documentId,
+        editorType: 'sheets',
+        revision,
+      }),
+    )
 
     await until(() => {
       try {
@@ -137,17 +141,53 @@ describe('authenticated WebSocket session', () => {
     const documents = new DocumentRegistry()
     running = await startLocalHost({ documentRegistry: documents })
     const { socket } = await openSession(running)
-    socket.send(JSON.stringify({
-      type: 'editor:register',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'register-1',
-      clientId: 'spoofed-client',
-      documentId: 'document-1',
-      editorType: 'sheets',
-      revision: 1,
-    }))
+    socket.send(
+      JSON.stringify({
+        type: 'editor:register',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'register-1',
+        clientId: 'spoofed-client',
+        documentId: 'document-1',
+        editorType: 'sheets',
+        revision: 1,
+      }),
+    )
 
     const code = await new Promise<number>((resolve) => socket.once('close', resolve))
     expect(code).toBe(1008)
+  })
+
+  it('broadcasts sequenced Shell changes after a persisted tab mutation', async () => {
+    running = await startLocalHost({
+      documents: [
+        {
+          documentId: 'document-1',
+          title: 'Forecast.xlsx',
+          editorType: 'sheets',
+          revision: 1,
+        },
+      ],
+    })
+    const cookie = await sessionCookie(running)
+    const socket = new WebSocket(wsUrl(running.origin), {
+      headers: { Cookie: cookie, Origin: running.origin },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once('message', () => resolve())
+      socket.once('error', reject)
+    })
+    const changed = new Promise<unknown>((resolve) => {
+      socket.once('message', (data) => resolve(JSON.parse(data.toString())))
+    })
+
+    const response = await fetch(`${running.origin}/api/shell/tabs/activate`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tabId: 'document:document-1' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(changed).resolves.toEqual({ type: 'shell:changed', sequence: 1 })
+    socket.close()
   })
 })

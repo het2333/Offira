@@ -1,3 +1,5 @@
+import { shellBootstrapSchema } from '@nexusdesk/office-host'
+
 export interface WebDocumentSummary {
   documentId: string
   title: string
@@ -14,7 +16,7 @@ type FetchBootstrap = (input: string, init?: RequestInit) => Promise<Response>
 export async function loadBootstrap(
   fetchBootstrap: FetchBootstrap = globalThis.fetch,
 ): Promise<WebBootstrapState> {
-  const response = await fetchBootstrap('/api/bootstrap', { credentials: 'same-origin' })
+  const response = await fetchBootstrap('/api/shell/bootstrap', { credentials: 'same-origin' })
   if (response.status === 401) {
     return {
       kind: 'unauthenticated',
@@ -22,9 +24,9 @@ export async function loadBootstrap(
       reconnectHref: '/bootstrap/reconnect',
     }
   }
-  if (!response.ok) throw new Error(`Local Host bootstrap failed with HTTP ${String(response.status)}`)
-  const value = await response.json() as { documents?: unknown }
-  if (!Array.isArray(value.documents)) throw new Error('Local Host returned an invalid document list')
+  if (!response.ok)
+    throw new Error(`Local Host bootstrap failed with HTTP ${String(response.status)}`)
+  const value = shellBootstrapSchema.parse(await response.json())
   return {
     kind: 'ready',
     documents: value.documents as WebDocumentSummary[],
@@ -34,5 +36,5 @@ export async function loadBootstrap(
 export function documentRoute<T extends Pick<WebDocumentSummary, 'documentId' | 'editorType'>>(
   document: T,
 ): string {
-  return `/edit/${document.editorType}/${encodeURIComponent(document.documentId)}`
+  return `/sheets/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
 }

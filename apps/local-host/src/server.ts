@@ -271,6 +271,7 @@ export async function startLocalHost(
           )
           const file = authorizedFiles.require(parsed.tabId)
           sendJson(response, 200, await shellState.openDocument(file.documentId))
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }
@@ -286,6 +287,7 @@ export async function startLocalHost(
               : body,
           )
           sendJson(response, 200, { files: authorizedFiles.toggleStar(parsed.tabId) })
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }
@@ -296,6 +298,7 @@ export async function startLocalHost(
         try {
           const body = activateTabRequestSchema.parse(await readJsonBody(request))
           sendJson(response, 200, await shellState.activate(body.tabId))
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }
@@ -306,6 +309,7 @@ export async function startLocalHost(
         try {
           const body = closeTabRequestSchema.parse(await readJsonBody(request))
           sendJson(response, 200, await shellState.close(body.tabId))
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }
@@ -316,6 +320,7 @@ export async function startLocalHost(
         try {
           const body = reorderTabRequestSchema.parse(await readJsonBody(request))
           sendJson(response, 200, await shellState.reorder(body.tabId, body.toIndex))
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }
@@ -330,6 +335,7 @@ export async function startLocalHost(
         try {
           const patch = shellSettingsPatchSchema.parse(await readJsonBody(request))
           sendJson(response, 200, (await shellState.updateSettings(patch)).settings)
+          wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
         }

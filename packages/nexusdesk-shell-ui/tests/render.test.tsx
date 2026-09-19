@@ -54,6 +54,12 @@ it('renders the original home and tab chrome through an injected host', async ()
       updater: false,
       credentialStore: false,
     },
+    bootstrap: async () => ({
+      capabilities: host.capabilities,
+      documents: [{ documentId: 'd1', title: 'Forecast.xlsx', editorType: 'sheets', revision: 0 }],
+      tabs,
+      settings: { language: 'zh', theme: 'system', onboardingSeen: true },
+    }),
     tabs: { list: async () => tabs, onChanged: () => () => {} },
   } as unknown as OfficeHost
   const platform = {
