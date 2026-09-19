@@ -15,6 +15,13 @@ export {
   type ShellPlatformServices,
 } from './office-host-context'
 export { strings } from './strings'
+export {
+  GENOFFICE_PRODUCT_CONFIG,
+  NEXUSDESK_PRODUCT_CONFIG,
+  ProductConfigProvider,
+  useProductConfig,
+} from './product-config'
+export { UnsupportedAction, unsupportedCapability } from './UnsupportedAction'
 export type * from './platform/home-api'
 export type * from './platform/integrations-api'
 export type * from './platform/tabs-api'

@@ -29,7 +29,8 @@ import type { AccountStatus, AiCatalogEntry, UiTheme } from './platform/home-api
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import './settings.css'
-import { useShellPlatform } from './office-host-context'
+import { useOfficeHost, useShellPlatform } from './office-host-context'
+import { useProductConfig } from './product-config'
 
 // ── Settings modal (opened from the account menu) ─────────
 // Genspark-style two-pane dialog: section nav on the left, fields on the right.
@@ -1010,8 +1011,19 @@ export function SettingsModal({
   onSkillUpdateDue,
 }: SettingsModalProps) {
   const { lang, setLang, t } = useI18n()
+  const host = useOfficeHost()
+  const product = useProductConfig()
   const { home: homeApi } = useShellPlatform()
-  const [section, setSection] = useState<SectionId>('account')
+  const sections = SECTIONS.filter((candidate) => {
+    if (candidate.id === 'account') return product.features.account
+    if (candidate.id === 'integrations') {
+      return product.features.integrations || product.features.mcp
+    }
+    return true
+  })
+  const [section, setSection] = useState<SectionId>(() =>
+    product.features.account ? 'account' : 'aiModel',
+  )
   const [theme, setTheme] = useState<UiTheme>('system')
   const [saveDir, setSaveDir] = useState('')
   const [analyticsOn, setAnalyticsOn] = useState(true)
@@ -1105,7 +1117,7 @@ export function SettingsModal({
         </div>
         <div className="set-body">
           <nav className="set-nav" aria-label={t('settings')}>
-            {SECTIONS.map((s) => (
+            {sections.map((s) => (
               <button
                 key={s.id}
                 className={`set-nav-item${section === s.id ? ' active' : ''}`}
@@ -1121,7 +1133,7 @@ export function SettingsModal({
             ))}
           </nav>
           <div className="set-pane">
-            {section === 'account' && (
+            {product.features.account && section === 'account' && (
               <>
                 <h3 className="set-pane-title">{t('setSecAccount')}</h3>
                 <Field label={t('setEmail')} value={loggedIn ? email : t('setNotLoggedIn')} />
@@ -1261,16 +1273,18 @@ export function SettingsModal({
                     onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
                   />
                 </div>
-                <Field
-                  label={t('saveLocation')}
-                  value={saveDir || '—'}
-                  valueTitle={saveDir}
-                  action={
-                    <button className="set-btn" onClick={changeSaveDir}>
-                      {t('setChange')}
-                    </button>
-                  }
-                />
+                {host.capabilities.nativeFilePicker && (
+                  <Field
+                    label={t('saveLocation')}
+                    value={saveDir || '—'}
+                    valueTitle={saveDir}
+                    action={
+                      <button className="set-btn" onClick={changeSaveDir}>
+                        {t('setChange')}
+                      </button>
+                    }
+                  />
+                )}
                 <div className="set-field">
                   <div className="set-field-text">
                     <div className="set-field-stack">
@@ -1318,45 +1332,50 @@ export function SettingsModal({
                 </div>
               </>
             )}
-            {section === 'integrations' && (
-              <IntegrationsPane t={t} onStatus={(st) => onSkillUpdateDue?.(skillUpdateDue(st))} />
-            )}
+            {(product.features.integrations || product.features.mcp) &&
+              section === 'integrations' && (
+                <IntegrationsPane t={t} onStatus={(st) => onSkillUpdateDue?.(skillUpdateDue(st))} />
+              )}
             {section === 'about' && (
               <>
                 <h3 className="set-pane-title">{t('setSecAbout')}</h3>
                 <Field label={t('versionLabel')} value={appVersion || '—'} />
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('updateChannel')}</label>
+                {host.capabilities.updater && (
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('updateChannel')}</label>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={channel}
+                      ariaLabel={t('updateChannel')}
+                      options={CHANNEL_OPTIONS.map((opt) => ({
+                        value: opt.value,
+                        label: t(opt.labelKey),
+                      }))}
+                      onPick={(v) => {
+                        const next = v === 'beta' ? 'beta' : 'stable'
+                        setChannel(next)
+                        void homeApi.setUpdateChannel(next)
+                      }}
+                    />
                   </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={channel}
-                    ariaLabel={t('updateChannel')}
-                    options={CHANNEL_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: t(opt.labelKey),
-                    }))}
-                    onPick={(v) => {
-                      const next = v === 'beta' ? 'beta' : 'stable'
-                      setChannel(next)
-                      void homeApi.setUpdateChannel(next)
-                    }}
+                )}
+                {product.id === 'genoffice' && (
+                  <Field
+                    label={t('setGithub')}
+                    value={
+                      githubStars === null
+                        ? 'github.com/genspark-ai/genoffice'
+                        : `github.com/genspark-ai/genoffice · ★ ${formatStars(githubStars)}`
+                    }
+                    action={
+                      <button className="set-btn" onClick={() => void homeApi.openGitHubRepo?.()}>
+                        {t('starOnGitHub')}
+                      </button>
+                    }
                   />
-                </div>
-                <Field
-                  label={t('setGithub')}
-                  value={
-                    githubStars === null
-                      ? 'github.com/genspark-ai/genoffice'
-                      : `github.com/genspark-ai/genoffice · ★ ${formatStars(githubStars)}`
-                  }
-                  action={
-                    <button className="set-btn" onClick={() => void homeApi.openGitHubRepo?.()}>
-                      {t('starOnGitHub')}
-                    </button>
-                  }
-                />
+                )}
               </>
             )}
           </div>

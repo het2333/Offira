@@ -189,10 +189,11 @@ export function TabBar() {
   // document tabs are sibling WebContentsViews: they see neither this press
   // nor a focus change, so relay it for them to dismiss open popovers
   useEffect(() => {
+    if (host.capabilities.mode !== 'electron') return
     const notify = (): void => tabApi.notifyChromePressed?.()
     document.addEventListener('pointerdown', notify, true)
     return () => document.removeEventListener('pointerdown', notify, true)
-  }, [])
+  }, [host.capabilities.mode, tabApi])
 
   // if the dragged tab is closed mid-drag (e.g. Cmd+W) its element unmounts
   // and pointerup/pointercancel never fire — clear the drag state ourselves
@@ -235,7 +236,7 @@ export function TabBar() {
   return (
     <div className="tab-bar">
       <div className="tab-bar-drag-spacer" />
-      {!IS_MAC && (
+      {!IS_MAC && host.capabilities.mode === 'electron' && (
         <button
           className="tab-app-menu-btn"
           title={t('appMenu')}
@@ -381,19 +382,50 @@ export function TabBar() {
             </div>
           )
         })}
+        {host.capabilities.mode === 'electron' && (
+          <button
+            className="tab-new-btn"
+            title={t('newTab')}
+            aria-label={t('newTab')}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              void tabApi.showNewMenu(Math.round(rect.left), Math.round(rect.bottom))
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 4.286v15.429M4.286 12h15.429"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+      {host.capabilities.mode === 'electron' && (
         <button
-          className="tab-new-btn"
-          title={t('newTab')}
-          aria-label={t('newTab')}
+          className="tab-overflow-btn"
+          title={t('tabList')}
+          aria-label={t('tabList')}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect()
-            void tabApi.showNewMenu(Math.round(rect.left), Math.round(rect.bottom))
+            void tabApi.showMenu(Math.round(rect.left), Math.round(rect.bottom))
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+          {/* window-with-tab-bar glyph: slanted tab cells above a full-width
+            header divider (from design asset tab.svg) */}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path
-              d="M12 4.286v15.429M4.286 12h15.429"
-              fill="none"
+              d="M21 4H3C2.44772 4 2 4.44772 2 5V19C2 19.5523 2.44772 20 3 20H21C21.5523 20 22 19.5523 22 19V5C22 4.44772 21.5523 4 21 4Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M11.5 9.5H22M11.5 9.5L9.5 4M17.5 9.5L15.5 4M2 19V8.5M22 19V8.5M4.5 20H19.5"
               stroke="currentColor"
               strokeWidth="1.5"
               strokeLinecap="round"
@@ -401,34 +433,7 @@ export function TabBar() {
             />
           </svg>
         </button>
-      </div>
-      <button
-        className="tab-overflow-btn"
-        title={t('tabList')}
-        aria-label={t('tabList')}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect()
-          void tabApi.showMenu(Math.round(rect.left), Math.round(rect.bottom))
-        }}
-      >
-        {/* window-with-tab-bar glyph: slanted tab cells above a full-width
-            header divider (from design asset tab.svg) */}
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M21 4H3C2.44772 4 2 4.44772 2 5V19C2 19.5523 2.44772 20 3 20H21C21.5523 20 22 19.5523 22 19V5C22 4.44772 21.5523 4 21 4Z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M11.5 9.5H22M11.5 9.5L9.5 4M17.5 9.5L15.5 4M2 19V8.5M22 19V8.5M4.5 20H19.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+      )}
       <div className="tab-bar-caption-spacer" />
     </div>
   )

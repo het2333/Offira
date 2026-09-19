@@ -6,7 +6,12 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
 import type { OfficeHost } from '@nexusdesk/office-host'
-import { OfficeHostProvider, SharedShell, type ShellPlatformServices } from '../src/index'
+import {
+  NEXUSDESK_PRODUCT_CONFIG,
+  OfficeHostProvider,
+  SharedShell,
+  type ShellPlatformServices,
+} from '../src/index'
 
 const actEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -31,22 +36,14 @@ afterEach(() => {
   container.remove()
 })
 
-it('renders the original home and tab chrome through an injected host', async () => {
+it('hides unsupported browser and GenOffice-only actions in NexusDesk', async () => {
   const tabs = [
-    { id: 'home', kind: 'home' as const, title: 'Home', closable: false as const, active: false },
-    {
-      id: 'document:d1',
-      kind: 'sheets' as const,
-      title: 'Forecast.xlsx',
-      closable: true as const,
-      active: true,
-      documentId: 'd1',
-    },
+    { id: 'home', kind: 'home' as const, title: 'Home', closable: false as const, active: true },
   ]
   const host = {
     capabilities: {
       mode: 'browser',
-      editors: ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'],
+      editors: ['sheets'],
       nativeFilePicker: false,
       browserImport: false,
       revealInFileManager: false,
@@ -58,12 +55,23 @@ it('renders the original home and tab chrome through an injected host', async ()
   } as unknown as OfficeHost
   const platform = {
     home: {
-      recents: async () => ({ entries: [], total: 0, totalAll: 0 }),
-      starred: async () => ({ entries: [], total: 0, totalAll: 0 }),
-      folderRoot: async () => ({ path: '/tmp', name: 'tmp', usable: true }),
-      listFolder: async () => ({ path: '/tmp', folders: [], files: [] }),
+      recents: async () => ({
+        entries: [
+          {
+            path: 'f1',
+            name: 'Forecast.xlsx',
+            ext: 'xlsx',
+            mtimeMs: 1,
+            sizeBytes: 16,
+            starred: false,
+          },
+        ],
+        total: 1,
+        totalAll: 1,
+      }),
+      starred: async () => ({ entries: [], total: 0, totalAll: 1 }),
+      folderRoot: async () => ({ path: '', name: '', usable: false }),
       onFolderChanged: () => () => {},
-      accountStatus: async () => ({ loggedIn: false }),
       starPromptShouldShow: async () => ({ show: false, docOpens: 0 }),
     },
     tabs: {
@@ -78,15 +86,23 @@ it('renders the original home and tab chrome through an injected host', async ()
   await act(async () => {
     root.render(
       <OfficeHostProvider host={host} platform={platform}>
-        <SharedShell initialOnboardingSeen />
+        <SharedShell product={NEXUSDESK_PRODUCT_CONFIG} initialOnboardingSeen />
       </OfficeHostProvider>,
     )
     await Promise.resolve()
+    await Promise.resolve()
   })
 
-  expect(container.querySelector('img[alt="GenOffice"]')).not.toBeNull()
-  expect([...container.querySelectorAll('.tab-title')].map((node) => node.textContent)).toEqual([
-    'Home',
-    'Forecast.xlsx',
-  ])
+  expect(container.textContent).toContain('NexusDesk')
+  expect(container.textContent).not.toContain('Genspark Projects')
+  expect(container.querySelector('.account-entry')).toBeNull()
+  expect(container.querySelector('.tab-app-menu-btn')).toBeNull()
+  expect(container.querySelector('.tab-new-btn')).toBeNull()
+  expect(container.querySelector('.tab-overflow-btn')).toBeNull()
+
+  const more = container.querySelector<HTMLButtonElement>('.more-btn')
+  expect(more).not.toBeNull()
+  await act(async () => more!.click())
+  const menu = container.querySelector('[role="menu"]')
+  expect(menu?.textContent).not.toMatch(/Reveal|Delete/)
 })

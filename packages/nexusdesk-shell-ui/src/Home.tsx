@@ -23,7 +23,8 @@ import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 import { SettingsModal } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
-import { useShellPlatform } from './office-host-context'
+import { useOfficeHost, useShellPlatform } from './office-host-context'
+import { useProductConfig } from './product-config'
 
 /** page size of the home list; scrolling to the bottom auto-loads the next page */
 const PAGE_SIZE = 50
@@ -643,6 +644,33 @@ function ConflictPrompt({ names, onChoose }: ConflictPromptProps) {
 const LOGIN_POLL_MS = 2500
 /** fallback deadline when the CLI does not report expires_in (device codes live ~300s) */
 const LOGIN_MAX_WAIT_MS = 300_000
+
+function PreferencesEntry() {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="preferences-entry">
+      {open && (
+        <SettingsModal
+          status={null}
+          loggingOut={false}
+          loginWaiting={false}
+          loginUrl={null}
+          urlCopied={false}
+          onOpenLoginUrl={() => {}}
+          onCopyLoginUrl={() => {}}
+          onClose={() => setOpen(false)}
+          onLogin={() => {}}
+          onLogout={() => {}}
+        />
+      )}
+      <button className="account-button" onClick={() => setOpen(true)}>
+        <span className="account-avatar">⚙</span>
+        <span className="account-label">{t('settings')}</span>
+      </button>
+    </div>
+  )
+}
 
 function AccountEntry({
   onStatusChange,
@@ -1338,6 +1366,8 @@ function DropToOpenOverlay(): ReactElement | null {
 export function Home() {
   const i18n = useI18n()
   const { t, lang } = i18n
+  const host = useOfficeHost()
+  const product = useProductConfig()
   const { home: homeApi } = useShellPlatform()
   // ── Paged list state (rows loaded for the current view + filter) ──
   const [entries, setEntries] = useState<RecentEntry[]>([])
@@ -1421,6 +1451,7 @@ export function Home() {
   const dragExpandTimer = useRef<number | null>(null)
 
   const loadRoot = useCallback(() => {
+    if (!host.capabilities.nativeFilePicker) return
     void homeApi.folderRoot().then((next) => {
       setRoot((prev) => {
         if (prev && prev.path !== next.path) {
@@ -1432,7 +1463,7 @@ export function Home() {
         return next
       })
     })
-  }, [resetFolders])
+  }, [homeApi, host.capabilities.nativeFilePicker, resetFolders])
 
   useEffect(loadRoot, [loadRoot])
 
@@ -1470,10 +1501,11 @@ export function Home() {
   }, [root, selectedFolder, listings])
 
   useEffect(() => {
+    if (!host.capabilities.nativeFilePicker) return
     return homeApi.onFolderChanged((dirs) => {
       invalidateFolders(dirs.filter(trackedFolder))
     })
-  }, [invalidateFolders, trackedFolder])
+  }, [homeApi, host.capabilities.nativeFilePicker, invalidateFolders, trackedFolder])
 
   // ── Paged loading ──
   // stale responses are dropped via a request sequence number (when views/filters switch quickly)
@@ -1970,7 +2002,25 @@ export function Home() {
       sub: '.pdf',
       action: () => homeApi.newPdf(newFileOpts),
     },
-  ]
+  ].filter((item) => {
+    const kind =
+      item.ext === 'docx'
+        ? 'docs'
+        : item.ext === 'xlsx'
+          ? 'sheets'
+          : item.ext === 'pptx'
+            ? 'slides'
+            : item.ext === 'md'
+              ? 'markdown'
+              : item.ext === 'pdf'
+                ? 'pdf'
+                : 'html'
+    return (
+      host.capabilities.mode === 'electron' &&
+      product.editors.includes(kind) &&
+      host.capabilities.editors.includes(kind)
+    )
+  })
 
   function renderQuickCards() {
     return (
@@ -1987,21 +2037,23 @@ export function Home() {
             </span>
           </button>
         ))}
-        <button
-          className="quick-card"
-          onClick={() => void homeApi.browse()}
-          data-tip={OPEN_LOCAL_EXTENSIONS}
-        >
-          <span className="quick-folder">
-            <FolderIcon size={18} />
-          </span>
-          <span className="quick-text">
-            <span className="quick-title-row">
-              <span className="quick-title">{t('openLocal')}</span>
+        {(host.capabilities.nativeFilePicker || host.capabilities.browserImport) && (
+          <button
+            className="quick-card"
+            onClick={() => void homeApi.browse()}
+            data-tip={OPEN_LOCAL_EXTENSIONS}
+          >
+            <span className="quick-folder">
+              <FolderIcon size={18} />
             </span>
-            <span className="quick-sub">{OPEN_LOCAL_EXTENSIONS}</span>
-          </span>
-        </button>
+            <span className="quick-text">
+              <span className="quick-title-row">
+                <span className="quick-title">{t('openLocal')}</span>
+              </span>
+              <span className="quick-sub">{OPEN_LOCAL_EXTENSIONS}</span>
+            </span>
+          </button>
+        )}
       </div>
     )
   }
@@ -2348,15 +2400,17 @@ export function Home() {
                 >
                   {t('open')}
                 </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setRowMenu(null)
-                    void homeApi.revealPath(entry.path)
-                  }}
-                >
-                  {t('revealInFolder')}
-                </button>
+                {host.capabilities.revealInFileManager && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setRowMenu(null)
+                      void homeApi.revealPath(entry.path)
+                    }}
+                  >
+                    {t('revealInFolder')}
+                  </button>
+                )}
                 <button
                   role="menuitem"
                   onClick={() => {
@@ -2381,7 +2435,7 @@ export function Home() {
                 <button role="menuitem" onClick={() => duplicateFile(entry.path)}>
                   {t('duplicate')}
                 </button>
-                {canDelete && (
+                {canDelete && host.capabilities.trash && (
                   <>
                     <div className="row-menu-divider" />
                     {context === 'global' && (
@@ -2515,26 +2569,32 @@ export function Home() {
                 <button role="menuitem" onClick={() => startMove([entry.path])}>
                   {t('moveToFolder')}
                 </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setFolderMenu(null)
-                    void homeApi.revealPath(entry.path)
-                  }}
-                >
-                  {t('revealInFolder')}
-                </button>
-                <div className="row-menu-divider" />
-                <button
-                  role="menuitem"
-                  className="danger"
-                  onClick={() => {
-                    setFolderMenu(null)
-                    setConfirmDeleteFolder(entry.path)
-                  }}
-                >
-                  {t('deleteFolder')}
-                </button>
+                {host.capabilities.revealInFileManager && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setFolderMenu(null)
+                      void homeApi.revealPath(entry.path)
+                    }}
+                  >
+                    {t('revealInFolder')}
+                  </button>
+                )}
+                {host.capabilities.trash && (
+                  <>
+                    <div className="row-menu-divider" />
+                    <button
+                      role="menuitem"
+                      className="danger"
+                      onClick={() => {
+                        setFolderMenu(null)
+                        setConfirmDeleteFolder(entry.path)
+                      }}
+                    >
+                      {t('deleteFolder')}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </span>
@@ -2593,12 +2653,14 @@ export function Home() {
                 <button className="selection-action" onClick={() => startMove(folderSelectedPaths)}>
                   {t('moveToFolder')}
                 </button>
-                <button
-                  className="selection-action danger"
-                  onClick={() => deleteFiles(folderSelectedPaths)}
-                >
-                  {t('deleteFiles')}
-                </button>
+                {host.capabilities.trash && (
+                  <button
+                    className="selection-action danger"
+                    onClick={() => deleteFiles(folderSelectedPaths)}
+                  >
+                    {t('deleteFiles')}
+                  </button>
+                )}
                 <button className="selection-action" onClick={() => setSelected(new Set())}>
                   {t('cancel')}
                 </button>
@@ -2702,12 +2764,14 @@ export function Home() {
                 <button className="selection-action" onClick={() => removeRecent(selectedPaths)}>
                   {t('removeFromList')}
                 </button>
-                <button
-                  className="selection-action danger"
-                  onClick={() => deleteFiles(selectedPaths)}
-                >
-                  {t('deleteFiles')}
-                </button>
+                {host.capabilities.trash && (
+                  <button
+                    className="selection-action danger"
+                    onClick={() => deleteFiles(selectedPaths)}
+                  >
+                    {t('deleteFiles')}
+                  </button>
+                )}
                 <button className="selection-action" onClick={() => setSelected(new Set())}>
                   {t('cancel')}
                 </button>
@@ -2788,7 +2852,11 @@ export function Home() {
     <div className="home">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img className="logo-lockup" src={logoLockup} alt="GenOffice" />
+          {product.id === 'genoffice' ? (
+            <img className="logo-lockup" src={logoLockup} alt={product.name} />
+          ) : (
+            <strong className="product-wordmark">{product.name}</strong>
+          )}
         </div>
         <nav className="sidebar-nav">
           <button
@@ -2822,7 +2890,7 @@ export function Home() {
             <span className="nav-label">{t('navStarred')}</span>
             <span className="nav-count">{navCounts.starred}</span>
           </button>
-          {loggedIn && (
+          {product.features.cloudProjects && loggedIn && (
             <button
               className={`nav-item${cloudMode && !selectedFolder ? ' active' : ''}`}
               onClick={() => {
@@ -2861,12 +2929,16 @@ export function Home() {
           )}
         </nav>
         <div className="sidebar-divider" />
-        {renderFolderPanel()}
-        <AccountEntry onStatusChange={handleAccountStatus} />
+        {host.capabilities.nativeFilePicker && renderFolderPanel()}
+        {product.features.account ? (
+          <AccountEntry onStatusChange={handleAccountStatus} />
+        ) : (
+          <PreferencesEntry />
+        )}
       </aside>
       {selectedFolder && root?.usable ? (
         renderFolderContent()
-      ) : cloudMode ? (
+      ) : product.features.cloudProjects && cloudMode ? (
         <CloudProjectsView />
       ) : (
         renderGlobalContent()

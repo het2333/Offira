@@ -4,13 +4,16 @@ import { Onboarding } from './Onboarding'
 import { StarPromptCard } from './StarPromptCard'
 import { TabBar } from './TabBar'
 import { useOfficeHost, useShellPlatform } from './office-host-context'
+import type { ProductConfig } from '@nexusdesk/office-host'
+import { GENOFFICE_PRODUCT_CONFIG, ProductConfigProvider } from './product-config'
 
 interface AppFrameProps {
   /** resolved before first paint (main.tsx) so home never flashes under the overlay */
   initialOnboardingSeen?: boolean | undefined
+  product?: ProductConfig | undefined
 }
 
-export function AppFrame({ initialOnboardingSeen = true }: AppFrameProps) {
+function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
   const host = useOfficeHost()
   const { home: homeApi } = useShellPlatform()
   const [homeActive, setHomeActive] = useState(true)
@@ -66,5 +69,16 @@ export function AppFrame({ initialOnboardingSeen = true }: AppFrameProps) {
         <StarPromptCard docOpens={starPromptDocOpens} onClose={() => setStarPromptDocOpens(null)} />
       )}
     </div>
+  )
+}
+
+export function AppFrame({
+  initialOnboardingSeen = true,
+  product = GENOFFICE_PRODUCT_CONFIG,
+}: AppFrameProps): React.JSX.Element {
+  return (
+    <ProductConfigProvider product={product}>
+      <AppFrameContent initialOnboardingSeen={initialOnboardingSeen} />
+    </ProductConfigProvider>
   )
 }
