@@ -19,6 +19,7 @@ electron-builder.env
 /docs-archive/
 .idea/
 .claude/
+.worktrees/
 
 # Local build artifacts dropped in the repo root
 /*.dmg
