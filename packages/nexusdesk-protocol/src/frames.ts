@@ -1,4 +1,4 @@
-import type { AgentToolResult, JsonValue } from './editor'
+import type { AgentApprovalProposal, AgentToolResult, JsonValue } from './editor'
 import type {
   ClientId,
   DocumentId,
@@ -112,6 +112,7 @@ export interface ApprovalRequestFrame extends FrameBase {
   sessionId: SessionId
   toolName: string
   reason?: string
+  proposal?: AgentApprovalProposal
 }
 
 export interface EditorRequestFrame extends FrameBase {
@@ -120,6 +121,7 @@ export interface EditorRequestFrame extends FrameBase {
   target: MutationTarget
   command: string
   arguments: JsonValue
+  approval?: { id: RequestId; planHash: string }
 }
 
 export interface OperationResultFrame extends FrameBase {

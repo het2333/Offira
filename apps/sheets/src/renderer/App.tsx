@@ -49,6 +49,7 @@ import {
 import { applyChangePlan, planFromOps, type OpExecutorContext } from './op-executor'
 import { installSheetsMcpBridge, type McpSheetHandlers } from './mcp-bridge'
 import { createSheetsAdapter } from './agent/sheets-adapter'
+import { createRevisionTracker } from './agent/revision-tracker'
 import { renameChartRefsForSheet } from './workbook-ops'
 import {
   proposeOperations as proposeOperationsImpl,
@@ -1571,9 +1572,20 @@ export function App(): React.JSX.Element {
     prefersDark.addEventListener('change', applyUniverDark)
     // Undo/redo stack occupancy: the QAT buttons grey out when there is nothing to apply
     const undoRedoService = runtime.univer.__getInjector().get(IUndoRedoService)
+    const revisionTracker = createRevisionTracker({
+      suppressed: () => journalSuppression.active,
+      schedule: queueMicrotask,
+      advance: () => {
+        const browserHost = window.nexusdeskBrowserHost
+        if (browserHost === undefined) return
+        browserHost.updateRevision((Number(browserHost.document.revision) + 1) as Revision)
+      },
+    })
     const undoRedoSub = undoRedoService.undoRedoStatus$.subscribe(
-      ({ undos, redos }: { undos: number; redos: number }) =>
-        setUniverHist({ canUndo: undos > 0, canRedo: redos > 0 }),
+      ({ undos, redos }: { undos: number; redos: number }) => {
+        setUniverHist({ canUndo: undos > 0, canRedo: redos > 0 })
+        revisionTracker.observe({ undos, redos })
+      },
     )
     // Programmatic installs (viewport streaming, file loads, merges, row
     // heights, notes, CF/filter rules) run through the same undoable commands
@@ -4238,11 +4250,12 @@ export function App(): React.JSX.Element {
             return { passed: issues.length === 0, issues }
           },
           rollback: async () => {
-            await univerRef.current?.univerAPI.undo()
+            const runtime = univerRef.current
+            return runtime === null ? false : await runtime.univerAPI.undo()
           },
-          commitRevision: () => {
-            browserHost.updateRevision((Number(browserHost.document.revision) + 1) as Revision)
-          },
+          // Univer's undo/redo status tracker is the single revision source for
+          // Agent edits, manual edits, and undo/redo.
+          commitRevision: () => undefined,
         }),
       )
     }

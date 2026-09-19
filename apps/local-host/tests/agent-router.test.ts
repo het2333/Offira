@@ -246,6 +246,16 @@ describe('AgentRouter', () => {
       },
       clientId,
     )
+    await until(() => router.hasApproval('editor-approval-1'))
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'editor-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
     await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
     const request = sent.find(({ frame }) => frame.type === 'editor:request')!
       .frame as EditorRequestFrame
@@ -292,6 +302,17 @@ describe('AgentRouter', () => {
         ({ frame }) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
       ),
     )
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        frame: expect.objectContaining({
+          type: 'agent:event',
+          event: expect.objectContaining({
+            type: 'test/editor-result',
+            data: expect.objectContaining({ currentRevision: 2 }),
+          }),
+        }),
+      }),
+    )
 
     router.disconnectClient(clientId)
     const reconnectedClientId = 'client-reconnected' as ClientId
@@ -309,6 +330,16 @@ describe('AgentRouter', () => {
         sessionId: 'session-retry' as SessionId,
         documentId,
         prompt: 'editor-wait',
+      },
+      reconnectedClientId,
+    )
+    await until(() => router.hasApproval('editor-approval-1'))
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'editor-approval-1' as RequestId,
+        outcome: 'allowed-once',
       },
       reconnectedClientId,
     )
@@ -340,6 +371,68 @@ describe('AgentRouter', () => {
         result,
       },
     })
+    router.dispose()
+  })
+
+  it('reissues an uncertain reserved editor request when its document reconnects', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: Array<{ clientId: ClientId; frame: AgentServerFrame }> = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (targetClientId, frame) => sent.push({ clientId: targetClientId, frame }),
+    })
+    await supervisor.ready()
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'editor-wait',
+      },
+      clientId,
+    )
+    await until(() => router.hasApproval('editor-approval-1'))
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'editor-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
+    await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
+    const original = sent.find(({ frame }) => frame.type === 'editor:request')!.frame
+
+    router.disconnectClient(clientId)
+    documents.detachClient(clientId)
+    const reconnectedClientId = 'client-recovered' as ClientId
+    documents.register({
+      documentId,
+      clientId: reconnectedClientId,
+      editorType: 'sheets',
+      revision: 2 as Revision,
+    })
+    router.handleClientFrame(
+      {
+        type: 'editor:register',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'register-recovered' as RequestId,
+        clientId: reconnectedClientId,
+        documentId,
+        editorType: 'sheets',
+        revision: 2 as Revision,
+      },
+      reconnectedClientId,
+    )
+
+    expect(sent.at(-1)).toEqual({ clientId: reconnectedClientId, frame: original })
     router.dispose()
   })
 })

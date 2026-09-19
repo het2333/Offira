@@ -24,7 +24,10 @@ test('authenticated browser applies and saves one approved formula-and-chart ope
     await editor.getByRole('textbox', { name: 'AI instruction' }).press('Enter')
     await expect(editor.getByText('Preparing the formula and chart.')).toBeVisible()
     await expect(editor.getByText('Workbook saved.')).toBeVisible()
-    expect(approvals).toHaveLength(1)
+    expect(approvals).toHaveLength(2)
+    expect(approvals[0]).toContain('Apply 3 spreadsheet operation')
+    expect(approvals[0]).toContain('计划校验值')
+    expect(approvals[1]).toContain('Save the current spreadsheet in place')
 
     await page.reload()
     await expect(page.getByText('Local Host connected')).toBeVisible()
@@ -34,6 +37,7 @@ test('authenticated browser applies and saves one approved formula-and-chart ope
       .fill('Retry the same accepted operation.')
     await reloadedEditor.getByRole('textbox', { name: 'AI instruction' }).press('Enter')
     await expect(reloadedEditor.getByText('Workbook saved.')).toBeVisible()
+    expect(approvals).toHaveLength(3)
 
     const workbook = await host.readFinalWorkbook()
     expect(workbook.rows).toEqual([

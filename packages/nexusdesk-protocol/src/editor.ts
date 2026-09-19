@@ -1,9 +1,4 @@
-import type {
-  DocumentId,
-  MutationTarget,
-  Revision,
-  TransactionId,
-} from './identity'
+import type { DocumentId, MutationTarget, Revision, TransactionId } from './identity'
 
 export type JsonPrimitive = boolean | number | string | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
@@ -12,6 +7,13 @@ export interface AgentWarning {
   code: string
   message: string
   target?: string
+}
+
+export interface AgentApprovalProposal {
+  planHash: string
+  summary: string
+  targets: string[]
+  warnings: AgentWarning[]
 }
 
 export interface AgentIssue {
@@ -37,6 +39,8 @@ export interface AgentToolResult {
     reason?: string
   }
   transactionId?: TransactionId
+  /** Bounded, JSON-safe payload for read-oriented tools. */
+  data?: JsonValue
 }
 
 export interface EditorCapabilities {
@@ -78,8 +82,9 @@ export interface EditPlan<TOperation extends JsonValue = JsonValue> {
   warnings: AgentWarning[]
 }
 
-export interface ApprovedEditPlan<TOperation extends JsonValue = JsonValue>
-  extends EditPlan<TOperation> {
+export interface ApprovedEditPlan<
+  TOperation extends JsonValue = JsonValue,
+> extends EditPlan<TOperation> {
   approvalId: string
 }
 

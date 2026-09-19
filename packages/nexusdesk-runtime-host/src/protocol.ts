@@ -1,5 +1,6 @@
 import type {
   AgentEventFrame,
+  AgentApprovalProposal,
   ApprovalOutcome,
   ClientId,
   DocumentId,
@@ -10,6 +11,11 @@ import type {
 } from '@nexusdesk/protocol'
 
 export { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+
+export interface RuntimeEditorResponseFrame extends EditorResponseFrame {
+  /** Host-authoritative revision after the editor request reached a terminal state. */
+  currentRevision: Revision
+}
 
 interface RuntimeFrameBase {
   protocolVersion: number
@@ -30,7 +36,7 @@ export type RuntimeRequestFrame =
     })
   | (RuntimeFrameBase & { type: 'agent:cancel'; sessionId: SessionId; reason: 'user' })
   | (RuntimeFrameBase & { type: 'approval:response'; outcome: ApprovalOutcome })
-  | EditorResponseFrame
+  | RuntimeEditorResponseFrame
   | (RuntimeFrameBase & { type: 'shutdown' })
 
 export type RuntimeResponseFrame =
@@ -45,6 +51,7 @@ export type RuntimeResponseFrame =
       sessionId: SessionId
       toolName: string
       reason?: string
+      proposal?: AgentApprovalProposal
     }
   | EditorRequestFrame
 

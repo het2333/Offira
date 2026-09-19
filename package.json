@@ -32,7 +32,7 @@
     "dev:docs": "npm run dev -w @genoffice/docs",
     "dev:web": "concurrently -k -n host,web,sheets \"npm run dev -w @nexusdesk/local-host\" \"npm run dev -w @nexusdesk/web\" \"npm run dev:renderer -w @genoffice/sheets\"",
     "build": "npm run build -w @genoffice/docs",
-    "build:web": "npm run build:web-renderer -w @genoffice/sheets && npm run build -w @nexusdesk/web && npm run build -w @nexusdesk/local-host",
+    "build:web": "npm run native:build -w @genoffice/sheets && npm run build:web-renderer -w @genoffice/sheets && npm run build -w @nexusdesk/web && npm run build -w @nexusdesk/local-host",
     "start:web": "node apps/local-host/lib/main.mjs",
     "build:all": "npm run build -w @genoffice/docs && npm run build -w @genoffice/sheets && npm run build -w @genoffice/slides && npm run build -w @genoffice/pdf && npm run build -w @genoffice/markdown && npm run build -w @genoffice/html && npm run build -w @genoffice/cli && npm run build -w @genoffice/shell",
     "shell": "npm run build:all && electron apps/shell",

@@ -8,6 +8,8 @@ import {
 import type { HarnessDurableEvent, HarnessStreamChunk } from './protocol'
 
 const STREAM_FORWARD = new Set(['block-start', 'block-end', 'text-delta', 'tool-call-delta'])
+const MAX_EVENT_TEXT = 16_384
+const MAX_EVENT_JSON = 32_768
 
 function toJsonValue(value: unknown, seen = new Set<object>()): JsonValue | undefined {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
@@ -57,8 +59,82 @@ function eventFrame(
 export function projectDurableEvent(
   sessionId: string,
   event: HarnessDurableEvent,
-): AgentEventFrame {
-  return eventFrame(sessionId, event.type, toJsonValue(event.data) ?? null, event.seq)
+): AgentEventFrame | undefined {
+  const data = recordOf(event.data)
+  if (event.type === 'tool/call') {
+    if (typeof data.callId !== 'string' || typeof data.name !== 'string') return undefined
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        callId: data.callId,
+        name: data.name,
+        arguments: boundedJson(data.arguments),
+      },
+      event.seq,
+    )
+  }
+  if (event.type === 'tool/result') {
+    if (typeof data.callId !== 'string') return undefined
+    const result = Object.keys(recordOf(data.result)).length > 0 ? recordOf(data.result) : data
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        callId: data.callId,
+        ...(typeof data.name === 'string' ? { name: data.name } : {}),
+        isError: result.isError === true,
+        contentText: boundedText(textContent(result.content)),
+      },
+      event.seq,
+    )
+  }
+  if (event.type === 'turn/end') {
+    const reason = recordOf(data.reason)
+    const error = recordOf(reason.error)
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        reason: {
+          kind: typeof reason.kind === 'string' ? reason.kind : 'error',
+          ...(typeof error.message === 'string'
+            ? { error: { message: boundedText(error.message) } }
+            : {}),
+        },
+      },
+      event.seq,
+    )
+  }
+  return undefined
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function boundedText(value: string): string {
+  return value.length <= MAX_EVENT_TEXT ? value : `${value.slice(0, MAX_EVENT_TEXT - 1)}…`
+}
+
+function boundedJson(value: unknown): JsonValue {
+  const json = toJsonValue(value) ?? null
+  return JSON.stringify(json).length <= MAX_EVENT_JSON
+    ? json
+    : { omitted: 'tool arguments exceeded the NexusDesk event limit' }
+}
+
+function textContent(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return ''
+  return value
+    .flatMap((entry) => {
+      const part = recordOf(entry)
+      return typeof part.text === 'string' ? [part.text] : []
+    })
+    .join('\n')
 }
 
 /** Project only model output that the transcript is allowed to render. */

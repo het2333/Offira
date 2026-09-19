@@ -57,6 +57,19 @@ class FakeClient {
   }
 }
 
+class MemoryStorage {
+  private readonly values = new Map<string, string>()
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+}
+
 const documentId = 'document-1' as DocumentId
 const revision = 1 as Revision
 
@@ -112,7 +125,7 @@ function adapterWith(overrides: Partial<EditorAdapter> = {}): EditorAdapter {
       warnings: [],
     }),
     apply: vi.fn().mockImplementation(async (plan) => ({
-      ok: plan.approvalId === 'editor-request-1',
+      ok: plan.approvalId === 'approval-1',
       summary: 'applied',
       warnings: [],
     })),
@@ -166,7 +179,7 @@ describe('Sheets host selection', () => {
 })
 
 describe('browser agent bridge', () => {
-  it('routes an approved edit through the editor adapter and returns only its Agent result', async () => {
+  it('proposes first and applies only the exact Host-approved plan hash', async () => {
     const client = new FakeClient()
     const adapter = adapterWith()
     const bridge = createBrowserAgentBridge({ client, documentId, revision })
@@ -186,24 +199,132 @@ describe('browser agent bridge', () => {
         operationId: 'operation-1' as OperationId,
         clientId: 'client-1' as ClientId,
       },
-      command: 'apply_ops',
+      command: 'propose_ops',
       arguments: { ops: [] },
     })
-    await vi.waitFor(() => expect(client.sent.some((frame) => frame.type === 'editor:result')).toBe(true))
+    await vi.waitFor(() =>
+      expect(client.sent.some((frame) => frame.type === 'editor:result')).toBe(true),
+    )
+
+    expect(adapter.apply).not.toHaveBeenCalled()
+    expect(client.sent.find((frame) => frame.type === 'editor:result')).toMatchObject({
+      result: {
+        ok: true,
+        data: {
+          planHash: 'exact-plan-hash',
+          summary: 'Apply one operation.',
+        },
+      },
+    })
+
+    client.emit({
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'editor-apply-1' as RequestId,
+      target: {
+        sessionId: 'session-1' as SessionId,
+        documentId,
+        editorType: 'sheets',
+        revision,
+        operationId: 'operation-1' as OperationId,
+        clientId: 'client-1' as ClientId,
+      },
+      command: 'apply_ops',
+      arguments: { ops: [] },
+      approval: { id: 'approval-1' as RequestId, planHash: 'exact-plan-hash' },
+    })
+    await vi.waitFor(() =>
+      expect(client.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(2),
+    )
 
     expect(adapter.propose).toHaveBeenCalledTimes(1)
-    expect(adapter.apply).toHaveBeenCalledWith(expect.objectContaining({
-      planHash: 'exact-plan-hash',
-      approvalId: 'editor-request-1',
-    }))
-    expect(client.sent.find((frame) => frame.type === 'editor:result')).toEqual({
+    expect(adapter.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planHash: 'exact-plan-hash',
+        approvalId: 'approval-1',
+      }),
+    )
+    expect(client.sent.filter((frame) => frame.type === 'editor:result').at(-1)).toEqual({
       type: 'editor:result',
       protocolVersion: PROTOCOL_VERSION,
-      id: 'editor-request-1',
+      id: 'editor-apply-1',
       target: expect.objectContaining({ documentId, operationId: 'operation-1' }),
       result: { ok: true, summary: 'applied', warnings: [] },
     })
-    expect(bridge.consumeApproval('editor-request-1', 'exact-plan-hash')).toBe(false)
+    expect(bridge.consumeApproval('approval-1', 'exact-plan-hash')).toBe(false)
+  })
+
+  it('replays a committed result after reload without applying the operation twice', async () => {
+    const storage = new MemoryStorage()
+    const firstClient = new FakeClient()
+    const firstAdapter = adapterWith()
+    const first = createBrowserAgentBridge({ client: firstClient, documentId, revision, storage })
+    first.attachEditor(firstAdapter)
+    const target = {
+      sessionId: 'session-1' as SessionId,
+      documentId,
+      editorType: 'sheets',
+      revision,
+      operationId: 'operation-recover' as OperationId,
+      clientId: 'client-1' as ClientId,
+    }
+    firstClient.emit({
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'propose-1' as RequestId,
+      target,
+      command: 'propose_ops',
+      arguments: { ops: [] },
+    })
+    await vi.waitFor(() =>
+      expect(firstClient.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(1),
+    )
+    firstClient.emit({
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'apply-1' as RequestId,
+      target,
+      command: 'apply_ops',
+      arguments: { ops: [] },
+      approval: { id: 'approval-1' as RequestId, planHash: 'exact-plan-hash' },
+    })
+    await vi.waitFor(() =>
+      expect(firstClient.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(2),
+    )
+    first.dispose()
+
+    const reloadedClient = new FakeClient()
+    const reloadedAdapter = adapterWith({ apply: vi.fn() })
+    const reloaded = createBrowserAgentBridge({
+      client: reloadedClient,
+      documentId,
+      revision: 2 as Revision,
+      storage,
+    })
+    reloaded.attachEditor(reloadedAdapter)
+    reloadedClient.emit({
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'apply-retry' as RequestId,
+      target: {
+        ...target,
+        sessionId: 'session-2' as SessionId,
+        clientId: 'client-1' as ClientId,
+        revision: 2 as Revision,
+      },
+      command: 'apply_ops',
+      arguments: { ops: [] },
+      approval: { id: 'approval-2' as RequestId, planHash: 'new-plan-hash' },
+    })
+
+    await vi.waitFor(() =>
+      expect(reloadedClient.sent.some((frame) => frame.type === 'editor:result')).toBe(true),
+    )
+    expect(reloadedAdapter.apply).not.toHaveBeenCalled()
+    expect(reloadedClient.sent.find((frame) => frame.type === 'editor:result')).toMatchObject({
+      result: { ok: true, summary: 'applied' },
+    })
+    reloaded.dispose()
   })
 
   it('returns a typed Agent failure for a command outside editor capabilities', async () => {
@@ -226,7 +347,9 @@ describe('browser agent bridge', () => {
       command: 'engine_object',
       arguments: {},
     })
-    await vi.waitFor(() => expect(client.sent.some((frame) => frame.type === 'editor:result')).toBe(true))
+    await vi.waitFor(() =>
+      expect(client.sent.some((frame) => frame.type === 'editor:result')).toBe(true),
+    )
 
     expect(client.sent.find((frame) => frame.type === 'editor:result')).toMatchObject({
       result: {
@@ -250,7 +373,11 @@ describe('browser Desktop API', () => {
   it('routes workbook saves through the named Local Host action', async () => {
     const request = vi.fn().mockResolvedValue({ ok: true, file: browserBootstrap().workbook })
     const api = createBrowserDesktopApi(browserBootstrap(), { request })
-    const saveRequest = { sessionId: browserBootstrap().workbook.sessionId, mode: 'save', edits: [] }
+    const saveRequest = {
+      sessionId: browserBootstrap().workbook.sessionId,
+      mode: 'save',
+      edits: [],
+    }
 
     await api.saveWorkbookEdits(saveRequest as never)
 
@@ -294,27 +421,31 @@ describe('browser host installation', () => {
     const bootstrap = browserBootstrap()
     const fetchBootstrap = vi.fn().mockResolvedValue(Response.json(bootstrap))
 
-    await expect(loadBrowserHostBootstrap('document / 1', fetchBootstrap)).resolves.toEqual(bootstrap)
-    expect(fetchBootstrap).toHaveBeenCalledWith(
-      '/api/documents/document%20%2F%201/bootstrap',
-      { credentials: 'same-origin' },
+    await expect(loadBrowserHostBootstrap('document / 1', fetchBootstrap)).resolves.toEqual(
+      bootstrap,
     )
+    expect(fetchBootstrap).toHaveBeenCalledWith('/api/documents/document%20%2F%201/bootstrap', {
+      credentials: 'same-origin',
+    })
   })
 })
 
 describe('browser Agent loop runtime', () => {
   it('starts a Harness turn against the stable document id instead of a filesystem path', () => {
     const startTurn = vi.fn()
-    const runtime = createAgentLoopRuntime({
-      transport: {} as never,
-      skill: {} as never,
-      getDocumentId: () => documentId,
-    }, {
-      startTurn,
-      cancelTurn: vi.fn(),
-      respondApproval: vi.fn(),
-      onFrame: vi.fn(() => () => undefined),
-    })
+    const runtime = createAgentLoopRuntime(
+      {
+        transport: {} as never,
+        skill: {} as never,
+        getDocumentId: () => documentId,
+      },
+      {
+        startTurn,
+        cancelTurn: vi.fn(),
+        respondApproval: vi.fn(),
+        onFrame: vi.fn(() => () => undefined),
+      },
+    )
 
     runtime.run('Update the forecast')
 
@@ -323,6 +454,52 @@ describe('browser Agent loop runtime', () => {
       documentId,
       sessionId: expect.stringMatching(/^sheets-/),
     })
+  })
+
+  it('shows the exact structured proposal that is bound to approval', () => {
+    let receive: ((frame: AgentServerFrame) => void) | undefined
+    const respondApproval = vi.fn()
+    const startTurn = vi.fn()
+    const confirm = vi.fn().mockReturnValue(true)
+    vi.stubGlobal('confirm', confirm)
+    const runtime = createAgentLoopRuntime(
+      {
+        transport: {} as never,
+        skill: {} as never,
+        getDocumentId: () => documentId,
+      },
+      {
+        startTurn,
+        cancelTurn: vi.fn(),
+        respondApproval,
+        onFrame: vi.fn((callback) => {
+          receive = callback
+          return () => undefined
+        }),
+      },
+    )
+    runtime.run('Update the forecast')
+
+    receive?.({
+      type: 'approval:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'approval-1' as RequestId,
+      sessionId: startTurn.mock.calls[0]![0].sessionId as SessionId,
+      toolName: 'apply_sheet_operations',
+      proposal: {
+        planHash: 'exact-plan-hash',
+        summary: 'Apply 2 operations to Summary!B2 and Summary!C2.',
+        targets: ['Summary!B2', 'Summary!C2'],
+        warnings: [{ code: 'NOTICE', message: 'Formula will recalculate.' }],
+      },
+    })
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Apply 2 operations'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Summary!B2'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Formula will recalculate.'))
+    expect(confirm.mock.calls[0]?.[0]).not.toContain('[object Object]')
+    expect(respondApproval).toHaveBeenCalledWith('approval-1', 'allowed-once')
+    vi.unstubAllGlobals()
   })
 })
 

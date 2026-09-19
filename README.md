@@ -476,7 +476,7 @@ curated for the Agent and never expose editor-engine objects.
 
 ```bash
 npm run build:web
-npm run start:web       # prints a one-time authenticated bootstrap URL
+npm run start:web -- /absolute/path/to/Forecast.xlsx
 npm run test:e2e:local-web
 ```
 

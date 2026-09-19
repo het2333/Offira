@@ -27,7 +27,7 @@ not proxy targets. Rebuild after changing the Web shell or Sheets renderer:
 
 ```bash
 npm run build:web
-npm run start:web
+npm run start:web -- /absolute/path/to/Forecast.xlsx
 ```
 
 Startup writes exactly one JSON line containing a one-time bootstrap URL:
@@ -46,9 +46,9 @@ repository. Environment variables cannot replace the runtime entry path. Model
 provider configuration and credentials remain owned by DeepSeek Harness, not
 the editor iframe.
 
-The standalone startup currently demonstrates the authenticated shell and
-runtime. A real file picker/document registry is not wired into this milestone;
-use the acceptance test below for the complete workbook flow.
+The production startup opens one explicit XLSX path and registers it as the
+active Sheets document. A file picker and multi-document registry are not wired
+into this milestone yet.
 
 Stop the process with `Ctrl-C`. The host closes browser sockets, disposes the
 router, and shuts down the Harness child.
@@ -59,7 +59,7 @@ Build first, then start Node with inspector endpoints bound only to loopback:
 
 ```bash
 npm run build:web
-NODE_OPTIONS='--inspect=127.0.0.1:0' npm run start:web
+NODE_OPTIONS='--inspect=127.0.0.1:0' npm run start:web -- /absolute/path/to/Forecast.xlsx
 ```
 
 The Local Host prints its `Debugger listening on ws://127.0.0.1:...` line. The

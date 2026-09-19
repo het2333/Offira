@@ -1,16 +1,11 @@
 import { fork, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
-import type {
-  ClientId,
-  DocumentId,
-  EditorResponseFrame,
-  Revision,
-  SessionId,
-} from '@nexusdesk/protocol'
+import type { ClientId, DocumentId, Revision, SessionId } from '@nexusdesk/protocol'
 import {
   PROTOCOL_VERSION,
   type RuntimeRequestFrame,
+  type RuntimeEditorResponseFrame,
   type RuntimeResponseFrame,
 } from '@nexusdesk/runtime-host/protocol'
 
@@ -98,7 +93,7 @@ export class HarnessSupervisor {
     this.send({ type: 'approval:response', protocolVersion: PROTOCOL_VERSION, id, outcome })
   }
 
-  respondEditor(frame: EditorResponseFrame): void {
+  respondEditor(frame: RuntimeEditorResponseFrame): void {
     this.send(frame)
   }
 
@@ -109,7 +104,11 @@ export class HarnessSupervisor {
     const child = this.child
     if (child === undefined) return
     if (child.connected) {
-      child.send({ type: 'shutdown', protocolVersion: PROTOCOL_VERSION, id: `shutdown-${randomUUID()}` })
+      child.send({
+        type: 'shutdown',
+        protocolVersion: PROTOCOL_VERSION,
+        id: `shutdown-${randomUUID()}`,
+      })
     }
     if (await this.waitForExit(child, SHUTDOWN_GRACE_MS)) return
     child.kill('SIGTERM')
@@ -145,7 +144,9 @@ export class HarnessSupervisor {
   }
 
   private resetReady(): void {
-    this.readyPromise = new Promise((resolve) => { this.resolveReady = resolve })
+    this.readyPromise = new Promise((resolve) => {
+      this.resolveReady = resolve
+    })
   }
 
   private send(frame: RuntimeRequestFrame): void {

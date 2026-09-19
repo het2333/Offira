@@ -6,6 +6,8 @@ var __export = (target, all) => {
 
 // src/index.ts
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { loadLayeredEnv, loadProfileDirectory } from "@deepseek-ai/dsh-app-boot";
 import { brandString } from "@deepseek-ai/dsh-brand";
@@ -14532,6 +14534,17 @@ config(en_default());
 // ../nexusdesk-protocol/src/schemas.ts
 var nonEmptyString = external_exports.string().min(1);
 var revisionSchema = external_exports.number().int().nonnegative();
+var MAX_AGENT_DATA_BYTES = 256 * 1024;
+var jsonValueSchema = external_exports.lazy(
+  () => external_exports.union([
+    external_exports.string(),
+    external_exports.number().finite(),
+    external_exports.boolean(),
+    external_exports.null(),
+    external_exports.array(jsonValueSchema),
+    external_exports.record(external_exports.string(), jsonValueSchema)
+  ])
+);
 var mutationTargetSchema = external_exports.object({
   sessionId: nonEmptyString,
   documentId: nonEmptyString,
@@ -14561,8 +14574,18 @@ var agentToolResultSchema = external_exports.object({
     suggestedTool: nonEmptyString.optional(),
     reason: nonEmptyString.optional()
   }).strict().optional(),
-  transactionId: nonEmptyString.optional()
-}).strict();
+  transactionId: nonEmptyString.optional(),
+  data: jsonValueSchema.optional()
+}).strict().superRefine((result, context) => {
+  if (result.data === void 0) return;
+  if (new TextEncoder().encode(JSON.stringify(result.data)).byteLength > MAX_AGENT_DATA_BYTES) {
+    context.addIssue({
+      code: "custom",
+      path: ["data"],
+      message: `agent result data exceeds ${String(MAX_AGENT_DATA_BYTES)} bytes`
+    });
+  }
+});
 var frameBase = { protocolVersion: external_exports.literal(PROTOCOL_VERSION) };
 var clientFrameSchema = external_exports.discriminatedUnion("type", [
   external_exports.object({
@@ -14628,6 +14651,8 @@ var clientFrameSchema = external_exports.discriminatedUnion("type", [
 
 // src/projection.ts
 var STREAM_FORWARD = /* @__PURE__ */ new Set(["block-start", "block-end", "text-delta", "tool-call-delta"]);
+var MAX_EVENT_TEXT = 16384;
+var MAX_EVENT_JSON = 32768;
 function toJsonValue(value, seen = /* @__PURE__ */ new Set()) {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
@@ -14664,7 +14689,69 @@ function eventFrame(sessionId, type, data, seq) {
   };
 }
 function projectDurableEvent(sessionId, event) {
-  return eventFrame(sessionId, event.type, toJsonValue(event.data) ?? null, event.seq);
+  const data = recordOf(event.data);
+  if (event.type === "tool/call") {
+    if (typeof data.callId !== "string" || typeof data.name !== "string") return void 0;
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        callId: data.callId,
+        name: data.name,
+        arguments: boundedJson(data.arguments)
+      },
+      event.seq
+    );
+  }
+  if (event.type === "tool/result") {
+    if (typeof data.callId !== "string") return void 0;
+    const result = Object.keys(recordOf(data.result)).length > 0 ? recordOf(data.result) : data;
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        callId: data.callId,
+        ...typeof data.name === "string" ? { name: data.name } : {},
+        isError: result.isError === true,
+        contentText: boundedText(textContent(result.content))
+      },
+      event.seq
+    );
+  }
+  if (event.type === "turn/end") {
+    const reason = recordOf(data.reason);
+    const error51 = recordOf(reason.error);
+    return eventFrame(
+      sessionId,
+      event.type,
+      {
+        reason: {
+          kind: typeof reason.kind === "string" ? reason.kind : "error",
+          ...typeof error51.message === "string" ? { error: { message: boundedText(error51.message) } } : {}
+        }
+      },
+      event.seq
+    );
+  }
+  return void 0;
+}
+function recordOf(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+}
+function boundedText(value) {
+  return value.length <= MAX_EVENT_TEXT ? value : `${value.slice(0, MAX_EVENT_TEXT - 1)}\u2026`;
+}
+function boundedJson(value) {
+  const json2 = toJsonValue(value) ?? null;
+  return JSON.stringify(json2).length <= MAX_EVENT_JSON ? json2 : { omitted: "tool arguments exceeded the NexusDesk event limit" };
+}
+function textContent(value) {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.flatMap((entry) => {
+    const part = recordOf(entry);
+    return typeof part.text === "string" ? [part.text] : [];
+  }).join("\n");
 }
 function projectStreamChunk(sessionId, chunk, openTextBlocks) {
   if (typeof chunk.index !== "number" || !STREAM_FORWARD.has(chunk.type)) return void 0;
@@ -14682,21 +14769,41 @@ function projectStreamChunk(sessionId, chunk, openTextBlocks) {
   return eventFrame(sessionId, "stream/chunk", data);
 }
 
+// src/runtime-policy.ts
+var OFFICE_TOOL_NAMES = ["read_sheet", "apply_sheet_operations", "save_sheet"];
+function configureOfficeToolScope(agentContext) {
+  const allowed = new Set(OFFICE_TOOL_NAMES);
+  agentContext.tools.restrict({ allow: OFFICE_TOOL_NAMES });
+  agentContext.tools.guard(
+    (execution) => allowed.has(execution.name) ? void 0 : `NexusDesk Agents may execute only official Office tools; ${execution.name} is denied.`
+  );
+  const effective = agentContext.tools.schemas().map(({ name }) => name).sort();
+  const expected = [...OFFICE_TOOL_NAMES].sort();
+  if (effective.length !== expected.length || effective.some((name, index) => name !== expected[index])) {
+    throw new Error(`unsafe Agent tool catalog: ${effective.join(", ")}`);
+  }
+}
+
 // src/sheets-tools.ts
 import { defineTool } from "@deepseek-ai/dsh-tools";
 var agentOutput = {
   schema: { type: "json" },
-  render: (_args, value) => [{
-    type: "text",
-    text: JSON.stringify(value)
-  }]
+  render: (_args, value) => [
+    {
+      type: "text",
+      text: JSON.stringify(value)
+    }
+  ]
 };
 function createSheetsTools(bridge) {
   const read = defineTool({
     name: "read_sheet",
     description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
     parameters: {
-      sheet: { type: "string", description: "Worksheet name. Prefer this stable identifier when known." },
+      sheet: {
+        type: "string",
+        description: "Worksheet name. Prefer this stable identifier when known."
+      },
       sheetId: { type: "string", description: "Current worksheet id returned by a prior read." },
       addresses: {
         type: "array",
@@ -14707,11 +14814,15 @@ function createSheetsTools(bridge) {
     output: agentOutput,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const result = await bridge.request("read_sheet", {
-        ...args.sheet === void 0 ? {} : { sheet: args.sheet },
-        ...args.sheetId === void 0 ? {} : { sheetId: args.sheetId },
-        ...args.addresses === void 0 ? {} : { addresses: args.addresses }
-      }, exec);
+      const result = await bridge.request(
+        "read_sheet",
+        {
+          ...args.sheet === void 0 ? {} : { sheet: args.sheet },
+          ...args.sheetId === void 0 ? {} : { sheetId: args.sheetId },
+          ...args.addresses === void 0 ? {} : { addresses: args.addresses }
+        },
+        exec
+      );
       return result;
     }
   });
@@ -14728,11 +14839,29 @@ function createSheetsTools(bridge) {
     },
     output: agentOutput,
     async execute(args, exec) {
-      const approvalArgs = { operations: args.operations };
-      if (!await bridge.approve("apply_sheet_operations", approvalArgs, exec)) {
+      const proposalResult = await bridge.request("propose_ops", { ops: args.operations }, exec);
+      if (!proposalResult.ok) return proposalResult;
+      const proposalData = proposalResult.data ?? {};
+      const planHash = proposalData.planHash;
+      const operationId = proposalData.operationId;
+      if (typeof planHash !== "string" || typeof operationId !== "string") {
+        throw new Error("spreadsheet editor returned an invalid edit proposal");
+      }
+      const proposal = {
+        planHash,
+        summary: typeof proposalData.summary === "string" ? proposalData.summary : proposalResult.summary,
+        targets: Array.isArray(proposalData.targets) ? proposalData.targets.filter((value) => typeof value === "string") : [],
+        warnings: proposalResult.warnings
+      };
+      const approval = await bridge.approve("apply_sheet_operations", proposal, exec);
+      if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet mutation was not approved");
       }
-      const result = await bridge.request("apply_ops", { ops: args.operations }, exec);
+      const result = await bridge.request("apply_ops", { ops: args.operations }, exec, {
+        approvalId: approval.approvalId,
+        planHash,
+        operationId
+      });
       return result;
     }
   });
@@ -14742,10 +14871,20 @@ function createSheetsTools(bridge) {
     parameters: {},
     output: agentOutput,
     async execute(_args, exec) {
-      if (!await bridge.approve("save_sheet", { inPlace: true }, exec)) {
+      const proposal = {
+        planHash: "save-current-workbook-in-place",
+        summary: "Save the current spreadsheet in place.",
+        targets: ["current workbook"],
+        warnings: []
+      };
+      const approval = await bridge.approve("save_sheet", proposal, exec);
+      if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet save was not approved");
       }
-      const result = await bridge.request("save_sheet", { inPlace: true }, exec);
+      const result = await bridge.request("save_sheet", { inPlace: true }, exec, {
+        approvalId: approval.approvalId,
+        planHash: proposal.planHash
+      });
       return result;
     }
   });
@@ -14758,6 +14897,9 @@ function asRuntimeContext(value) {
 }
 var [runtimeDir = "", profileDir = "", mode = "runtime", ...patchFiles] = process.argv.slice(2);
 var installAnchor = join(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+var runtimeStateDir = mkdtempSync(join(tmpdir(), "nexusdesk-runtime-"));
+process.env.DSH_HOME = runtimeStateDir;
+process.once("exit", () => rmSync(runtimeStateDir, { recursive: true, force: true }));
 function send(frame) {
   if (!process.connected || process.send === void 0) return;
   process.send(frame, (error51) => {
@@ -14773,7 +14915,11 @@ var stopping;
 var disposeSheetsTools = [];
 process.on("message", (frame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== "shutdown") {
-    send({ type: "fatal", protocolVersion: PROTOCOL_VERSION, message: "runtime protocol version mismatch" });
+    send({
+      type: "fatal",
+      protocolVersion: PROTOCOL_VERSION,
+      message: "runtime protocol version mismatch"
+    });
     process.exitCode = 1;
     return;
   }
@@ -14804,6 +14950,23 @@ function requestParent(frame, timeoutMs = 12e4) {
     send({ ...frame, protocolVersion: PROTOCOL_VERSION, id });
   });
 }
+function requestParentTracked(frame, timeoutMs = 12e4) {
+  const id = `request-${randomUUID()}`;
+  return {
+    id,
+    reply: new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        replies.delete(id);
+        reject(new Error(`parent request timed out after ${String(timeoutMs)}ms`));
+      }, timeoutMs);
+      replies.set(id, (reply) => {
+        clearTimeout(timer);
+        resolve(reply);
+      });
+      send({ ...frame, protocolVersion: PROTOCOL_VERSION, id });
+    })
+  };
+}
 var boot = runProfile({
   environment: loadLayeredEnv("dsh"),
   profile: basename(profileDir),
@@ -14822,7 +14985,10 @@ async function openAgent(frame) {
   const created = await ctx2.agents.create({
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
-    ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } }
+    ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } },
+    setup(agentContext) {
+      configureOfficeToolScope({ tools: agentContext.tools });
+    }
   });
   agents.set(frame.sessionId, created);
   return created;
@@ -14837,10 +15003,12 @@ async function handle(frame) {
         revision: frame.revision
       });
       const handle2 = await openAgent(frame);
-      handle2.agent.followup(createUserMessage({
-        content: [{ type: "text", text: frame.prompt }],
-        source: { kind: "user" }
-      }));
+      handle2.agent.followup(
+        createUserMessage({
+          content: [{ type: "text", text: frame.prompt }],
+          source: { kind: "user" }
+        })
+      );
       return;
     }
     case "agent:cancel":
@@ -14869,54 +15037,75 @@ process.once("disconnect", () => {
 });
 var ctx = asRuntimeContext((await boot).ctx);
 disposeSheetsTools = createSheetsTools({
-  async request(command, arguments_, execution) {
+  async request(command, arguments_, execution, authorization) {
     const sessionId = String(execution.agent?.id ?? "");
     const target = editorTargets.get(sessionId);
-    if (target === void 0) throw new Error("no spreadsheet editor is bound to this agent session");
-    const operationId = `operation-${randomUUID()}`;
+    if (target === void 0)
+      throw new Error("no spreadsheet editor is bound to this agent session");
+    const operationId = authorization?.operationId ?? `operation-${randomUUID()}`;
     const reply = await requestParent({
       type: "editor:request",
       target: { ...target, editorType: "sheets", operationId },
       command,
-      arguments: arguments_
+      arguments: arguments_,
+      ...authorization === void 0 ? {} : {
+        approval: {
+          id: authorization.approvalId,
+          planHash: authorization.planHash
+        }
+      }
     });
     if (reply.type !== "editor:result" || reply.target.operationId !== operationId) {
       throw new Error("spreadsheet editor returned a mismatched operation result");
     }
+    target.revision = reply.currentRevision;
     return reply.result;
   },
-  async approve(toolName, arguments_, execution) {
-    if (execution.agent === void 0) return false;
-    const outcome = await ctx.approval.request({
-      agent: execution.agent,
+  async approve(toolName, proposal, execution) {
+    if (execution.agent === void 0) return { approved: false };
+    const sessionId = String(execution.agent.id ?? "");
+    const pending = requestParentTracked({
+      type: "approval:request",
+      sessionId,
       toolName,
-      callId: execution.callId,
-      reason: `Approve this exact spreadsheet action: ${JSON.stringify(arguments_)}`,
-      signal: execution.signal
+      reason: proposal.summary,
+      proposal
     });
-    return outcome === "allowed-once";
+    const reply = await pending.reply;
+    return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
   }
 }).map((tool) => ctx.tools.register(tool));
-ctx.on("approval/request", (request) => {
-  const sessionId = String(request.agent?.session?.id ?? agents.keys().next().value ?? "");
-  return requestParent({
-    type: "approval:request",
-    sessionId,
-    toolName: request.toolName,
-    ...request.reason === void 0 ? {} : { reason: request.reason }
-  }).then((reply) => reply.type === "approval:response" ? reply.outcome : "unavailable");
-});
+ctx.on(
+  "approval/request",
+  (request) => {
+    const sessionId = String(
+      request.agent?.session?.id ?? agents.keys().next().value ?? ""
+    );
+    return requestParent({
+      type: "approval:request",
+      sessionId,
+      toolName: request.toolName,
+      ...request.reason === void 0 ? {} : { reason: request.reason }
+    }).then(
+      (reply) => reply.type === "approval:response" ? reply.outcome : "unavailable"
+    );
+  }
+);
 ctx.on("session/event", (session, event) => {
-  send(projectDurableEvent(String(session.id), event));
-});
-ctx.on("agent/assistant-stream", (payload) => {
-  const chunk = payload.frame.chunk;
-  if (chunk === void 0) return;
-  const open = textBlocks.get(payload.agent.session.id) ?? /* @__PURE__ */ new Set();
-  textBlocks.set(payload.agent.session.id, open);
-  const projected = projectStreamChunk(payload.agent.session.id, chunk, open);
+  const projected = projectDurableEvent(String(session.id), event);
   if (projected !== void 0) send(projected);
 });
+ctx.on(
+  "agent/assistant-stream",
+  (payload) => {
+    const chunk = payload.frame.chunk;
+    if (chunk === void 0) return;
+    const open = textBlocks.get(payload.agent.session.id) ?? /* @__PURE__ */ new Set();
+    textBlocks.set(payload.agent.session.id, open);
+    const projected = projectStreamChunk(payload.agent.session.id, chunk, open);
+    if (projected !== void 0) send(projected);
+  }
+);
 send({
   type: "ready",
   protocolVersion: PROTOCOL_VERSION,

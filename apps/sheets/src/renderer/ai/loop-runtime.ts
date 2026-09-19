@@ -102,14 +102,9 @@ class HostAgentLoop implements AgentLoopLike {
   private onEvent(frame: AgentEventFrame): void {
     const data = asRecord(frame.event.data)
     if (frame.event.type === 'stream/chunk') this.onChunk(data)
-    else if (frame.event.type === 'tool/call') this.forEachBlock(data, (part) => this.onToolCall(part))
-    else if (frame.event.type === 'tool/result') this.forEachBlock(data, (part) => this.onToolResult(part))
+    else if (frame.event.type === 'tool/call') this.onToolCall(data)
+    else if (frame.event.type === 'tool/result') this.onToolResult(data)
     else if (frame.event.type === 'turn/end') this.onTurnEnd(data)
-  }
-
-  private forEachBlock(data: Record<string, unknown>, visit: (part: Record<string, unknown>) => void): void {
-    const message = asRecord(data.message)
-    for (const block of asArray(message.content)) visit(asRecord(block))
   }
 
   private onChunk(data: Record<string, unknown>): void {
@@ -119,28 +114,29 @@ class HostAgentLoop implements AgentLoopLike {
   }
 
   private onToolCall(part: Record<string, unknown>): void {
-    if (part.type !== 'tool-call' || typeof part.id !== 'string' || typeof part.name !== 'string') return
-    this.toolNames.set(part.id, part.name)
+    if (typeof part.callId !== 'string' || typeof part.name !== 'string') return
+    this.toolNames.set(part.callId, part.name)
     const call: AgentToolCall = {
-      id: part.id,
+      id: part.callId,
       name: part.name,
-      input: asRecord(typeof part.arguments === 'string' ? safeParse(part.arguments) : part.arguments),
+      input: asRecord(part.arguments),
     }
     this.options.events?.onToolStart?.(call)
   }
 
   private onToolResult(part: Record<string, unknown>): void {
-    if (typeof part.toolCallId !== 'string') return
-    const name = this.toolNames.get(part.toolCallId) ?? 'tool'
+    if (typeof part.callId !== 'string') return
+    const name =
+      typeof part.name === 'string' ? part.name : (this.toolNames.get(part.callId) ?? 'tool')
     const isError = part.isError === true
     const execution: ToolExecution = {
-      output: textOf(part.content),
+      output: typeof part.contentText === 'string' ? part.contentText : '',
       isError,
       mutated: !isError && WRITE_TOOLS.has(name),
       summary: `${name} ${isError ? 'failed' : 'done'}`,
     }
     this.options.events?.onToolExecuted?.({
-      call: { id: part.toolCallId, name, input: {} },
+      call: { id: part.callId, name, input: {} },
       execution,
     })
   }
@@ -166,41 +162,28 @@ class HostAgentLoop implements AgentLoopLike {
   }
 
   private onApproval(frame: ApprovalRequestFrame): void {
-    const detail = safeParse(frame.reason ?? '')
-    const operationsValue = asRecord(detail).operations
-    const operations = Array.isArray(operationsValue) ? operationsValue.map(String) : []
     const label = frame.toolName || 'write'
-    const message = operations.length === 0
-      ? `${label}：要修改文档，允许吗？`
-      : `${label} 准备执行以下操作：\n${operations.map((operation) => ` · ${operation}`).join('\n')}\n\n允许吗？`
+    const proposal = frame.proposal
+    const targetLines = proposal?.targets.map((target) => ` · ${target}`).join('\n') ?? ''
+    const warningLines =
+      proposal?.warnings.map((warning) => ` ⚠ ${warning.message}`).join('\n') ?? ''
+    const message =
+      proposal === undefined
+        ? `${label}：${frame.reason ?? '要修改文档'}，允许吗？`
+        : [
+            `${label}：${proposal.summary}`,
+            targetLines,
+            warningLines,
+            `计划校验值：${proposal.planHash}`,
+            '允许执行这个确切计划吗？',
+          ]
+            .filter(Boolean)
+            .join('\n')
     const allowed = globalThis.confirm?.(message) ?? false
     this.api.respondApproval(frame.id, allowed ? 'allowed-once' : 'rejected')
   }
 }
 
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
-}
-
-function safeParse(raw: string): unknown {
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return {}
-  }
-}
-
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content
-  return asArray(content)
-    .map((block) => {
-      const part = asRecord(block)
-      return typeof part.text === 'string' ? part.text : ''
-    })
-    .filter(Boolean)
-    .join('\n')
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 }

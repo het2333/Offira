@@ -40,7 +40,8 @@ export interface SheetsAdapterOptions {
   document(): SheetsDocumentState
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
   verify(operations: readonly WorkbookOperation[]): Promise<VerificationResult>
-  rollback(transactionId: TransactionId): Promise<void>
+  /** Restore exactly the current Agent transaction; false means restoration could not be proven. */
+  rollback(transactionId: TransactionId): Promise<boolean>
   commitRevision(transactionId: TransactionId): void | Promise<void>
 }
 
@@ -95,6 +96,14 @@ function outcomeFailure(outcome: unknown): string | undefined {
     : typeof record.error === 'string'
       ? record.error
       : 'the spreadsheet batch failed'
+}
+
+function partiallyApplied(outcome: unknown): boolean {
+  return (
+    typeof outcome === 'object' &&
+    outcome !== null &&
+    (outcome as { partiallyApplied?: unknown }).partiallyApplied === true
+  )
 }
 
 class SheetsAdapter implements EditorAdapter {
@@ -190,7 +199,9 @@ class SheetsAdapter implements EditorAdapter {
   }
 
   async undo(id: TransactionId): Promise<AgentEditResult> {
-    await this.options.rollback(id)
+    if (!(await this.options.rollback(id))) {
+      return failure('ROLLBACK_FAILED', `Could not prove transaction ${id} was restored.`)
+    }
     return {
       ok: true,
       summary: `Undid spreadsheet transaction ${id}.`,
@@ -241,25 +252,33 @@ class SheetsAdapter implements EditorAdapter {
 
     const id = transactionId()
     const operations = operationsOf(plan)
-    const outcome = await this.options.handlers.applyOps(operations, false)
+    let outcome: unknown
+    try {
+      outcome = await this.options.handlers.applyOps(operations, false)
+    } catch (error: unknown) {
+      return this.rollbackResult(
+        id,
+        `Spreadsheet apply failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     const applyError = outcomeFailure(outcome)
-    if (applyError !== undefined) return failure('APPLY_FAILED', applyError)
+    if (applyError !== undefined) {
+      return partiallyApplied(outcome)
+        ? this.rollbackResult(id, `Spreadsheet apply failed: ${applyError}`)
+        : { ...failure('APPLY_FAILED', applyError), transactionId: id }
+    }
 
-    const verification = await this.options.verify(operations)
+    let verification: VerificationResult
+    try {
+      verification = await this.options.verify(operations)
+    } catch (error: unknown) {
+      return this.rollbackResult(
+        id,
+        `Spreadsheet verification failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     if (!verification.passed) {
-      await this.options.rollback(id)
-      return {
-        ok: false,
-        summary: 'Spreadsheet verification failed; the transaction was rolled back.',
-        warnings: [
-          {
-            code: 'ROLLED_BACK',
-            message: 'The spreadsheet batch was rolled back after verification failed.',
-          },
-        ],
-        verification,
-        transactionId: id,
-      }
+      return this.rollbackResult(id, 'Spreadsheet verification failed.', verification)
     }
 
     await this.options.commitRevision(id)
@@ -272,6 +291,45 @@ class SheetsAdapter implements EditorAdapter {
       },
       warnings: [],
       verification,
+      transactionId: id,
+    }
+  }
+
+  private async rollbackResult(
+    id: TransactionId,
+    reason: string,
+    verification?: VerificationResult,
+  ): Promise<AgentEditResult> {
+    let restored: boolean
+    try {
+      restored = await this.options.rollback(id)
+    } catch {
+      restored = false
+    }
+    if (!restored) {
+      return {
+        ok: false,
+        summary: `${reason} Some spreadsheet changes may remain because rollback could not be verified.`,
+        warnings: [
+          {
+            code: 'ROLLBACK_FAILED',
+            message: 'The spreadsheet transaction could not be restored to its pre-apply state.',
+          },
+        ],
+        ...(verification === undefined ? {} : { verification }),
+        transactionId: id,
+      }
+    }
+    return {
+      ok: false,
+      summary: `${reason} The transaction was rolled back.`,
+      warnings: [
+        {
+          code: 'ROLLED_BACK',
+          message: 'The spreadsheet transaction was restored to its pre-apply state.',
+        },
+      ],
+      ...(verification === undefined ? {} : { verification }),
       transactionId: id,
     }
   }

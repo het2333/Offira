@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@genoffice/xlsx-gateway": "*",
     "@nexusdesk/protocol": "*",
     "@nexusdesk/runtime-host": "*",
     "ws": "^8.21.1"

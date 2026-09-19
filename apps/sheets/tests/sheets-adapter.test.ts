@@ -57,7 +57,7 @@ function setup(overrides: Partial<SheetsAdapterOptions> = {}) {
     document: () => ({ documentId, clientId, revision, title: 'Forecast', attached: true }),
     consumeApproval: () => true,
     verify: async () => ({ passed: true, issues: [] }),
-    rollback: vi.fn().mockResolvedValue(undefined),
+    rollback: vi.fn().mockResolvedValue(true),
     commitRevision: vi.fn(),
     ...overrides,
   }
@@ -172,7 +172,7 @@ describe('Sheets editor adapter', () => {
   })
 
   it('rolls back the transaction when post-apply verification fails', async () => {
-    const rollback = vi.fn().mockResolvedValue(undefined)
+    const rollback = vi.fn().mockResolvedValue(true)
     const { adapter, plan } = await approvedPlan({
       verify: async () => ({
         passed: false,
@@ -190,5 +190,70 @@ describe('Sheets editor adapter', () => {
       verification: { passed: false, issues: [expect.objectContaining({ code: 'FORMULA_ERROR' })] },
       warnings: [expect.objectContaining({ code: 'ROLLED_BACK' })],
     })
+  })
+
+  it('rolls back a partially applied executor failure', async () => {
+    const rollback = vi.fn().mockResolvedValue(true)
+    const { adapter, plan } = await approvedPlan({
+      handlers: handlersWith({
+        applyOps: vi.fn().mockResolvedValue({
+          ok: false,
+          reason: 'second operation failed',
+          partiallyApplied: true,
+          undoDropped: false,
+        }),
+      }),
+      rollback,
+    })
+
+    const result = await adapter.apply(plan)
+
+    expect(rollback).toHaveBeenCalledWith(result.transactionId)
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'ROLLED_BACK' })],
+    })
+  })
+
+  it('rolls back when apply or verification throws', async () => {
+    const applyRollback = vi.fn().mockResolvedValue(true)
+    const applyFixture = await approvedPlan({
+      handlers: handlersWith({ applyOps: vi.fn().mockRejectedValue(new Error('engine stopped')) }),
+      rollback: applyRollback,
+    })
+    const verifyRollback = vi.fn().mockResolvedValue(true)
+    const verifyFixture = await approvedPlan({
+      verify: async () => {
+        throw new Error('recalculation stopped')
+      },
+      rollback: verifyRollback,
+    })
+
+    const applyResult = await applyFixture.adapter.apply(applyFixture.plan)
+    const verifyResult = await verifyFixture.adapter.apply(verifyFixture.plan)
+
+    expect(applyRollback).toHaveBeenCalledTimes(1)
+    expect(verifyRollback).toHaveBeenCalledTimes(1)
+    expect(applyResult.warnings[0]?.code).toBe('ROLLED_BACK')
+    expect(verifyResult.warnings[0]?.code).toBe('ROLLED_BACK')
+  })
+
+  it('never claims rollback success when the transaction cannot be restored', async () => {
+    const { adapter, plan } = await approvedPlan({
+      handlers: handlersWith({
+        applyOps: vi
+          .fn()
+          .mockResolvedValue({ ok: false, reason: 'failed', partiallyApplied: true }),
+      }),
+      rollback: vi.fn().mockResolvedValue(false),
+    })
+
+    const result = await adapter.apply(plan)
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'ROLLBACK_FAILED' })],
+    })
+    expect(result.summary).toMatch(/may remain/i)
   })
 })
