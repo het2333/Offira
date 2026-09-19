@@ -1,8 +1,7 @@
+import type { IncomingHttpHeaders } from 'node:http'
+
 export interface HeaderRequest {
-  headers: {
-    host?: string | string[]
-    origin?: string | string[]
-  }
+  headers: IncomingHttpHeaders
 }
 
 function oneHeader(value: string | string[] | undefined): string | undefined {

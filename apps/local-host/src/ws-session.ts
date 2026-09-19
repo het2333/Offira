@@ -1,0 +1,95 @@
+import { randomUUID } from 'node:crypto'
+import type { IncomingMessage, Server as HttpServer } from 'node:http'
+import type { Duplex } from 'node:stream'
+
+import { parseClientFrame, PROTOCOL_VERSION, type ClientFrame } from '@nexusdesk/protocol'
+import { WebSocket, WebSocketServer } from 'ws'
+
+import { acceptWebSocketOrigin } from './origin-policy'
+
+const MAX_FRAME_BYTES = 1024 * 1024
+
+export interface WsSessionOptions {
+  origin: () => string
+  hasSession(sessionId: string): boolean
+  onFrame?: (frame: ClientFrame, clientId: string) => void
+}
+
+export interface WsSessionServer {
+  close(): Promise<void>
+}
+
+function sessionCookie(request: IncomingMessage): string | undefined {
+  const cookie = request.headers.cookie
+  if (cookie === undefined) return undefined
+  for (const part of cookie.split(';')) {
+    const [name, ...value] = part.trim().split('=')
+    if (name === 'nexusdesk_session') return value.join('=') || undefined
+  }
+  return undefined
+}
+
+function rejectUpgrade(socket: Duplex, status: 401 | 403 | 404): void {
+  const label = status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' : 'Not Found'
+  socket.end(`HTTP/1.1 ${status} ${label}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+}
+
+/** Attach the authenticated NexusDesk WebSocket surface to an HTTP server. */
+export function installWsSessionServer(
+  server: HttpServer,
+  options: WsSessionOptions,
+): WsSessionServer {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
+
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url !== '/ws') {
+      rejectUpgrade(socket, 404)
+      return
+    }
+    const origin = options.origin()
+    if (!acceptWebSocketOrigin(request, origin)) {
+      rejectUpgrade(socket, 403)
+      return
+    }
+    const sessionId = sessionCookie(request)
+    if (sessionId === undefined || !options.hasSession(sessionId)) {
+      rejectUpgrade(socket, 401)
+      return
+    }
+    wss.handleUpgrade(request, socket, head, (webSocket) => {
+      wss.emit('connection', webSocket, request)
+    })
+  })
+
+  wss.on('connection', (socket) => {
+    const clientId = randomUUID()
+    socket.send(JSON.stringify({
+      type: 'server:ready',
+      protocolVersion: PROTOCOL_VERSION,
+      clientId,
+    }))
+    socket.on('message', (data, isBinary) => {
+      if (isBinary) {
+        socket.close(1008, 'binary frames are not supported')
+        return
+      }
+      try {
+        const frame = parseClientFrame(JSON.parse(data.toString()))
+        options.onFrame?.(frame, clientId)
+      } catch {
+        socket.close(1008, 'invalid client frame')
+      }
+    })
+  })
+
+  return {
+    async close() {
+      for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
+          client.close(1001, 'local host shutting down')
+        }
+      }
+      await new Promise<void>((resolve) => wss.close(() => resolve()))
+    },
+  }
+}
