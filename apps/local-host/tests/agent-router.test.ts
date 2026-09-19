@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   PROTOCOL_VERSION,
@@ -33,6 +33,83 @@ afterEach(async () => {
 })
 
 describe('AgentRouter', () => {
+  it('targets the Harness session with the registered editor type', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'docs', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const startTurn = vi.spyOn(supervisor, 'startTurn')
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: vi.fn(),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'hello',
+      },
+      clientId,
+    )
+
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ editorType: 'docs' }))
+    router.dispose()
+  })
+
+  it('rejects an unapproved native Docs save before it reaches the editor', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'docs', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'docs-save-unapproved',
+      },
+      clientId,
+    )
+    await until(() =>
+      sent.some(
+        (frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+      ),
+    )
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: 'agent:event',
+        event: expect.objectContaining({
+          type: 'test/editor-result',
+          data: expect.objectContaining({
+            result: expect.objectContaining({
+              ok: false,
+              warnings: [expect.objectContaining({ code: 'EDITOR_ROUTE_REJECTED' })],
+            }),
+          }),
+        }),
+      }),
+    )
+    router.dispose()
+  })
+
   it('expires a pending approval and sends one terminal failure when runtime crashes', async () => {
     const documents = new DocumentRegistry()
     const operations = new OperationStore()

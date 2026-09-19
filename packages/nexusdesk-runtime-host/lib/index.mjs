@@ -14648,6 +14648,9 @@ var clientFrameSchema = external_exports.discriminatedUnion("type", [
     operationId: nonEmptyString
   }).strict()
 ]);
+function parseAgentToolResult(value) {
+  return agentToolResultSchema.parse(value);
+}
 
 // src/projection.ts
 var STREAM_FORWARD = /* @__PURE__ */ new Set(["block-start", "block-end", "text-delta", "tool-call-delta"]);
@@ -14774,21 +14777,33 @@ function projectStreamChunk(sessionId, chunk, openTextBlocks) {
 }
 
 // src/runtime-policy.ts
-var OFFICE_TOOL_NAMES = ["read_sheet", "apply_sheet_operations", "save_sheet"];
-function configureOfficeToolScope(agentContext) {
-  const allowed = new Set(OFFICE_TOOL_NAMES);
-  agentContext.tools.restrict({ allow: OFFICE_TOOL_NAMES });
+var SHEETS_TOOL_NAMES = ["read_sheet", "apply_sheet_operations", "save_sheet"];
+var DOCS_TOOL_NAMES = [
+  "read_document",
+  "apply_document_operations",
+  "save_document"
+];
+var OFFICE_TOOL_NAMES = [...SHEETS_TOOL_NAMES, ...DOCS_TOOL_NAMES];
+function officeToolNames(editorType) {
+  if (editorType === "docs") return DOCS_TOOL_NAMES;
+  if (editorType === "sheets") return SHEETS_TOOL_NAMES;
+  throw new Error(`unsupported Office editor: ${editorType}`);
+}
+function configureOfficeToolScope(agentContext, editorType) {
+  const toolNames = officeToolNames(editorType);
+  const allowed = new Set(toolNames);
+  agentContext.tools.restrict({ allow: toolNames });
   agentContext.tools.guard(
     (execution) => allowed.has(execution.name) ? void 0 : `NexusDesk Agents may execute only official Office tools; ${execution.name} is denied.`
   );
   const effective = agentContext.tools.schemas().map(({ name }) => name).sort();
-  const expected = [...OFFICE_TOOL_NAMES].sort();
+  const expected = [...toolNames].sort();
   if (effective.length !== expected.length || effective.some((name, index) => name !== expected[index])) {
     throw new Error(`unsafe Agent tool catalog: ${effective.join(", ")}`);
   }
 }
 
-// src/sheets-tools.ts
+// src/docs-tools.ts
 import { defineTool } from "@deepseek-ai/dsh-tools";
 var agentOutput = {
   schema: { type: "json" },
@@ -14799,8 +14814,128 @@ var agentOutput = {
     }
   ]
 };
-function createSheetsTools(bridge) {
+function agentResult(value) {
+  return parseAgentToolResult({
+    ok: value.ok,
+    summary: value.summary,
+    warnings: value.warnings,
+    ...value.changes === void 0 ? {} : { changes: value.changes },
+    ...value.verification === void 0 ? {} : { verification: value.verification },
+    ...value.continuation === void 0 ? {} : { continuation: value.continuation },
+    ...value.transactionId === void 0 ? {} : { transactionId: value.transactionId },
+    ...value.data === void 0 ? {} : { data: value.data }
+  });
+}
+function proposalFrom(result) {
+  const data = result.data ?? {};
+  const planHash = data.planHash;
+  const operationId = data.operationId;
+  if (typeof planHash !== "string" || typeof operationId !== "string") {
+    throw new Error("document editor returned an invalid edit proposal");
+  }
+  return {
+    operationId,
+    proposal: {
+      planHash,
+      summary: typeof data.summary === "string" ? data.summary : result.summary,
+      targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
+      warnings: result.warnings
+    }
+  };
+}
+function createDocsTools(bridge) {
   const read = defineTool({
+    name: "read_document",
+    description: "Read a bounded structural view of the current document, including block indexes and text.",
+    parameters: {
+      scope: {
+        type: "string",
+        description: 'Read scope. Use "document" unless a later read advertises another scope.'
+      }
+    },
+    output: agentOutput,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      return agentResult(
+        await bridge.request(
+          "read_document",
+          { ...args.scope === void 0 ? {} : { scope: args.scope } },
+          exec
+        )
+      );
+    }
+  });
+  const apply = defineTool({
+    name: "apply_document_operations",
+    description: "Apply one ordered batch of GenOffice document DSL operations after exact user approval.",
+    parameters: {
+      operations: {
+        type: "array",
+        required: true,
+        items: { type: "json" },
+        description: "Ordered GenOffice Docs apply_ops operations using fresh block indexes from read_document."
+      }
+    },
+    output: agentOutput,
+    async execute(args, exec) {
+      const proposalResult = agentResult(
+        await bridge.request("propose_ops", { ops: args.operations }, exec)
+      );
+      if (!proposalResult.ok) return proposalResult;
+      const { operationId, proposal } = proposalFrom(proposalResult);
+      const approval = await bridge.approve("apply_document_operations", proposal, exec);
+      if (!approval.approved || approval.approvalId === void 0) {
+        throw new Error("document mutation was not approved");
+      }
+      return agentResult(
+        await bridge.request("apply_ops", { ops: args.operations }, exec, {
+          approvalId: approval.approvalId,
+          planHash: proposal.planHash,
+          operationId
+        })
+      );
+    }
+  });
+  const save = defineTool({
+    name: "save_document",
+    description: "Save the open document in place. The model cannot choose or change the authorized path.",
+    parameters: {},
+    output: agentOutput,
+    async execute(_args, exec) {
+      const proposal = {
+        planHash: "save-current-document-in-place",
+        summary: "Save the current document in place.",
+        targets: ["current document"],
+        warnings: []
+      };
+      const approval = await bridge.approve("save_document", proposal, exec);
+      if (!approval.approved || approval.approvalId === void 0) {
+        throw new Error("document save was not approved");
+      }
+      return agentResult(
+        await bridge.request("save_document", { inPlace: true }, exec, {
+          approvalId: approval.approvalId,
+          planHash: proposal.planHash
+        })
+      );
+    }
+  });
+  return [read, apply, save];
+}
+
+// src/sheets-tools.ts
+import { defineTool as defineTool2 } from "@deepseek-ai/dsh-tools";
+var agentOutput2 = {
+  schema: { type: "json" },
+  render: (_args, value) => [
+    {
+      type: "text",
+      text: JSON.stringify(value)
+    }
+  ]
+};
+function createSheetsTools(bridge) {
+  const read = defineTool2({
     name: "read_sheet",
     description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
     parameters: {
@@ -14815,7 +14950,7 @@ function createSheetsTools(bridge) {
         description: "A bounded list of A1 cell or range addresses."
       }
     },
-    output: agentOutput,
+    output: agentOutput2,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
       const result = await bridge.request(
@@ -14830,7 +14965,7 @@ function createSheetsTools(bridge) {
       return result;
     }
   });
-  const apply = defineTool({
+  const apply = defineTool2({
     name: "apply_sheet_operations",
     description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.",
     parameters: {
@@ -14841,7 +14976,7 @@ function createSheetsTools(bridge) {
         description: "Ordered GenOffice spreadsheet DSL operations. Use worksheet names from read_sheet."
       }
     },
-    output: agentOutput,
+    output: agentOutput2,
     async execute(args, exec) {
       const proposalResult = await bridge.request("propose_ops", { ops: args.operations }, exec);
       if (!proposalResult.ok) return proposalResult;
@@ -14869,11 +15004,11 @@ function createSheetsTools(bridge) {
       return result;
     }
   });
-  const save = defineTool({
+  const save = defineTool2({
     name: "save_sheet",
     description: "Save the open spreadsheet in place. The model cannot choose or change the destination path.",
     parameters: {},
-    output: agentOutput,
+    output: agentOutput2,
     async execute(_args, exec) {
       const proposal = {
         planHash: "save-current-workbook-in-place",
@@ -14916,7 +15051,7 @@ var agents = /* @__PURE__ */ new Map();
 var editorTargets = /* @__PURE__ */ new Map();
 var textBlocks = /* @__PURE__ */ new Map();
 var stopping;
-var disposeSheetsTools = [];
+var disposeOfficeTools = [];
 process.on("message", (frame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== "shutdown") {
     send({
@@ -14991,7 +15126,7 @@ async function openAgent(frame) {
     meta: { cwd: frame.cwd },
     ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } },
     setup(agentContext) {
-      configureOfficeToolScope({ tools: agentContext.tools });
+      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType);
     }
   });
   agents.set(frame.sessionId, created);
@@ -15004,6 +15139,7 @@ async function handle(frame) {
         sessionId: frame.sessionId,
         documentId: frame.documentId,
         clientId: frame.clientId,
+        editorType: frame.editorType,
         revision: frame.revision
       });
       const handle2 = await openAgent(frame);
@@ -15031,7 +15167,7 @@ var stop = () => stopping ??= (async () => {
   for (const handle2 of agents.values()) await handle2.dispose().catch(() => void 0);
   agents.clear();
   editorTargets.clear();
-  for (const dispose of disposeSheetsTools.splice(0)) dispose();
+  for (const dispose of disposeOfficeTools.splice(0)) dispose();
   await running?.shutdown.shutdown(0);
   send({ type: "shutdown-complete", protocolVersion: PROTOCOL_VERSION });
   if (process.connected) process.disconnect();
@@ -15040,45 +15176,57 @@ process.once("disconnect", () => {
   void stop();
 });
 var ctx = asRuntimeContext((await boot).ctx);
-disposeSheetsTools = createSheetsTools({
-  async request(command, arguments_, execution, authorization) {
-    const sessionId = String(execution.agent?.id ?? "");
-    const target = editorTargets.get(sessionId);
-    if (target === void 0)
-      throw new Error("no spreadsheet editor is bound to this agent session");
-    const operationId = authorization?.operationId ?? `operation-${randomUUID()}`;
-    const reply = await requestParent({
-      type: "editor:request",
-      target: { ...target, editorType: "sheets", operationId },
-      command,
-      arguments: arguments_,
-      ...authorization === void 0 ? {} : {
-        approval: {
-          id: authorization.approvalId,
-          planHash: authorization.planHash
-        }
+function createEditorToolBridge(editorType) {
+  return {
+    async request(command, arguments_, execution, authorization) {
+      const sessionId = String(execution.agent?.id ?? "");
+      const target = editorTargets.get(sessionId);
+      if (target === void 0) {
+        throw new Error(`no ${editorType} editor is bound to this agent session`);
       }
-    });
-    if (reply.type !== "editor:result" || reply.target.operationId !== operationId) {
-      throw new Error("spreadsheet editor returned a mismatched operation result");
+      if (target.editorType !== editorType) {
+        throw new Error(
+          `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`
+        );
+      }
+      const operationId = authorization?.operationId ?? `operation-${randomUUID()}`;
+      const reply = await requestParent({
+        type: "editor:request",
+        target: { ...target, operationId },
+        command,
+        arguments: arguments_,
+        ...authorization === void 0 ? {} : {
+          approval: {
+            id: authorization.approvalId,
+            planHash: authorization.planHash
+          }
+        }
+      });
+      if (reply.type !== "editor:result" || reply.target.operationId !== operationId) {
+        throw new Error(`${editorType} editor returned a mismatched operation result`);
+      }
+      target.revision = reply.currentRevision;
+      return reply.result;
+    },
+    async approve(toolName, proposal, execution) {
+      if (execution.agent === void 0) return { approved: false };
+      const sessionId = String(execution.agent.id ?? "");
+      const pending = requestParentTracked({
+        type: "approval:request",
+        sessionId,
+        toolName,
+        reason: proposal.summary,
+        proposal
+      });
+      const reply = await pending.reply;
+      return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
     }
-    target.revision = reply.currentRevision;
-    return reply.result;
-  },
-  async approve(toolName, proposal, execution) {
-    if (execution.agent === void 0) return { approved: false };
-    const sessionId = String(execution.agent.id ?? "");
-    const pending = requestParentTracked({
-      type: "approval:request",
-      sessionId,
-      toolName,
-      reason: proposal.summary,
-      proposal
-    });
-    const reply = await pending.reply;
-    return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
-  }
-}).map((tool) => ctx.tools.register(tool));
+  };
+}
+disposeOfficeTools = [
+  ...createSheetsTools(createEditorToolBridge("sheets")),
+  ...createDocsTools(createEditorToolBridge("docs"))
+].map((tool) => ctx.tools.register(tool));
 ctx.on(
   "approval/request",
   (request) => {
@@ -15114,5 +15262,6 @@ send({
   type: "ready",
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
-  startedBundles: ctx.profileContext.startedBundles
+  startedBundles: ctx.profileContext.startedBundles,
+  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES }
 });

@@ -1,7 +1,16 @@
 let activeSession
 let activeTurn
 
-process.send?.({ type: 'ready', protocolVersion: 1, pid: process.pid, startedBundles: ['fake'] })
+process.send?.({
+  type: 'ready',
+  protocolVersion: 1,
+  pid: process.pid,
+  startedBundles: ['fake'],
+  toolCatalogs: {
+    docs: ['read_document', 'apply_document_operations', 'save_document'],
+    sheets: ['read_sheet', 'apply_sheet_operations', 'save_sheet'],
+  },
+})
 
 if (process.argv[2] === 'idle-crash') {
   setTimeout(() => process.exit(19), 30)
@@ -55,6 +64,24 @@ process.on('message', (frame) => {
           targets: ['Summary!B2'],
           warnings: [],
         },
+      })
+      return
+    }
+    if (frame.prompt === 'docs-save-unapproved') {
+      process.send?.({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'docs-save-request-1',
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: activeTurn.editorType,
+          revision: activeTurn.revision,
+          operationId: 'docs-save-operation-1',
+          clientId: activeTurn.clientId,
+        },
+        command: 'save_document',
+        arguments: { inPlace: true },
       })
       return
     }

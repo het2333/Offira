@@ -23,6 +23,7 @@ export interface StartTurnInput {
   sessionId: SessionId
   documentId: DocumentId
   clientId: ClientId
+  editorType: string
   revision: Revision
   cwd: string
   prompt: string

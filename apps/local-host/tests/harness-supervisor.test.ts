@@ -20,6 +20,7 @@ function turn(prompt: string) {
     sessionId: 'session-1' as SessionId,
     documentId: 'document-1' as DocumentId,
     clientId: 'client-1' as ClientId,
+    editorType: 'sheets',
     revision: 1 as Revision,
     cwd: join(process.cwd(), 'tests'),
     prompt,
@@ -47,11 +48,13 @@ describe('HarnessSupervisor', () => {
     await supervisor.ready()
 
     supervisor.startTurn(turn('hello'))
-    await collect(frames, () => frames.some((frame) =>
-      frame.type === 'agent:event' && frame.event.type === 'turn/end'))
+    await collect(frames, () =>
+      frames.some((frame) => frame.type === 'agent:event' && frame.event.type === 'turn/end'),
+    )
 
-    expect(frames.some((frame) => frame.type === 'agent:event'
-      && frame.event.type === 'stream/chunk')).toBe(true)
+    expect(
+      frames.some((frame) => frame.type === 'agent:event' && frame.event.type === 'stream/chunk'),
+    ).toBe(true)
   })
 
   it('forwards cancellation and receives an aborted terminal event', async () => {
@@ -62,9 +65,14 @@ describe('HarnessSupervisor', () => {
     supervisor.startTurn(turn('hello'))
 
     supervisor.cancelTurn('session-1' as SessionId)
-    await collect(frames, () => frames.some((frame) => frame.type === 'agent:event'
-      && frame.event.type === 'turn/end'
-      && (frame.event.data as { reason?: { kind?: string } })?.reason?.kind === 'aborted'))
+    await collect(frames, () =>
+      frames.some(
+        (frame) =>
+          frame.type === 'agent:event' &&
+          frame.event.type === 'turn/end' &&
+          (frame.event.data as { reason?: { kind?: string } })?.reason?.kind === 'aborted',
+      ),
+    )
   })
 
   it('restarts after a crash without replaying the active turn', async () => {
@@ -79,8 +87,9 @@ describe('HarnessSupervisor', () => {
     supervisor.startTurn(turn('crash'))
 
     await collect(frames, () => readyCount === 2)
-    const starts = frames.filter((frame) => frame.type === 'agent:event'
-      && frame.event.type === 'test/start-received')
+    const starts = frames.filter(
+      (frame) => frame.type === 'agent:event' && frame.event.type === 'test/start-received',
+    )
     expect(starts).toHaveLength(1)
   })
 

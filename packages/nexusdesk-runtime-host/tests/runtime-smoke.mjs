@@ -29,9 +29,11 @@ const timeout = setTimeout(() => {
 }, 30_000)
 
 let ready = false
+let toolCatalogs
 child.on('message', (frame) => {
   if (frame?.type === 'ready') {
     ready = true
+    toolCatalogs = frame.toolCatalogs
     child.send({ type: 'shutdown', protocolVersion: 1, id: 'shutdown-smoke' })
   } else if (frame?.type === 'shutdown-complete') {
     clearTimeout(timeout)
@@ -44,8 +46,16 @@ const exit = await new Promise((resolve) =>
 )
 clearTimeout(timeout)
 rmSync(hostileUserHome, { recursive: true, force: true })
-if (!ready || exit.code !== 0) {
+const expectedCatalogs = {
+  docs: ['read_document', 'apply_document_operations', 'save_document'],
+  sheets: ['read_sheet', 'apply_sheet_operations', 'save_sheet'],
+}
+if (
+  !ready ||
+  exit.code !== 0 ||
+  JSON.stringify(toolCatalogs) !== JSON.stringify(expectedCatalogs)
+) {
   throw new Error(
-    `runtime smoke failed: ready=${String(ready)} exit=${JSON.stringify(exit)} stderr=${stderr.join('')}`,
+    `runtime smoke failed: ready=${String(ready)} catalogs=${JSON.stringify(toolCatalogs)} exit=${JSON.stringify(exit)} stderr=${stderr.join('')}`,
   )
 }

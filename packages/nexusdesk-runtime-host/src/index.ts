@@ -17,7 +17,8 @@ import type {
 } from '@nexusdesk/protocol'
 
 import { projectDurableEvent, projectStreamChunk } from './projection'
-import { configureOfficeToolScope } from './runtime-policy'
+import { configureOfficeToolScope, DOCS_TOOL_NAMES, SHEETS_TOOL_NAMES } from './runtime-policy'
+import { createDocsTools, type DocsToolBridge } from './docs-tools'
 import { createSheetsTools } from './sheets-tools'
 import {
   PROTOCOL_VERSION,
@@ -103,12 +104,13 @@ const editorTargets = new Map<
     sessionId: SessionId
     documentId: import('@nexusdesk/protocol').DocumentId
     clientId: import('@nexusdesk/protocol').ClientId
+    editorType: string
     revision: import('@nexusdesk/protocol').Revision
   }
 >()
 const textBlocks = new Map<string, Set<number>>()
 let stopping: Promise<void> | undefined
-let disposeSheetsTools: Array<() => void> = []
+let disposeOfficeTools: Array<() => void> = []
 
 process.on('message', (frame: RuntimeRequestFrame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== 'shutdown') {
@@ -199,7 +201,7 @@ async function openAgent(
       ? {}
       : { agentOptions: { provider: frame.provider, model: frame.model } }),
     setup(agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] }) {
-      configureOfficeToolScope({ tools: agentContext.tools })
+      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType)
     },
   })) as AgentHandle
   agents.set(frame.sessionId, created)
@@ -213,6 +215,7 @@ async function handle(frame: RuntimeRequestFrame): Promise<void> {
         sessionId: frame.sessionId,
         documentId: frame.documentId,
         clientId: frame.clientId,
+        editorType: frame.editorType,
         revision: frame.revision,
       })
       const handle = await openAgent(frame)
@@ -242,7 +245,7 @@ const stop = (): Promise<void> =>
     for (const handle of agents.values()) await handle.dispose().catch(() => undefined)
     agents.clear()
     editorTargets.clear()
-    for (const dispose of disposeSheetsTools.splice(0)) dispose()
+    for (const dispose of disposeOfficeTools.splice(0)) dispose()
     await running?.shutdown.shutdown(0)
     send({ type: 'shutdown-complete', protocolVersion: PROTOCOL_VERSION })
     if (process.connected) process.disconnect()
@@ -254,49 +257,62 @@ process.once('disconnect', () => {
 
 const ctx = asRuntimeContext((await boot).ctx)
 
-disposeSheetsTools = createSheetsTools({
-  async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
-    const sessionId = String(execution.agent?.id ?? '')
-    const target = editorTargets.get(sessionId)
-    if (target === undefined)
-      throw new Error('no spreadsheet editor is bound to this agent session')
-    const operationId = (authorization?.operationId ?? `operation-${randomUUID()}`) as OperationId
-    const reply = await requestParent({
-      type: 'editor:request',
-      target: { ...target, editorType: 'sheets', operationId },
-      command,
-      arguments: arguments_ as JsonValue,
-      ...(authorization === undefined
-        ? {}
-        : {
-            approval: {
-              id: authorization.approvalId as import('@nexusdesk/protocol').RequestId,
-              planHash: authorization.planHash,
-            },
-          }),
-    })
-    if (reply.type !== 'editor:result' || reply.target.operationId !== operationId) {
-      throw new Error('spreadsheet editor returned a mismatched operation result')
-    }
-    target.revision = reply.currentRevision
-    return reply.result
-  },
-  async approve(toolName, proposal: AgentApprovalProposal, execution) {
-    if (execution.agent === undefined) return { approved: false }
-    const sessionId = String(execution.agent.id ?? '') as SessionId
-    const pending = requestParentTracked({
-      type: 'approval:request',
-      sessionId,
-      toolName,
-      reason: proposal.summary,
-      proposal,
-    })
-    const reply = await pending.reply
-    return reply.type === 'approval:response' && reply.outcome === 'allowed-once'
-      ? { approved: true, approvalId: pending.id }
-      : { approved: false }
-  },
-}).map((tool) => ctx.tools.register(tool))
+function createEditorToolBridge(editorType: 'docs' | 'sheets'): DocsToolBridge {
+  return {
+    async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
+      const sessionId = String(execution.agent?.id ?? '')
+      const target = editorTargets.get(sessionId)
+      if (target === undefined) {
+        throw new Error(`no ${editorType} editor is bound to this agent session`)
+      }
+      if (target.editorType !== editorType) {
+        throw new Error(
+          `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`,
+        )
+      }
+      const operationId = (authorization?.operationId ?? `operation-${randomUUID()}`) as OperationId
+      const reply = await requestParent({
+        type: 'editor:request',
+        target: { ...target, operationId },
+        command,
+        arguments: arguments_ as JsonValue,
+        ...(authorization === undefined
+          ? {}
+          : {
+              approval: {
+                id: authorization.approvalId as import('@nexusdesk/protocol').RequestId,
+                planHash: authorization.planHash,
+              },
+            }),
+      })
+      if (reply.type !== 'editor:result' || reply.target.operationId !== operationId) {
+        throw new Error(`${editorType} editor returned a mismatched operation result`)
+      }
+      target.revision = reply.currentRevision
+      return reply.result
+    },
+    async approve(toolName, proposal: AgentApprovalProposal, execution) {
+      if (execution.agent === undefined) return { approved: false }
+      const sessionId = String(execution.agent.id ?? '') as SessionId
+      const pending = requestParentTracked({
+        type: 'approval:request',
+        sessionId,
+        toolName,
+        reason: proposal.summary,
+        proposal,
+      })
+      const reply = await pending.reply
+      return reply.type === 'approval:response' && reply.outcome === 'allowed-once'
+        ? { approved: true, approvalId: pending.id }
+        : { approved: false }
+    },
+  }
+}
+
+disposeOfficeTools = [
+  ...createSheetsTools(createEditorToolBridge('sheets')),
+  ...createDocsTools(createEditorToolBridge('docs')),
+].map((tool) => ctx.tools.register(tool))
 
 ctx.on(
   'approval/request',
@@ -337,4 +353,5 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles as string[],
+  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES },
 })

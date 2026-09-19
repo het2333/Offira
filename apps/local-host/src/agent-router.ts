@@ -115,6 +115,7 @@ export class AgentRouter {
         sessionId: frame.sessionId,
         documentId: frame.documentId,
         clientId,
+        editorType: document.editorType,
         revision: document.revision,
         cwd: process.cwd(),
         prompt: frame.prompt,
@@ -294,7 +295,11 @@ export class AgentRouter {
       clientId: owner.clientId,
       revision: frame.target.revision,
     })
-    if (frame.command === 'apply_ops' || frame.command === 'save_sheet') {
+    if (
+      frame.command === 'apply_ops' ||
+      frame.command === 'save_sheet' ||
+      frame.command === 'save_document'
+    ) {
       const authorization = frame.approval
       if (authorization === undefined) {
         throw new Error(`runtime request ${frame.id} has no matching one-time approval`)

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { configureOfficeToolScope, OFFICE_TOOL_NAMES } from '../src/runtime-policy'
+import {
+  configureOfficeToolScope,
+  DOCS_TOOL_NAMES,
+  OFFICE_TOOL_NAMES,
+  SHEETS_TOOL_NAMES,
+} from '../src/runtime-policy'
 
 class EffectiveToolCatalog {
   private visible = new Set(['bash', 'read_file', 'web_fetch', ...OFFICE_TOOL_NAMES])
@@ -27,21 +32,42 @@ describe('Office-only Agent capability policy', () => {
   it('removes inherited shell, filesystem, search, skill, and web tools from the effective catalog', () => {
     const tools = new EffectiveToolCatalog()
 
-    configureOfficeToolScope({ tools })
+    configureOfficeToolScope({ tools }, 'sheets')
 
     expect(
       tools
         .schemas()
         .map(({ name }) => name)
         .sort(),
-    ).toEqual([...OFFICE_TOOL_NAMES].sort())
+    ).toEqual([...SHEETS_TOOL_NAMES].sort())
   })
 
   it('denies non-Office execution even if a later plugin exposes a tool', () => {
     const tools = new EffectiveToolCatalog()
-    configureOfficeToolScope({ tools })
+    configureOfficeToolScope({ tools }, 'sheets')
 
     expect(tools.guardCallback?.({ name: 'bash' })).toMatch(/Office tools/)
     expect(tools.guardCallback?.({ name: 'read_sheet' })).toBeUndefined()
+  })
+
+  it('exposes only Docs tools for a Docs session', () => {
+    const tools = new EffectiveToolCatalog()
+
+    configureOfficeToolScope({ tools }, 'docs')
+
+    expect(
+      tools
+        .schemas()
+        .map(({ name }) => name)
+        .sort(),
+    ).toEqual([...DOCS_TOOL_NAMES].sort())
+    expect(tools.guardCallback?.({ name: 'read_document' })).toBeUndefined()
+    expect(tools.guardCallback?.({ name: 'read_sheet' })).toMatch(/Office tools/)
+  })
+
+  it('rejects an unknown editor kind instead of widening the catalog', () => {
+    const tools = new EffectiveToolCatalog()
+
+    expect(() => configureOfficeToolScope({ tools }, 'pdf')).toThrow(/unsupported Office editor/i)
   })
 })

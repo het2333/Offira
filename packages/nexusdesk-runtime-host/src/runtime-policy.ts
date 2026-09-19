@@ -1,4 +1,12 @@
-export const OFFICE_TOOL_NAMES = ['read_sheet', 'apply_sheet_operations', 'save_sheet'] as const
+export const SHEETS_TOOL_NAMES = ['read_sheet', 'apply_sheet_operations', 'save_sheet'] as const
+export const DOCS_TOOL_NAMES = [
+  'read_document',
+  'apply_document_operations',
+  'save_document',
+] as const
+export const OFFICE_TOOL_NAMES = [...SHEETS_TOOL_NAMES, ...DOCS_TOOL_NAMES] as const
+
+export type OfficeEditorType = 'docs' | 'sheets'
 
 interface ToolScope {
   restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): () => void
@@ -7,9 +15,20 @@ interface ToolScope {
 }
 
 /** Apply and validate the non-bypassable capability boundary for one Agent. */
-export function configureOfficeToolScope(agentContext: { tools: ToolScope }): void {
-  const allowed = new Set<string>(OFFICE_TOOL_NAMES)
-  agentContext.tools.restrict({ allow: OFFICE_TOOL_NAMES })
+export function officeToolNames(editorType: string): readonly string[] {
+  if (editorType === 'docs') return DOCS_TOOL_NAMES
+  if (editorType === 'sheets') return SHEETS_TOOL_NAMES
+  throw new Error(`unsupported Office editor: ${editorType}`)
+}
+
+/** Apply and validate the editor-specific, non-bypassable capability boundary. */
+export function configureOfficeToolScope(
+  agentContext: { tools: ToolScope },
+  editorType: string,
+): void {
+  const toolNames = officeToolNames(editorType)
+  const allowed = new Set<string>(toolNames)
+  agentContext.tools.restrict({ allow: toolNames })
   agentContext.tools.guard((execution) =>
     allowed.has(execution.name)
       ? undefined
@@ -20,7 +39,7 @@ export function configureOfficeToolScope(agentContext: { tools: ToolScope }): vo
     .schemas()
     .map(({ name }) => name)
     .sort()
-  const expected = [...OFFICE_TOOL_NAMES].sort()
+  const expected = [...toolNames].sort()
   if (
     effective.length !== expected.length ||
     effective.some((name, index) => name !== expected[index])

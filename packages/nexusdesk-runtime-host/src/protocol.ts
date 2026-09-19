@@ -28,6 +28,7 @@ export type RuntimeRequestFrame =
       sessionId: SessionId
       documentId: DocumentId
       clientId: ClientId
+      editorType: string
       revision: Revision
       cwd: string
       prompt: string
@@ -40,7 +41,13 @@ export type RuntimeRequestFrame =
   | (RuntimeFrameBase & { type: 'shutdown' })
 
 export type RuntimeResponseFrame =
-  | { type: 'ready'; protocolVersion: number; pid: number; startedBundles: string[] }
+  | {
+      type: 'ready'
+      protocolVersion: number
+      pid: number
+      startedBundles: string[]
+      toolCatalogs: { docs: readonly string[]; sheets: readonly string[] }
+    }
   | { type: 'fatal'; protocolVersion: number; message: string }
   | { type: 'shutdown-complete'; protocolVersion: number }
   | AgentEventFrame
