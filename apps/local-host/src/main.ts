@@ -29,8 +29,8 @@ const running = await startLocalHost({
     editorRoots: {
       docs: resolve(process.cwd(), 'apps/docs/out/web'),
       sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
-      markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
-      html: resolve(process.cwd(), 'apps/html/out/web'),
+      markdown: resolve(process.cwd(), 'apps/markdown/out/renderer'),
+      html: resolve(process.cwd(), 'apps/html/out/renderer'),
     },
   },
   runtimeCommand: {

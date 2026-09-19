@@ -112,10 +112,13 @@ it('routes Docs by document id and keeps every open editor frame mounted', () =>
   expect(docsFrame?.getAttribute('aria-hidden')).toBe('false')
 })
 
-it('routes Markdown documents by document id', () => {
+it('routes Markdown and HTML documents by document id', () => {
   expect(
     editorRoute({ documentId: 'markdown 1', title: 'Notes.md', editorType: 'markdown', revision: 1 } as never),
   ).toBe('/markdown/?host=local-web&documentId=markdown%201')
+  expect(
+    editorRoute({ documentId: 'html 1', title: 'Page.html', editorType: 'html', revision: 1 } as never),
+  ).toBe('/html/?host=local-web&documentId=html%201')
 })
 
 it('keeps the same Sheets frame mounted across Home and close/reopen transitions', () => {

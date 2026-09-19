@@ -4,14 +4,14 @@ import { extname, resolve } from 'node:path'
 import type { EditorKind } from '@nexusdesk/office-host'
 
 export interface StartupDocumentPath {
-  editorType: Extract<EditorKind, 'docs' | 'sheets' | 'markdown'>
+  editorType: Extract<EditorKind, 'docs' | 'sheets' | 'markdown' | 'html'>
   path: string
 }
 
 export function startupDocumentPaths(args: readonly string[], cwd: string): StartupDocumentPath[] {
   if (args.length === 0) {
     throw new Error(
-      'Usage: npm run start:web -- /absolute/path/to/document.docx [/absolute/path/to/workbook.xlsx] [/absolute/path/to/notes.md]',
+      'Usage: npm run start:web -- /absolute/path/to/document.docx [/absolute/path/to/workbook.xlsx] [/absolute/path/to/notes.md] [/absolute/path/to/page.html]',
     )
   }
   return args.map((candidate) => {
@@ -24,9 +24,11 @@ export function startupDocumentPaths(args: readonly string[], cwd: string): Star
           ? 'sheets'
           : extension === '.md' || extension === '.markdown' || extension === '.mdown'
             ? 'markdown'
-          : undefined
+          : extension === '.html' || extension === '.htm'
+            ? 'html'
+            : undefined
     if (editorType === undefined) {
-      throw new Error('Local Web currently accepts only .docx, .xlsx, and .md document paths.')
+      throw new Error('Local Web currently accepts only .docx, .xlsx, .md, and .html document paths.')
     }
     if (!existsSync(path)) throw new Error(`Document does not exist: ${path}`)
     return { editorType, path }

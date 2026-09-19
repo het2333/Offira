@@ -30,27 +30,30 @@ describe('Local Web production startup', () => {
     ).toThrow(/\.xlsx/)
   })
 
-  it('classifies office and Markdown startup paths without accepting other files', async () => {
+  it('classifies office, Markdown, and HTML startup paths without accepting other files', async () => {
     const currentDirectory = await mkdtemp(join(tmpdir(), 'nexusdesk-startup-'))
     directory = currentDirectory
     const docx = join(currentDirectory, 'Report.docx')
     const xlsx = join(currentDirectory, 'Forecast.xlsx')
     const markdown = join(currentDirectory, 'Notes.md')
+    const html = join(currentDirectory, 'Page.html')
     const text = join(currentDirectory, 'notes.txt')
     await Promise.all([
       writeFile(docx, 'fixture'),
       writeFile(xlsx, 'fixture'),
       writeFile(markdown, '# Notes'),
+      writeFile(html, '<h1>Page</h1>'),
       writeFile(text, 'x'),
     ])
 
-    expect(startupDocumentPaths([docx, xlsx, markdown], '/unused')).toEqual([
+    expect(startupDocumentPaths([docx, xlsx, markdown, html], '/unused')).toEqual([
       { editorType: 'docs', path: docx },
       { editorType: 'sheets', path: xlsx },
       { editorType: 'markdown', path: markdown },
+      { editorType: 'html', path: html },
     ])
     expect(() => startupDocumentPaths([], currentDirectory)).toThrow(/npm run start:web --/)
-    expect(() => startupDocumentPaths([text], currentDirectory)).toThrow(/\.docx.*\.xlsx.*\.md/i)
+    expect(() => startupDocumentPaths([text], currentDirectory)).toThrow(/\.docx.*\.xlsx.*\.md.*\.html/i)
     expect(() =>
       startupDocumentPaths([join(currentDirectory, 'missing.docx')], currentDirectory),
     ).toThrow(/does not exist/)

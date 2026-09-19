@@ -11,6 +11,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    base: '/html/',
     server: {
       port: Number(process.env.HTML_DEV_PORT) || 5178,
       strictPort: Boolean(process.env.HTML_DEV_PORT),

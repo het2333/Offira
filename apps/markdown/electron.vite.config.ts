@@ -29,6 +29,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    base: '/markdown/',
     resolve: { dedupe: TIPTAP_DEDUPE },
     server: {
       port: Number(process.env.MARKDOWN_DEV_PORT) || 5177,

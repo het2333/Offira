@@ -5,6 +5,7 @@ import { PresentView } from './PresentView'
 import { LocaleProvider } from './i18n/locale'
 import type { UiTheme } from '../shared/ipc'
 import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import { installHtmlBrowserHostApiForDocument, selectHtmlHost } from './browser-host-api'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/dropdown.css'
@@ -24,6 +25,17 @@ function applyTheme(theme: UiTheme): void {
 }
 
 void (async () => {
+  const selection = await selectHtmlHost({
+    search: window.location.search,
+    electronApi: (window as Partial<Window>).htmlApi,
+    installBrowser: installHtmlBrowserHostApiForDocument,
+  })
+  const root = document.getElementById('root')!
+  if (selection.kind === 'error') {
+    root.textContent = selection.message
+    root.setAttribute('role', 'alert')
+    return
+  }
   const [lang, theme] = await Promise.all([
     window.htmlApi.getLanguage().catch(() => 'zh' as const),
     window.htmlApi.getTheme().catch(() => 'system' as const),
@@ -39,7 +51,7 @@ void (async () => {
   // a present tab/window (opened by Present → New tab) renders only its owner's preview
   const params = new URLSearchParams(location.search)
   const present = params.has('present')
-  createRoot(document.getElementById('root')!).render(
+  createRoot(root).render(
     <LocaleProvider initial={lang}>
       {present ? <PresentView title={params.get('title') ?? ''} /> : <App />}
     </LocaleProvider>,

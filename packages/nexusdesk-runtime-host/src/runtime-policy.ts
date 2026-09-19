@@ -9,13 +9,15 @@ export const MARKDOWN_TOOL_NAMES = [
   'apply_markdown_operations',
   'save_markdown',
 ] as const
+export const HTML_TOOL_NAMES = ['read_html', 'apply_html_operations', 'save_html'] as const
 export const OFFICE_TOOL_NAMES = [
   ...SHEETS_TOOL_NAMES,
   ...DOCS_TOOL_NAMES,
   ...MARKDOWN_TOOL_NAMES,
+  ...HTML_TOOL_NAMES,
 ] as const
 
-export type OfficeEditorType = 'docs' | 'sheets' | 'markdown'
+export type OfficeEditorType = 'docs' | 'sheets' | 'markdown' | 'html'
 
 interface ToolScope {
   restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): () => void
@@ -28,6 +30,7 @@ export function officeToolNames(editorType: string): readonly string[] {
   if (editorType === 'docs') return DOCS_TOOL_NAMES
   if (editorType === 'sheets') return SHEETS_TOOL_NAMES
   if (editorType === 'markdown') return MARKDOWN_TOOL_NAMES
+  if (editorType === 'html') return HTML_TOOL_NAMES
   throw new Error(`unsupported Office editor: ${editorType}`)
 }
 

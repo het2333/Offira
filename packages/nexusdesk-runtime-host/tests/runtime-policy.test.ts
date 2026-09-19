@@ -4,6 +4,7 @@ import {
   configureOfficeToolScope,
   DOCS_TOOL_NAMES,
   MARKDOWN_TOOL_NAMES,
+  HTML_TOOL_NAMES,
   OFFICE_TOOL_NAMES,
   SHEETS_TOOL_NAMES,
 } from '../src/runtime-policy'
@@ -74,6 +75,14 @@ describe('Office-only Agent capability policy', () => {
     expect(tools.schemas().map(({ name }) => name).sort()).toEqual([...MARKDOWN_TOOL_NAMES].sort())
     expect(tools.guardCallback?.({ name: 'read_markdown' })).toBeUndefined()
     expect(tools.guardCallback?.({ name: 'read_document' })).toMatch(/Office tools/)
+  })
+
+  it('exposes only HTML tools for an HTML session', () => {
+    const tools = new EffectiveToolCatalog()
+    configureOfficeToolScope({ tools }, 'html')
+    expect(tools.schemas().map(({ name }) => name).sort()).toEqual([...HTML_TOOL_NAMES].sort())
+    expect(tools.guardCallback?.({ name: 'read_html' })).toBeUndefined()
+    expect(tools.guardCallback?.({ name: 'read_markdown' })).toMatch(/Office tools/)
   })
 
   it('rejects an unknown editor kind instead of widening the catalog', () => {

@@ -60,6 +60,8 @@ import { injectBrief, parseBrief, type Brief } from './document/brief'
 import { applyPatches } from './document/patch'
 import { deriveAutoFileName, deriveNameFromPrompt, derivePageTitleName } from './document/auto-name'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
+import { createHtmlSkill } from './ai/tools'
+import { createHtmlEditorAdapter } from './agent/html-editor-adapter'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
@@ -1358,6 +1360,46 @@ export default function App() {
       selectSid(sid, { reveal: true })
     },
   }
+
+  useEffect(() => {
+    const host = window.nexusdeskHtmlHost
+    if (!host) return
+    const skill = createHtmlSkill({
+      getText: () => textRef.current,
+      getVersion: () => versionRef.current,
+      getMap,
+      getLastManualVersion: () => lastManualVersionRef.current,
+      getFilePath: () => pathRef.current,
+      getSelectedSid: () => selectedSidRef.current,
+      applyOps: (ops) => {
+        flushPending()
+        return applyOps(ops, false)
+      },
+      replaceAll: (html) => replaceAll(html, false),
+    }, 'Native Harness HTML adapter')
+    return host.bridge.attachEditor(
+      createHtmlEditorAdapter({
+        document: () => {
+          const client = host.bridge.client()
+          return { documentId: host.document.documentId as never, clientId: (client.clientId ?? '') as never, revision: host.document.revision as never, title: host.document.title, attached: client.attached && client.clientId !== undefined }
+        },
+        read: () =>
+          statusRef.current !== 'ready'
+            ? { ok: false, summary: 'The HTML editor is not ready.', warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The HTML editor is not ready.' }] }
+            : { ok: true, summary: 'Read the current HTML document.', warnings: [], data: { context: skill.buildContext?.() ?? '' } },
+        async apply(operations) {
+          if (statusRef.current !== 'ready') return { ok: false, summary: 'The HTML editor is not ready.', warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The HTML editor is not ready.' }] }
+          const outcome = await skill.executeTool({ id: `nexusdesk-${crypto.randomUUID()}`, name: 'apply_ops', input: { ops: operations } })
+          return { ok: !outcome.isError && outcome.mutated === true, summary: outcome.summary, warnings: outcome.isError ? [{ code: 'APPLY_FAILED', message: outcome.output }] : [], ...(outcome.mutated ? { changes: { targets: [], count: operations.length } } : {}) }
+        },
+        async save() {
+          const ok = await doSave('save')
+          return ok ? { ok: true, summary: 'Saved the current HTML document.', warnings: [] } : { ok: false, summary: 'Could not save the current HTML document.', warnings: [{ code: 'SAVE_FAILED', message: 'The Local Host rejected the save.' }] }
+        },
+        consumeApproval: (id, hash) => host.bridge.consumeApproval(id, hash),
+      }),
+    )
+  }, [applyOps, doSave, flushPending, getMap, replaceAll])
 
   const statusText = useMemo(() => {
     if (saveState === 'saving') return t('saving')
