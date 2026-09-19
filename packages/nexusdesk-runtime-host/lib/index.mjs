@@ -15062,12 +15062,22 @@ function proposal(value) {
   return {
     operationId: data.operationId,
     proposal: {
+      operationId: data.operationId,
       planHash: data.planHash,
       summary: typeof data.summary === "string" ? data.summary : value.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((item) => typeof item === "string") : [],
       warnings: value.warnings
     }
   };
+}
+function saveProposal(value) {
+  const pending = proposal(value);
+  const data = value.data ?? {};
+  const contentVersion = data.contentVersion;
+  if (typeof contentVersion !== "number" || !Number.isSafeInteger(contentVersion) || contentVersion < 1) {
+    throw new Error("presentation editor returned an invalid save proposal");
+  }
+  return { ...pending, contentVersion };
 }
 function createSlidesTools(bridge) {
   return [
@@ -15101,10 +15111,16 @@ function createSlidesTools(bridge) {
       parameters: {},
       output,
       async execute(_args, execution) {
-        const pending = { planHash: "save-current-presentation-in-place", summary: "Save the current presentation in place.", targets: ["current presentation"], warnings: [] };
-        const approval = await bridge.approve("save_presentation", pending, execution);
+        const proposed = result(await bridge.request("propose_save", {}, execution));
+        if (!proposed.ok) return proposed;
+        const pending = saveProposal(proposed);
+        const approval = await bridge.approve("save_presentation", pending.proposal, execution);
         if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation save was not approved");
-        return result(await bridge.request("save_presentation", { inPlace: true }, execution, { approvalId: approval.approvalId, planHash: pending.planHash }));
+        return result(await bridge.request("save_presentation", { inPlace: true, contentVersion: pending.contentVersion }, execution, {
+          approvalId: approval.approvalId,
+          planHash: pending.proposal.planHash,
+          operationId: pending.operationId
+        }));
       }
     })
   ];

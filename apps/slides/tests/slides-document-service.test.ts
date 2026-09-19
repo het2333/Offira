@@ -3,6 +3,13 @@ import { addElement, createBlankPptx, openPptx, savePptx } from '@genoffice/pptx
 
 import { SlidesDocumentService } from '../src/main/slides-document-service'
 
+function renderedText(service: SlidesDocumentService): string {
+  return service.renderSlides().flatMap((slide) => slide.nodes)
+    .flatMap((node) => node.type === 'text' || node.type === 'shape' ? node.text?.lines ?? [] : [])
+    .map((line) => line.runs.map((run) => run.text).join(''))
+    .join('\n')
+}
+
 describe('SlidesDocumentService', () => {
   it('opens a real PPTX, applies the existing transaction DSL, saves bytes, and restores the change', async () => {
     const sourceDeck = await openPptx(await createBlankPptx())
@@ -54,6 +61,34 @@ describe('SlidesDocumentService', () => {
 
     expect(result).toMatchObject({ applied: true, contentVersion: 2 })
     expect((service.readPresentation() as { contentVersion?: number }).contentVersion).toBe(2)
+  })
+
+  it('records manual text edits and Agent transactions in the same undo and redo history', async () => {
+    const sourceDeck = await openPptx(await createBlankPptx())
+    addElement(sourceDeck.deck.slides[0]!, {
+      kind: 'textbox',
+      offset: { x: 0, y: 0, cx: 1828800, cy: 914400 },
+      paragraphs: [{ runs: [{ text: 'Original title' }] }],
+    })
+    const service = await SlidesDocumentService.open(await savePptx(sourceDeck), 'Deck.pptx', 960)
+    const title = service.openResult().slides[0]!.nodes.find((node) => node.type === 'text' || node.type === 'shape')!
+
+    await service.editText({
+      slideIndex: 0,
+      sourceId: title.sourceId,
+      paragraphs: [{ runs: [{ text: 'Manual edit' }] }],
+    })
+    service.applyTransaction({
+      ops: [{ op: 'setText', target: { slide: 0, el: title.sourceId }, paragraphs: [{ runs: [{ text: 'Agent edit' }] }] }],
+    })
+
+    await service.undo()
+    expect(renderedText(service)).toContain('Manual edit')
+    await service.undo()
+    expect(renderedText(service)).toContain('Original title')
+    await service.redo()
+    await service.redo()
+    expect(renderedText(service)).toContain('Agent edit')
   })
 
   it('runs browser CRUD and fill actions through transactions with undo and redo', async () => {

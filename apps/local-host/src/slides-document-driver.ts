@@ -2,7 +2,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import { open, readFile, rename, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import JSZip from 'jszip'
 import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import type { DocumentId } from '@nexusdesk/protocol'
 
@@ -16,14 +15,18 @@ function documentId(path: string): string {
   return `slides-${createHash('sha256').update(resolve(path)).digest('hex').slice(0, 24)}`
 }
 
-async function validPresentation(bytes: Uint8Array): Promise<void> {
+async function validPresentation(bytes: Uint8Array, title: string): Promise<void> {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_PRESENTATION_BYTES) {
     throw new HostError('INVALID_DOCUMENT_CONTENT', 'Presentation content is empty or exceeds the safe size limit.', false)
   }
   try {
-    const zip = await JSZip.loadAsync(bytes, { checkCRC32: true })
-    if (zip.file('ppt/presentation.xml') === null || zip.file('[Content_Types].xml') === null) {
-      throw new Error('required PowerPoint parts are missing')
+    // Do not accept a ZIP just because it has PPTX-looking part names. The
+    // isolated service parses and serializes before disk or live state changes.
+    const isolated = await SlidesWebServiceClient.open(bytes, title)
+    try {
+      await isolated.request('serialize', {})
+    } finally {
+      await isolated.close()
     }
   } catch {
     throw new HostError('INVALID_DOCUMENT_CONTENT', 'The replacement is not a valid PPTX presentation.', false)
@@ -34,7 +37,7 @@ async function validPresentation(bytes: Uint8Array): Promise<void> {
 export async function createSlidesDocumentDriver(path: string): Promise<LocalDocumentDriver> {
   const resolvedPath = resolve(path)
   const source = await readFile(resolvedPath)
-  await validPresentation(source)
+  await validPresentation(source, basename(resolvedPath))
   const service = await SlidesWebServiceClient.open(new Uint8Array(source), basename(resolvedPath))
   let revision = 1
   let queue = Promise.resolve()
@@ -60,7 +63,7 @@ export async function createSlidesDocumentDriver(path: string): Promise<LocalDoc
     if (expectedRevision !== revision) {
       throw new HostError('REVISION_CONFLICT', 'The presentation changed before this save completed.', false, id)
     }
-    await validPresentation(bytes)
+    await validPresentation(bytes, title)
     const temporaryPath = join(dirname(resolvedPath), `.${title}.${randomBytes(12).toString('hex')}.tmp`)
     try {
       const handle = await open(temporaryPath, 'wx', 0o600)

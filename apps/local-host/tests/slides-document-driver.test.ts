@@ -66,6 +66,24 @@ describe('Slides Local Host driver', () => {
     expect((await readdir(directory!)).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
+  it('rejects a structurally named but unparsable presentation before changing the live deck', async () => {
+    const { path } = await editableFixture()
+    const driver = await createSlidesDocumentDriver(path)
+    const before = await readFile(path)
+    const liveBefore = await driver.execute('slides:render-slides', {})
+    const malformed = new JSZip()
+    malformed.file('[Content_Types].xml', '<Types/>')
+    malformed.file('ppt/presentation.xml', '<p:presentation')
+
+    await expect(driver.writeContent!(await malformed.generateAsync({ type: 'uint8array' }), 1)).rejects.toMatchObject({
+      code: 'INVALID_DOCUMENT_CONTENT',
+    })
+
+    expect(await readFile(path)).toEqual(before)
+    expect(driver.document.revision).toBe(1)
+    expect(await driver.execute('slides:render-slides', {})).toEqual(liveBefore)
+  })
+
   it('opens, edits, and saves one real PPTX session in place', async () => {
     const { path } = await editableFixture()
     const driver = await createSlidesDocumentDriver(path)
@@ -87,5 +105,17 @@ describe('Slides Local Host driver', () => {
     expect(saved).toMatchObject({ ok: true, revision: 2 })
     const reopened = await createSlidesDocumentDriver(path)
     expect(JSON.stringify(await reopened.execute('slides:open', { fitWidthPx: 960 }))).toContain('Saved')
+  })
+
+  it('validates and saves an Agent transaction result in the isolated service', async () => {
+    const { path } = await editableFixture()
+    const driver = await createSlidesDocumentDriver(path)
+    const read = await driver.execute('slides:read-presentation', {}) as { slides: Array<{ nodes: Array<{ sourceId?: string; type: string }> }> }
+    const title = read.slides[0]!.nodes.find((node) => node.type === 'text' && node.sourceId)
+
+    await driver.execute('slides:apply-txn', {
+      ops: [{ op: 'setText', target: { slide: 0, el: title!.sourceId }, paragraphs: [{ runs: [{ text: 'Saved by Agent' }] }] }],
+    })
+    await expect(driver.execute('slides:save', { expectedRevision: 1 })).resolves.toMatchObject({ ok: true, revision: 2 })
   })
 })

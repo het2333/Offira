@@ -153,6 +153,12 @@ export function createSlidesBrowserApi(
       return result
     },
     addElement: (request) => ui<Awaited<ReturnType<SlidesApi['addElement']>>>('add-element', request),
+    addTable: (request) => ui<Awaited<ReturnType<SlidesApi['addTable']>>>('add-table', request),
+    addChart: (request) => ui<Awaited<ReturnType<SlidesApi['addChart']>>>('add-chart', request),
+    addImageBytes: (request) => ui<Awaited<ReturnType<SlidesApi['addImageBytes']>>>('add-image-bytes', request),
+    copyElements: (request) => ui<Awaited<ReturnType<SlidesApi['copyElements']>>>('copy-elements', request),
+    pasteElements: (request) => ui<Awaited<ReturnType<SlidesApi['pasteElements']>>>('paste-elements', request),
+    duplicateElements: (request) => ui<Awaited<ReturnType<SlidesApi['duplicateElements']>>>('duplicate-elements', request),
     deleteElement: (request) => uiSlide('delete-element', request),
     editFill: (request) => uiSlide('edit-fill', request),
     editStroke: (request) => uiSlide('edit-stroke', request),

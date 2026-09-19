@@ -59,4 +59,22 @@ describe('Slides browser host API', () => {
     expect(handle.document.revision).toBe(2)
     expect(handle.document.contentVersion).toBe(3)
   })
+
+  it('routes table, chart, image, and element clipboard commands to Local Host transactions', async () => {
+    const host = transport()
+    const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host })
+    const api = createSlidesBrowserApi(handle, host)
+    const box = { slideIndex: 0, xPx: 0, yPx: 0, wPx: 100, hPx: 100, fitWidthPx: 960 }
+
+    await api.addTable({ ...box, rows: 2, cols: 2 })
+    await api.addChart({ ...box, kind: 'bar', categories: ['Q1'], series: [{ name: 'Sales', values: [1] }] })
+    await api.addImageBytes({ ...box, base64: 'iVBORw0KGgo=', ext: 'png' })
+    await api.copyElements({ slideIndex: 0, sourceIds: ['shape-1'] })
+    await api.pasteElements({ slideIndex: 0, fitWidthPx: 960 })
+    await api.duplicateElements({ slideIndex: 0, sourceIds: ['shape-1'], dxPx: 10, dyPx: 10, fitWidthPx: 960 })
+
+    expect(host.calls.filter((call) => call.action === 'slides:ui').map((call) => (call.payload as any).action)).toEqual([
+      'add-table', 'add-chart', 'add-image-bytes', 'copy-elements', 'paste-elements', 'duplicate-elements',
+    ])
+  })
 })
