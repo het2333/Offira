@@ -37,6 +37,11 @@ afterEach(() => {
 })
 
 it('hides unsupported browser and GenOffice-only actions in NexusDesk', async () => {
+  const unsupportedCalls: string[] = []
+  const unsupported = (name: string) => () => {
+    unsupportedCalls.push(name)
+    throw new Error(`${name} is unsupported`)
+  }
   const tabs = [
     { id: 'home', kind: 'home' as const, title: 'Home', closable: false as const, active: true },
   ]
@@ -79,6 +84,16 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
       folderRoot: async () => ({ path: '', name: '', usable: false }),
       onFolderChanged: () => () => {},
       starPromptShouldShow: async () => ({ show: false, docOpens: 0 }),
+      getTheme: async () => 'system',
+      getAiProviders: unsupported('getAiProviders'),
+      getAiSettings: unsupported('getAiSettings'),
+      getDefaultSaveDir: unsupported('getDefaultSaveDir'),
+      getAnalyticsEnabled: unsupported('getAnalyticsEnabled'),
+      getAutoSaveDefault: unsupported('getAutoSaveDefault'),
+      getAiPanelPrefs: unsupported('getAiPanelPrefs'),
+      getUpdateChannel: unsupported('getUpdateChannel'),
+      getAppVersion: unsupported('getAppVersion'),
+      githubStars: unsupported('githubStars'),
     },
     tabs: {
       showMenu: async () => {},
@@ -115,4 +130,10 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
   expect(menu?.textContent).not.toMatch(
     /Copy path|Move to folder|Rename|Duplicate|复制路径|移动到文件夹|重命名|创建副本/,
   )
+
+  await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.click())
+  expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+  expect(container.textContent).toContain('通用')
+  expect(container.textContent).not.toContain('AI 模型')
+  expect(unsupportedCalls).toEqual([])
 })

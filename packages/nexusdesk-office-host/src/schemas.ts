@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import type { DocumentId, Revision } from '@nexusdesk/protocol'
+import { PROTOCOL_VERSION, type DocumentId, type Revision } from '@nexusdesk/protocol'
 
 export const editorKindSchema = z.enum(['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'])
 export const shellThemeSchema = z.enum(['light', 'dark', 'system'])
@@ -190,6 +190,7 @@ export const fileListResponseSchema = z.object({ files: z.array(fileSummarySchem
 export const shellChangedEventSchema = z
   .object({
     type: z.literal('shell:changed'),
+    protocolVersion: z.literal(PROTOCOL_VERSION),
     sequence: z.number().int().positive(),
   })
   .strict()

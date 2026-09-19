@@ -96,6 +96,15 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     })
   }
 
+  const deliverResult = (frame: EditorRequestFrame, result: AgentToolResult): void => {
+    try {
+      sendResult(frame, result)
+    } catch {
+      // The durable journal is the source of truth. Reconnect lookup/replay
+      // delivers the same result without executing the editor command again.
+    }
+  }
+
   const execute = async (frame: EditorRequestFrame): Promise<AgentToolResult> => {
     if (adapter === undefined) {
       return failure('EDITOR_NOT_READY', 'the spreadsheet editor is not ready')
@@ -201,19 +210,19 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     if (frame.type !== 'editor:request') return
     const replayed = replay(frame)
     if (replayed !== undefined) {
-      sendResult(frame, replayed)
+      deliverResult(frame, replayed)
       return
     }
-    void execute(frame)
-      .then((result) => {
-        remember(frame, result)
-        sendResult(frame, result)
-      })
-      .catch((error: unknown) => {
-        const result = failure('EDITOR_REQUEST_FAILED', errorMessage(error))
-        remember(frame, result)
-        sendResult(frame, result)
-      })
+    void (async () => {
+      let result: AgentToolResult
+      try {
+        result = await execute(frame)
+      } catch (error: unknown) {
+        result = failure('EDITOR_REQUEST_FAILED', errorMessage(error))
+      }
+      remember(frame, result)
+      deliverResult(frame, result)
+    })()
   })
 
   return {

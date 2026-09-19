@@ -57,6 +57,13 @@ class FakeClient {
   }
 }
 
+class FailingResultClient extends FakeClient {
+  override send(frame: ClientFrame): void {
+    if (frame.type === 'editor:result') throw new Error('CONNECTION_LOST')
+    super.send(frame)
+  }
+}
+
 class MemoryStorage {
   private readonly values = new Map<string, string>()
   getItem(key: string): string | null {
@@ -357,6 +364,38 @@ describe('browser agent bridge', () => {
         warnings: [{ code: 'UNAVAILABLE_IN_WEB' }],
       },
     })
+  })
+
+  it('keeps a successful journal result when delivery loses its connection', async () => {
+    const storage = new MemoryStorage()
+    const client = new FailingResultClient()
+    const adapter = adapterWith()
+    const bridge = createBrowserAgentBridge({ client, documentId, revision, storage })
+    bridge.attachEditor(adapter)
+
+    client.emit({
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'save-1' as RequestId,
+      target: {
+        sessionId: 'session-1' as SessionId,
+        documentId,
+        editorType: 'sheets',
+        revision,
+        operationId: 'operation-save' as OperationId,
+        clientId: 'client-1' as ClientId,
+      },
+      command: 'save_sheet',
+      arguments: {},
+    })
+
+    await vi.waitFor(() => expect(adapter.save).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => {
+      const saved = storage.getItem('nexusdesk:editor-result:document-1:operation-save')
+      expect(saved).not.toBeNull()
+      expect(JSON.parse(saved!).result).toMatchObject({ ok: true, summary: 'saved' })
+    })
+    bridge.dispose()
   })
 })
 

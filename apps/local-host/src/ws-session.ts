@@ -131,7 +131,11 @@ export function installWsSessionServer(
     },
     broadcastShellChanged() {
       shellSequence += 1
-      const frame = JSON.stringify({ type: 'shell:changed', sequence: shellSequence })
+      const frame = JSON.stringify({
+        type: 'shell:changed',
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: shellSequence,
+      })
       for (const client of clients.values()) {
         if (client.readyState === WebSocket.OPEN) client.send(frame)
       }

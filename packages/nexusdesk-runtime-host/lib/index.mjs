@@ -14704,15 +14704,19 @@ function projectDurableEvent(sessionId, event) {
     );
   }
   if (event.type === "tool/result") {
-    if (typeof data.callId !== "string") return void 0;
-    const result = Object.keys(recordOf(data.result)).length > 0 ? recordOf(data.result) : data;
+    const message = recordOf(data.message);
+    const source = recordOf(message.source);
+    const messageContent = Array.isArray(message.content) ? message.content : [];
+    const result = recordOf(messageContent[0]);
+    if (messageContent.length !== 1 || result.type !== "tool-result" || typeof result.toolCallId !== "string" || source.kind !== "tool" || source.callId !== result.toolCallId) {
+      return void 0;
+    }
     return eventFrame(
       sessionId,
       event.type,
       {
-        callId: data.callId,
-        ...typeof data.name === "string" ? { name: data.name } : {},
-        isError: result.isError === true,
+        callId: result.toolCallId,
+        isError: result.isError === true || Object.keys(recordOf(data.error)).length > 0,
         contentText: boundedText(textContent(result.content))
       },
       event.seq

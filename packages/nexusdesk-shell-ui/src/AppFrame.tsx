@@ -71,7 +71,7 @@ function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
       >
         <Home />
       </div>
-      {homeActive !== true && <EditorFrame bootstrap={bootstrap} />}
+      <EditorFrame bootstrap={bootstrap} />
       {/* editor WebContentsViews paint above ALL shell DOM, so the overlay only
        * renders while the home tab is active — it comes back when home does */}
       {showOnboarding && homeActive && <Onboarding onDone={finishOnboarding} />}

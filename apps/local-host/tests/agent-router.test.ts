@@ -432,7 +432,27 @@ describe('AgentRouter', () => {
       reconnectedClientId,
     )
 
-    expect(sent.at(-1)).toEqual({ clientId: reconnectedClientId, frame: original })
+    const replayed = sent.at(-1)
+    expect(replayed).toMatchObject({
+      clientId: reconnectedClientId,
+      frame: {
+        type: 'editor:request',
+        id: (original as EditorRequestFrame).id,
+        target: { clientId: reconnectedClientId },
+      },
+    })
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'editor:result',
+          protocolVersion: PROTOCOL_VERSION,
+          id: (replayed!.frame as EditorRequestFrame).id,
+          target: (replayed!.frame as EditorRequestFrame).target,
+          result: { ok: true, summary: 'Recovered without reapplying.', warnings: [] },
+        },
+        reconnectedClientId,
+      ),
+    ).not.toThrow()
     router.dispose()
   })
 })

@@ -35,7 +35,10 @@ export interface NexusClientOptions {
 export type NexusClientErrorCode = 'CONNECTION_LOST' | 'CLIENT_CLOSED' | 'INVALID_SERVER_FRAME'
 
 export class NexusClientError extends Error {
-  constructor(readonly code: NexusClientErrorCode, message: string) {
+  constructor(
+    readonly code: NexusClientErrorCode,
+    message: string,
+  ) {
     super(message)
     this.name = 'NexusClientError'
   }
@@ -64,11 +67,12 @@ function defaultSocketFactory(url: string): NexusSocket {
   return new WebSocket(url) as unknown as NexusSocket
 }
 
-function parseServerFrame(data: string): AgentServerFrame {
+function parseServerFrame(data: string): AgentServerFrame | undefined {
   const value = JSON.parse(data) as Record<string, unknown>
   if (value.protocolVersion !== PROTOCOL_VERSION || typeof value.type !== 'string') {
     throw new NexusClientError('INVALID_SERVER_FRAME', 'server frame has an unsupported protocol')
   }
+  if (value.type === 'shell:changed') return undefined
   return value as unknown as AgentServerFrame
 }
 
@@ -88,8 +92,10 @@ class BrowserNexusClient implements NexusClient {
 
   constructor(private readonly options: NexusClientOptions) {
     this.socketFactory = options.webSocketFactory ?? defaultSocketFactory
-    this.schedule = options.schedule ?? ((callback, delay) => globalThis.setTimeout(callback, delay))
-    this.cancelSchedule = options.cancelSchedule ?? ((handle) => globalThis.clearTimeout(handle as number))
+    this.schedule =
+      options.schedule ?? ((callback, delay) => globalThis.setTimeout(callback, delay))
+    this.cancelSchedule =
+      options.cancelSchedule ?? ((handle) => globalThis.clearTimeout(handle as number))
   }
 
   get state(): NexusClientState {
@@ -137,7 +143,9 @@ class BrowserNexusClient implements NexusClient {
 
   request(frame: ClientFrame): Promise<AgentServerFrame> {
     if (this.pending.has(frame.id)) {
-      return Promise.reject(new NexusClientError('INVALID_SERVER_FRAME', `duplicate request id ${frame.id}`))
+      return Promise.reject(
+        new NexusClientError('INVALID_SERVER_FRAME', `duplicate request id ${frame.id}`),
+      )
     }
     return new Promise((resolve, reject) => {
       this.pending.set(frame.id, { frame, resolve, reject })
@@ -173,13 +181,14 @@ class BrowserNexusClient implements NexusClient {
 
   private receive(socket: NexusSocket, data: string): void {
     if (socket !== this.socket || this.currentState === 'closed') return
-    let frame: AgentServerFrame
+    let frame: AgentServerFrame | undefined
     try {
       frame = parseServerFrame(data)
     } catch (error) {
       this.failInvalidFrame(error)
       return
     }
+    if (frame === undefined) return
     if (frame.type === 'server:ready') {
       this.currentClientId = frame.clientId
       this.reconnectAttempt = 0
@@ -215,7 +224,7 @@ class BrowserNexusClient implements NexusClient {
     this.setState('reconnecting')
     const base = this.options.reconnectBaseMs ?? 250
     const cap = this.options.reconnectMaxMs ?? 5_000
-    const delay = Math.min(base * (2 ** this.reconnectAttempt), cap)
+    const delay = Math.min(base * 2 ** this.reconnectAttempt, cap)
     this.reconnectAttempt += 1
     this.reconnectTimer = this.schedule(() => {
       this.reconnectTimer = undefined

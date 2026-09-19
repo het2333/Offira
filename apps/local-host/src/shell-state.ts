@@ -102,6 +102,7 @@ async function writeAtomic(path: string, value: PersistedShellState): Promise<vo
 
 export class ShellState {
   private readonly documentsById: Map<string, ShellDocumentSummary>
+  private mutationQueue: Promise<void> = Promise.resolve()
 
   private constructor(
     private readonly path: string,
@@ -138,66 +139,78 @@ export class ShellState {
   }
 
   async activate(tabId: string): Promise<ShellBootstrap> {
-    if (!this.tabs().some((tab) => tab.id === tabId)) {
-      throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
-    }
-    this.state = { ...this.state, activeTabId: tabId }
-    await this.persist()
-    return this.bootstrap()
+    return this.enqueueMutation(async () => {
+      if (!this.tabs().some((tab) => tab.id === tabId)) {
+        throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
+      }
+      this.state = { ...this.state, activeTabId: tabId }
+      await this.persist()
+      return this.bootstrap()
+    })
   }
 
   async close(tabId: string): Promise<ShellBootstrap> {
-    if (tabId === 'home') throw new HostError('INVALID_REQUEST', 'Home cannot be closed.', false)
-    const documentId = tabId.startsWith('document:') ? tabId.slice('document:'.length) : undefined
-    if (documentId === undefined || !this.state.tabDocumentIds.includes(documentId)) {
-      throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
-    }
-    this.state = {
-      ...this.state,
-      tabDocumentIds: this.state.tabDocumentIds.filter((id) => id !== documentId),
-      closedDocumentIds: [...new Set([...this.state.closedDocumentIds, documentId])],
-      activeTabId: this.state.activeTabId === tabId ? 'home' : this.state.activeTabId,
-    }
-    await this.persist()
-    return this.bootstrap()
+    return this.enqueueMutation(async () => {
+      if (tabId === 'home') throw new HostError('INVALID_REQUEST', 'Home cannot be closed.', false)
+      const documentId = tabId.startsWith('document:') ? tabId.slice('document:'.length) : undefined
+      if (documentId === undefined || !this.state.tabDocumentIds.includes(documentId)) {
+        throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
+      }
+      this.state = {
+        ...this.state,
+        tabDocumentIds: this.state.tabDocumentIds.filter((id) => id !== documentId),
+        closedDocumentIds: [...new Set([...this.state.closedDocumentIds, documentId])],
+        activeTabId: this.state.activeTabId === tabId ? 'home' : this.state.activeTabId,
+      }
+      await this.persist()
+      return this.bootstrap()
+    })
   }
 
   async openDocument(documentId: string): Promise<ShellBootstrap> {
-    if (!this.documentsById.has(documentId)) {
-      throw new HostError('DOCUMENT_NOT_FOUND', `Document does not exist: ${documentId}`, false)
-    }
-    const tabDocumentIds = this.state.tabDocumentIds.includes(documentId)
-      ? this.state.tabDocumentIds
-      : [...this.state.tabDocumentIds, documentId]
-    this.state = {
-      ...this.state,
-      tabDocumentIds,
-      closedDocumentIds: this.state.closedDocumentIds.filter((id) => id !== documentId),
-      activeTabId: `document:${documentId}`,
-    }
-    await this.persist()
-    return this.bootstrap()
+    return this.enqueueMutation(async () => {
+      if (!this.documentsById.has(documentId)) {
+        throw new HostError('DOCUMENT_NOT_FOUND', `Document does not exist: ${documentId}`, false)
+      }
+      const tabDocumentIds = this.state.tabDocumentIds.includes(documentId)
+        ? this.state.tabDocumentIds
+        : [...this.state.tabDocumentIds, documentId]
+      this.state = {
+        ...this.state,
+        tabDocumentIds,
+        closedDocumentIds: this.state.closedDocumentIds.filter((id) => id !== documentId),
+        activeTabId: `document:${documentId}`,
+      }
+      await this.persist()
+      return this.bootstrap()
+    })
   }
 
   async reorder(tabId: string, toIndex: number): Promise<ShellBootstrap> {
-    if (tabId === 'home') throw new HostError('INVALID_REQUEST', 'Home stays pinned first.', false)
-    const documentId = tabId.startsWith('document:') ? tabId.slice('document:'.length) : undefined
-    const fromIndex = documentId === undefined ? -1 : this.state.tabDocumentIds.indexOf(documentId)
-    if (fromIndex < 0) throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
-    const next = [...this.state.tabDocumentIds]
-    next.splice(fromIndex, 1)
-    const destination = Math.max(0, Math.min(toIndex - 1, next.length))
-    next.splice(destination, 0, documentId!)
-    this.state = { ...this.state, tabDocumentIds: next }
-    await this.persist()
-    return this.bootstrap()
+    return this.enqueueMutation(async () => {
+      if (tabId === 'home')
+        throw new HostError('INVALID_REQUEST', 'Home stays pinned first.', false)
+      const documentId = tabId.startsWith('document:') ? tabId.slice('document:'.length) : undefined
+      const fromIndex =
+        documentId === undefined ? -1 : this.state.tabDocumentIds.indexOf(documentId)
+      if (fromIndex < 0) throw new HostError('TAB_NOT_FOUND', `Tab does not exist: ${tabId}`, false)
+      const next = [...this.state.tabDocumentIds]
+      next.splice(fromIndex, 1)
+      const destination = Math.max(0, Math.min(toIndex - 1, next.length))
+      next.splice(destination, 0, documentId!)
+      this.state = { ...this.state, tabDocumentIds: next }
+      await this.persist()
+      return this.bootstrap()
+    })
   }
 
   async updateSettings(patch: ShellSettingsPatch): Promise<ShellBootstrap> {
-    const parsed = shellSettingsPatchSchema.parse(patch)
-    this.state = { ...this.state, settings: mergeSettings(this.state.settings, parsed) }
-    await this.persist()
-    return this.bootstrap()
+    return this.enqueueMutation(async () => {
+      const parsed = shellSettingsPatchSchema.parse(patch)
+      this.state = { ...this.state, settings: mergeSettings(this.state.settings, parsed) }
+      await this.persist()
+      return this.bootstrap()
+    })
   }
 
   private tabs(): ShellTabSummary[] {
@@ -240,5 +253,14 @@ export class ShellState {
 
   private persist(): Promise<void> {
     return writeAtomic(this.path, this.state)
+  }
+
+  private enqueueMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(mutation, mutation)
+    this.mutationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
   }
 }

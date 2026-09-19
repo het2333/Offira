@@ -79,10 +79,16 @@ export class AgentRouter {
       for (const [operationId, operation] of this.editorOperations) {
         if (operation.target.documentId !== frame.documentId) continue
         if (this.options.operations.lookup(operationId)?.state !== 'reserved') continue
+        const request: EditorRequestFrame = {
+          ...operation.request,
+          target: { ...operation.request.target, clientId },
+        }
         operation.clientId = clientId
+        operation.target = request.target
+        operation.request = request
         const session = this.sessions.get(operation.target.sessionId)
         if (session !== undefined) session.clientId = clientId
-        this.options.sendToClient(clientId, operation.request)
+        this.options.sendToClient(clientId, request)
       }
       return
     }

@@ -117,22 +117,31 @@ describe('projectDurableEvent', () => {
     expect(
       projectDurableEvent('session-1', {
         type: 'tool/result',
+        seq: 8,
         data: {
-          callId: 'call-1',
-          name: 'read_sheet',
-          isError: false,
-          content: [{ type: 'text', text: 'x'.repeat(80_000) }],
-          runtime: new (class RuntimeHandle {
-            stop() {}
-          })(),
-          internal: { reasoning: 'REASONING_SENTINEL' },
+          turn: 1,
+          step: 2,
+          message: {
+            id: 'message-1',
+            role: 'user',
+            source: { kind: 'tool', callId: 'call-1' },
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'call-1',
+                isError: false,
+                content: [{ type: 'text', text: 'x'.repeat(80_000) }],
+              },
+            ],
+          },
+          meta: { reasoning: 'REASONING_SENTINEL' },
         },
       }),
     ).toMatchObject({
       event: {
+        seq: 8,
         data: {
           callId: 'call-1',
-          name: 'read_sheet',
           isError: false,
           contentText: expect.stringMatching(/…$/),
         },
@@ -143,9 +152,21 @@ describe('projectDurableEvent', () => {
         projectDurableEvent('session-1', {
           type: 'tool/result',
           data: {
-            callId: 'call-1',
-            content: [{ type: 'text', text: 'done' }],
-            internal: 'PRIVATE',
+            turn: 1,
+            step: 2,
+            message: {
+              id: 'message-2',
+              role: 'user',
+              source: { kind: 'tool', callId: 'call-1' },
+              content: [
+                {
+                  type: 'tool-result',
+                  toolCallId: 'call-1',
+                  content: [{ type: 'text', text: 'done' }],
+                },
+              ],
+            },
+            meta: { internal: 'PRIVATE' },
           },
         }),
       ),

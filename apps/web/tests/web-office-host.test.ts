@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { HostError } from '@nexusdesk/office-host'
 import type { DocumentId } from '@nexusdesk/protocol'
@@ -110,21 +110,18 @@ describe('createWebOfficeHost', () => {
     expect(events[0]).toEqual(expect.arrayContaining([expect.objectContaining({ active: true })]))
   })
 
-  it('accepts the Agent save envelope then refreshes the document summary', async () => {
+  it('reports document save as unsupported instead of issuing an empty fake save', async () => {
     const requests: string[] = []
     const host = createWebOfficeHost((input) => {
       requests.push(input)
-      return Promise.resolve(
-        input.endsWith('/save')
-          ? json({ ok: true, summary: 'Saved workbook.', warnings: [] })
-          : json(bootstrap),
-      )
+      return Promise.resolve(json(bootstrap))
     })
 
-    await expect(host.documents.save('d1' as DocumentId)).resolves.toMatchObject({
+    await expect(host.documents.save('d1' as DocumentId)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CAPABILITY',
       documentId: 'd1',
     })
-    expect(requests).toEqual(['/api/documents/d1/save', '/api/shell/bootstrap'])
+    expect(requests).toEqual([])
   })
 
   it('refreshes subscribers when another client broadcasts a sequenced Shell change', async () => {
@@ -139,10 +136,52 @@ describe('createWebOfficeHost', () => {
     const events: unknown[] = []
     host.tabs.onChanged((tabs) => events.push(tabs))
 
-    listeners.get('message')?.({ data: JSON.stringify({ type: 'shell:changed', sequence: 1 }) })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(events).toHaveLength(1)
+    listeners.get('message')?.({
+      data: JSON.stringify({ type: 'shell:changed', protocolVersion: 1, sequence: 1 }),
+    })
+    await vi.waitFor(() => expect(events).toHaveLength(1))
     expect(events[0]).toEqual(bootstrap.tabs)
+  })
+
+  it('refreshes authoritative Shell state when a replacement socket becomes ready', async () => {
+    const sockets: Array<Map<string, (event: { data?: string }) => void>> = []
+    const socketFactory: WebSocketFactory = () => {
+      const listeners = new Map<string, (event: { data?: string }) => void>()
+      sockets.push(listeners)
+      return {
+        addEventListener(type, listener) {
+          listeners.set(type, listener)
+        },
+        close() {},
+      }
+    }
+    let remoteActive = false
+    const host = createWebOfficeHost(
+      () =>
+        Promise.resolve(
+          json({
+            ...bootstrap,
+            tabs: bootstrap.tabs.map((tab) => ({
+              ...tab,
+              active: remoteActive ? tab.id === 'document:d1' : tab.id === 'home',
+            })),
+          }),
+        ),
+      socketFactory,
+    )
+    const events: unknown[] = []
+    host.tabs.onChanged((tabs) => events.push(tabs))
+
+    sockets[0]!.get('close')?.({})
+    remoteActive = true
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 1_500 })
+    sockets[1]!.get('message')?.({
+      data: JSON.stringify({ type: 'server:ready', protocolVersion: 1, clientId: 'client-2' }),
+    })
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+
+    expect(events.at(-1)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'document:d1', active: true })]),
+    )
   })
 })

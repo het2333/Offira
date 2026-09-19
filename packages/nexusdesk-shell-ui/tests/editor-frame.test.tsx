@@ -59,3 +59,30 @@ it('renders one active Sheets frame after a bootstrap refresh', () => {
   act(() => root.render(<EditorFrame bootstrap={{ ...bootstrap, tabs: [...bootstrap.tabs] }} />))
   expect(container.querySelectorAll('iframe[title="Forecast.xlsx"]')).toHaveLength(1)
 })
+
+it('keeps the same Sheets frame mounted across Home and close/reopen transitions', () => {
+  act(() => root.render(<EditorFrame bootstrap={bootstrap} />))
+  const frame = container.querySelector('iframe')
+  expect(frame).not.toBeNull()
+
+  const homeBootstrap = {
+    ...bootstrap,
+    tabs: bootstrap.tabs.map((tab) => ({ ...tab, active: tab.kind === 'home' })),
+  }
+  act(() => root.render(<EditorFrame bootstrap={homeBootstrap} />))
+  expect(container.querySelector('iframe')).toBe(frame)
+  expect(frame?.getAttribute('aria-hidden')).toBe('true')
+
+  const closedBootstrap = {
+    ...bootstrap,
+    tabs: bootstrap.tabs
+      .filter((tab) => tab.kind === 'home')
+      .map((tab) => ({ ...tab, active: true })),
+  }
+  act(() => root.render(<EditorFrame bootstrap={closedBootstrap} />))
+  expect(container.querySelector('iframe')).toBe(frame)
+
+  act(() => root.render(<EditorFrame bootstrap={bootstrap} />))
+  expect(container.querySelector('iframe')).toBe(frame)
+  expect(frame?.getAttribute('aria-hidden')).toBe('false')
+})

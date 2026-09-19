@@ -187,7 +187,11 @@ describe('authenticated WebSocket session', () => {
     })
 
     expect(response.status).toBe(200)
-    await expect(changed).resolves.toEqual({ type: 'shell:changed', sequence: 1 })
+    await expect(changed).resolves.toEqual({
+      type: 'shell:changed',
+      protocolVersion: PROTOCOL_VERSION,
+      sequence: 1,
+    })
     socket.close()
   })
 })

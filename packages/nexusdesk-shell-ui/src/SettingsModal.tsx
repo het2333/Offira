@@ -1015,6 +1015,7 @@ export function SettingsModal({
   const product = useProductConfig()
   const { home: homeApi } = useShellPlatform()
   const sections = SECTIONS.filter((candidate) => {
+    if (product.id === 'nexusdesk') return candidate.id === 'general' || candidate.id === 'about'
     if (candidate.id === 'account') return product.features.account
     if (candidate.id === 'integrations') {
       return product.features.integrations || product.features.mcp
@@ -1022,7 +1023,7 @@ export function SettingsModal({
     return true
   })
   const [section, setSection] = useState<SectionId>(() =>
-    product.features.account ? 'account' : 'aiModel',
+    product.id === 'nexusdesk' ? 'general' : product.features.account ? 'account' : 'aiModel',
   )
   const [theme, setTheme] = useState<UiTheme>('system')
   const [saveDir, setSaveDir] = useState('')
@@ -1039,31 +1040,33 @@ export function SettingsModal({
     void homeApi.getTheme?.().then((th) => {
       if (alive) setTheme(th)
     })
-    void homeApi.getDefaultSaveDir?.().then((dir) => {
-      if (alive && dir) setSaveDir(dir)
-    })
-    void homeApi.getAnalyticsEnabled?.().then((on) => {
-      if (alive) setAnalyticsOn(on !== false)
-    })
-    void homeApi.getAutoSaveDefault?.().then((v) => {
-      if (alive) setAutoSaveOn(v.on)
-    })
-    void homeApi.getAiPanelPrefs?.().then((prefs) => {
-      if (alive) setAiPrefs(prefs)
-    })
-    void homeApi.getUpdateChannel?.().then((ch) => {
-      if (alive) setChannel(ch)
-    })
-    void homeApi.getAppVersion?.().then((v) => {
-      if (alive && v) setAppVersion(v)
-    })
-    void homeApi.githubStars?.().then((n) => {
-      if (alive && n !== null) setGithubStars(n)
-    })
+    if (product.id !== 'nexusdesk') {
+      void homeApi.getDefaultSaveDir?.().then((dir) => {
+        if (alive && dir) setSaveDir(dir)
+      })
+      void homeApi.getAnalyticsEnabled?.().then((on) => {
+        if (alive) setAnalyticsOn(on !== false)
+      })
+      void homeApi.getAutoSaveDefault?.().then((v) => {
+        if (alive) setAutoSaveOn(v.on)
+      })
+      void homeApi.getAiPanelPrefs?.().then((prefs) => {
+        if (alive) setAiPrefs(prefs)
+      })
+      void homeApi.getUpdateChannel?.().then((ch) => {
+        if (alive) setChannel(ch)
+      })
+      void homeApi.getAppVersion?.().then((v) => {
+        if (alive && v) setAppVersion(v)
+      })
+      void homeApi.githubStars?.().then((n) => {
+        if (alive && n !== null) setGithubStars(n)
+      })
+    }
     return () => {
       alive = false
     }
-  }, [])
+  }, [homeApi, product.id])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1213,66 +1216,69 @@ export function SettingsModal({
                     onPick={(v) => applyTheme(v as UiTheme)}
                   />
                 </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('setAiPanelSide')}</label>
-                  </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={aiPrefs.side}
-                    ariaLabel={t('setAiPanelSide')}
-                    options={[
-                      { value: 'left', label: t('aiPanelSideLeft') },
-                      { value: 'right', label: t('aiPanelSideRight') },
-                    ]}
-                    onPick={(side) => updateAiPrefs({ side: side as AiPanelSide })}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('setAiFontSize')}</label>
-                  </div>
-                  {aiPrefs.fontSize === 'custom' && (
-                    <CustomFontSizeInput
-                      value={aiPrefs.customFontSize}
-                      label={t('aiFontSizeCustom')}
-                      onCommit={(px) => updateAiPrefs({ customFontSize: px })}
-                    />
-                  )}
-                  <Dropdown
-                    className="set-dd"
-                    value={aiPrefs.fontSize}
-                    ariaLabel={t('setAiFontSize')}
-                    options={AI_FONT_SIZE_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: t(opt.labelKey),
-                    }))}
-                    onPick={(v) => {
-                      const fontSize = v as AiFontSize
-                      // start the custom size from the preset being left so nothing jumps
-                      updateAiPrefs(
-                        fontSize === 'custom' && aiPrefs.fontSize !== 'custom'
-                          ? { fontSize, customFontSize: aiPanelFontPx(aiPrefs) }
-                          : { fontSize },
-                      )
-                    }}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAiSpellcheck')}</div>
-                      <div className="set-field-desc">{t('setAiSpellcheckDesc')}</div>
+                {product.id !== 'nexusdesk' && (
+                  <>
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <label className="set-field-label">{t('setAiPanelSide')}</label>
+                      </div>
+                      <Dropdown
+                        className="set-dd"
+                        value={aiPrefs.side}
+                        ariaLabel={t('setAiPanelSide')}
+                        options={[
+                          { value: 'left', label: t('aiPanelSideLeft') },
+                          { value: 'right', label: t('aiPanelSideRight') },
+                        ]}
+                        onPick={(side) => updateAiPrefs({ side: side as AiPanelSide })}
+                      />
                     </div>
-                  </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={aiPrefs.spellcheck}
-                    aria-label={t('setAiSpellcheck')}
-                    onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
-                  />
-                </div>
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <label className="set-field-label">{t('setAiFontSize')}</label>
+                      </div>
+                      {aiPrefs.fontSize === 'custom' && (
+                        <CustomFontSizeInput
+                          value={aiPrefs.customFontSize}
+                          label={t('aiFontSizeCustom')}
+                          onCommit={(px) => updateAiPrefs({ customFontSize: px })}
+                        />
+                      )}
+                      <Dropdown
+                        className="set-dd"
+                        value={aiPrefs.fontSize}
+                        ariaLabel={t('setAiFontSize')}
+                        options={AI_FONT_SIZE_OPTIONS.map((opt) => ({
+                          value: opt.value,
+                          label: t(opt.labelKey),
+                        }))}
+                        onPick={(v) => {
+                          const fontSize = v as AiFontSize
+                          updateAiPrefs(
+                            fontSize === 'custom' && aiPrefs.fontSize !== 'custom'
+                              ? { fontSize, customFontSize: aiPanelFontPx(aiPrefs) }
+                              : { fontSize },
+                          )
+                        }}
+                      />
+                    </div>
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <div className="set-field-stack">
+                          <div className="set-field-label">{t('setAiSpellcheck')}</div>
+                          <div className="set-field-desc">{t('setAiSpellcheckDesc')}</div>
+                        </div>
+                      </div>
+                      <button
+                        className="set-switch"
+                        role="switch"
+                        aria-checked={aiPrefs.spellcheck}
+                        aria-label={t('setAiSpellcheck')}
+                        onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
+                      />
+                    </div>
+                  </>
+                )}
                 {host.capabilities.nativeFilePicker && (
                   <Field
                     label={t('saveLocation')}
@@ -1285,51 +1291,55 @@ export function SettingsModal({
                     }
                   />
                 )}
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAutoSave')}</div>
-                      <div className="set-field-desc">{t('setAutoSaveDesc')}</div>
+                {product.id !== 'nexusdesk' && (
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setAutoSave')}</div>
+                        <div className="set-field-desc">{t('setAutoSaveDesc')}</div>
+                      </div>
                     </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={autoSaveOn}
+                      aria-label={t('setAutoSave')}
+                      onClick={() => {
+                        const next = !autoSaveOn
+                        setAutoSaveOn(next)
+                        void homeApi.setAutoSaveDefault?.(next).catch(() => {})
+                      }}
+                    />
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={autoSaveOn}
-                    aria-label={t('setAutoSave')}
-                    onClick={() => {
-                      const next = !autoSaveOn
-                      setAutoSaveOn(next)
-                      void homeApi.setAutoSaveDefault?.(next).catch(() => {})
-                    }}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAnalytics')}</div>
-                      <div className="set-field-desc">{t('setAnalyticsDesc')}</div>
+                )}
+                {product.id !== 'nexusdesk' && (
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setAnalytics')}</div>
+                        <div className="set-field-desc">{t('setAnalyticsDesc')}</div>
+                      </div>
                     </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={analyticsOn}
+                      aria-label={t('setAnalytics')}
+                      disabled={analyticsSaving}
+                      onClick={() => {
+                        const next = !analyticsOn
+                        setAnalyticsSaving(true)
+                        void homeApi
+                          .setAnalyticsEnabled(next)
+                          .then((persisted) => {
+                            if (persisted) setAnalyticsOn(next)
+                          })
+                          .catch(() => {})
+                          .finally(() => setAnalyticsSaving(false))
+                      }}
+                    />
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={analyticsOn}
-                    aria-label={t('setAnalytics')}
-                    disabled={analyticsSaving}
-                    onClick={() => {
-                      const next = !analyticsOn
-                      setAnalyticsSaving(true)
-                      void homeApi
-                        .setAnalyticsEnabled(next)
-                        .then((persisted) => {
-                          if (persisted) setAnalyticsOn(next)
-                        })
-                        .catch(() => {})
-                        .finally(() => setAnalyticsSaving(false))
-                    }}
-                  />
-                </div>
+                )}
               </>
             )}
             {(product.features.integrations || product.features.mcp) &&

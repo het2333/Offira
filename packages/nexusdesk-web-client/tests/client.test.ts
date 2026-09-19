@@ -106,13 +106,15 @@ describe('NexusClient', () => {
       id: requestId,
       operationId,
     })
-    socket.emit('message', { data: JSON.stringify({
-      type: 'operation:result',
-      protocolVersion: PROTOCOL_VERSION,
-      id: requestId,
-      operationId,
-      result: { ok: true, summary: 'already applied', warnings: [] },
-    }) })
+    socket.emit('message', {
+      data: JSON.stringify({
+        type: 'operation:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: requestId,
+        operationId,
+        result: { ok: true, summary: 'already applied', warnings: [] },
+      }),
+    })
 
     await expect(reply).resolves.toMatchObject({ type: 'operation:result', id: requestId })
   })
@@ -131,20 +133,24 @@ describe('NexusClient', () => {
     })
     sockets[0]!.emit('close', { code: 1006 })
 
-    expectConnectionLost(() => client.send({
-      type: 'agent:start',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'start-2' as RequestId,
-      sessionId,
-      documentId,
-      prompt: 'Do not replay me',
-    }))
-    expectConnectionLost(() => client.send({
-      type: 'approval:response',
-      protocolVersion: PROTOCOL_VERSION,
-      id: 'approval-1' as RequestId,
-      outcome: 'allowed-once',
-    }))
+    expectConnectionLost(() =>
+      client.send({
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'start-2' as RequestId,
+        sessionId,
+        documentId,
+        prompt: 'Do not replay me',
+      }),
+    )
+    expectConnectionLost(() =>
+      client.send({
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'approval-1' as RequestId,
+        outcome: 'allowed-once',
+      }),
+    )
 
     const lookup = client.request({
       type: 'operation:lookup',
@@ -156,20 +162,26 @@ describe('NexusClient', () => {
       timers.at(-1)!.callback()
       sockets.at(-1)!.emit('close', { code: 1006 })
     }
-    expect(timers.map((timer) => timer.delay)).toEqual([250, 500, 1_000, 2_000, 4_000, 5_000, 5_000])
+    expect(timers.map((timer) => timer.delay)).toEqual([
+      250, 500, 1_000, 2_000, 4_000, 5_000, 5_000,
+    ])
 
     timers.at(-1)!.callback()
     sockets.at(-1)!.serverReady('client-8' as ClientId)
-    const allSent = sockets.flatMap((socket) => socket.sent.map((value) => JSON.parse(value) as { type: string }))
+    const allSent = sockets.flatMap((socket) =>
+      socket.sent.map((value) => JSON.parse(value) as { type: string }),
+    )
     expect(allSent.filter((frame) => frame.type === 'agent:start')).toHaveLength(1)
     expect(allSent.filter((frame) => frame.type === 'operation:lookup')).toHaveLength(1)
-    sockets.at(-1)!.emit('message', { data: JSON.stringify({
-      type: 'operation:result',
-      protocolVersion: PROTOCOL_VERSION,
-      id: requestId,
-      operationId,
-      result: { ok: true, summary: 'not found', warnings: [] },
-    }) })
+    sockets.at(-1)!.emit('message', {
+      data: JSON.stringify({
+        type: 'operation:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: requestId,
+        operationId,
+        result: { ok: true, summary: 'not found', warnings: [] },
+      }),
+    })
     await expect(lookup).resolves.toMatchObject({ id: requestId })
   })
 
@@ -185,9 +197,32 @@ describe('NexusClient', () => {
     sockets[1]!.serverReady('client-2' as ClientId)
 
     const first = JSON.parse(sockets[0]!.sent[0]!) as { type: string; clientId: string }
-    const second = JSON.parse(sockets[1]!.sent[0]!) as { type: string; clientId: string; revision: number }
+    const second = JSON.parse(sockets[1]!.sent[0]!) as {
+      type: string
+      clientId: string
+      revision: number
+    }
     expect(first).toMatchObject({ type: 'editor:register', clientId: 'client-1' })
     expect(second).toMatchObject({ type: 'editor:register', clientId: 'client-2', revision: 2 })
     registration.dispose()
+  })
+
+  it('ignores versioned Shell broadcasts without closing the Agent connection', () => {
+    const { client, sockets } = createHarness()
+    const frames: string[] = []
+    client.onFrame((frame) => frames.push(frame.type))
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+
+    sockets[0]!.emit('message', {
+      data: JSON.stringify({
+        type: 'shell:changed',
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 1,
+      }),
+    })
+
+    expect(client.state).toBe('ready')
+    expect(frames).toEqual(['server:ready'])
   })
 })

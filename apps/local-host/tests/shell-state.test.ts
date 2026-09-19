@@ -64,4 +64,19 @@ describe('ShellState', () => {
       expect.objectContaining({ documentId: workbook.documentId, active: false }),
     ])
   })
+
+  it('serializes concurrent mutations without losing fields or racing persistence', async () => {
+    const path = await statePath()
+    const state = await ShellState.open({ path, documents: [workbook] })
+
+    await expect(
+      Promise.all([
+        state.updateSettings({ language: 'en' }),
+        state.updateSettings({ theme: 'dark' }),
+      ]),
+    ).resolves.toHaveLength(2)
+
+    const reopened = await ShellState.open({ path, documents: [workbook] })
+    expect(reopened.bootstrap().settings).toMatchObject({ language: 'en', theme: 'dark' })
+  })
 })

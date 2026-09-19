@@ -12,7 +12,7 @@ import {
   type ShellSettingsPatch,
   type ShellTabSummary,
 } from '@nexusdesk/office-host'
-import { parseAgentToolResult, type DocumentId } from '@nexusdesk/protocol'
+import { PROTOCOL_VERSION, type DocumentId } from '@nexusdesk/protocol'
 
 export type WebFetch = (input: string, init?: RequestInit) => Promise<Response>
 
@@ -25,10 +25,6 @@ export type WebSocketFactory = (url: string) => WebSocketConnection
 
 interface Parser<T> {
   parse(value: unknown): T
-}
-
-const agentToolResultParser = {
-  parse: parseAgentToolResult,
 }
 
 const BROWSER_CAPABILITIES: HostCapabilities = {
@@ -80,10 +76,20 @@ export function createWebOfficeHost(
     next.addEventListener('message', (event) => {
       if (typeof event.data !== 'string') return
       try {
-        const parsed = shellChangedEventSchema.safeParse(JSON.parse(event.data))
+        const value: unknown = JSON.parse(event.data)
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          (value as Record<string, unknown>).type === 'server:ready' &&
+          (value as Record<string, unknown>).protocolVersion === PROTOCOL_VERSION
+        ) {
+          void bootstrap().catch(() => {})
+          return
+        }
+        const parsed = shellChangedEventSchema.safeParse(value)
         if (!parsed.success || parsed.data.sequence <= lastShellSequence) return
-        const value = parsed.data
-        lastShellSequence = value.sequence
+        const shellEvent = parsed.data
+        lastShellSequence = shellEvent.sequence
         void bootstrap().catch(() => {})
       } catch {
         // Ignore unrelated or malformed frames; editor/Agent frames share this transport.
@@ -184,21 +190,12 @@ export function createWebOfficeHost(
         return (await ensuredBootstrap()).documents
       },
       async save(documentId) {
-        await request(
-          `/api/documents/${encodeURIComponent(documentId)}/save`,
-          agentToolResultParser,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}',
-          },
+        throw new HostError(
+          'UNSUPPORTED_CAPABILITY',
+          `Saving document ${documentId} is owned by the active Web editor and its Agent save tool.`,
+          false,
+          documentId,
         )
-        const next = await bootstrap()
-        const document = next.documents.find((candidate) => candidate.documentId === documentId)
-        if (document === undefined) {
-          throw new HostError('DOCUMENT_NOT_FOUND', `Document does not exist: ${documentId}`, false)
-        }
-        return document
       },
       async close(documentId) {
         return mutate('/api/shell/tabs/close', { tabId: `document:${documentId}` })
