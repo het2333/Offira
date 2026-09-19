@@ -2,8 +2,8 @@ import { useRef } from 'react'
 import { HostError, type ShellBootstrap, type ShellDocumentSummary } from '@nexusdesk/office-host'
 
 export function editorRoute(document: ShellDocumentSummary): string {
-  if (document.editorType === 'sheets') {
-    return `/sheets/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
+  if (document.editorType === 'docs' || document.editorType === 'sheets') {
+    return `/${document.editorType}/?host=local-web&documentId=${encodeURIComponent(document.documentId)}`
   }
   throw new HostError(
     'EDITOR_NOT_AVAILABLE',
@@ -18,7 +18,7 @@ export function EditorFrame({
 }: {
   bootstrap: ShellBootstrap | undefined
 }): React.JSX.Element | null {
-  const lastDocument = useRef<ShellDocumentSummary | undefined>(undefined)
+  const mountedDocuments = useRef(new Map<string, ShellDocumentSummary>())
   if (bootstrap === undefined) {
     return (
       <div className="editor-loading" role="status">
@@ -39,24 +39,37 @@ export function EditorFrame({
       </div>
     )
   }
-  if (activeDocument !== undefined) lastDocument.current = activeDocument
-  const document = activeDocument ?? lastDocument.current
-  if (document === undefined) return null
-  try {
-    return (
-      <iframe
-        className="editor-frame"
-        src={editorRoute(document)}
-        title={document.title}
-        aria-hidden={activeDocument === undefined}
-        style={{ display: activeDocument === undefined ? 'none' : undefined }}
-      />
+  for (const tab of bootstrap.tabs) {
+    if (tab.kind === 'home') continue
+    const document = bootstrap.documents.find(
+      (candidate) => candidate.documentId === tab.documentId,
     )
-  } catch (error: unknown) {
-    return (
-      <div className="editor-unavailable" role="alert">
-        {error instanceof Error ? error.message : 'This editor is unavailable.'}
-      </div>
-    )
+    if (document !== undefined) mountedDocuments.current.set(document.documentId, document)
   }
+  if (mountedDocuments.current.size === 0) return null
+  return (
+    <>
+      {[...mountedDocuments.current.values()].map((document) => {
+        const visible = activeDocument?.documentId === document.documentId
+        try {
+          return (
+            <iframe
+              key={document.documentId}
+              className="editor-frame"
+              src={editorRoute(document)}
+              title={document.title}
+              aria-hidden={!visible}
+              style={{ display: visible ? undefined : 'none' }}
+            />
+          )
+        } catch (error: unknown) {
+          return visible ? (
+            <div key={document.documentId} className="editor-unavailable" role="alert">
+              {error instanceof Error ? error.message : 'This editor is unavailable.'}
+            </div>
+          ) : null
+        }
+      })}
+    </>
+  )
 }

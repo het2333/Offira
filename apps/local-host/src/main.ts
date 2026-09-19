@@ -24,6 +24,7 @@ const running = await startLocalHost({
   staticAssets: {
     webRoot: resolve(process.cwd(), 'apps/web/dist'),
     editorRoots: {
+      docs: resolve(process.cwd(), 'apps/docs/out/web'),
       sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
     },
   },

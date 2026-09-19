@@ -60,6 +60,58 @@ it('renders one active Sheets frame after a bootstrap refresh', () => {
   expect(container.querySelectorAll('iframe[title="Forecast.xlsx"]')).toHaveLength(1)
 })
 
+it('routes Docs by document id and keeps every open editor frame mounted', () => {
+  const docsDocument = {
+    documentId: 'doc 1',
+    title: 'Report.docx',
+    editorType: 'docs' as const,
+    revision: 1,
+  }
+  expect(editorRoute(docsDocument)).toBe('/docs/?host=local-web&documentId=doc%201')
+
+  const withDocs = shellBootstrapSchema.parse({
+    ...bootstrap,
+    capabilities: { ...bootstrap.capabilities, editors: ['docs', 'sheets'] },
+    documents: [...bootstrap.documents, docsDocument],
+    tabs: [
+      { ...bootstrap.tabs[0], active: false },
+      { ...bootstrap.tabs[1], active: true },
+      {
+        id: 'document:doc 1',
+        kind: 'docs',
+        title: 'Report.docx',
+        closable: true,
+        active: false,
+        documentId: 'doc 1',
+      },
+    ],
+  })
+  act(() => root.render(<EditorFrame bootstrap={withDocs} />))
+  const sheetsFrame = container.querySelector('iframe[title="Forecast.xlsx"]')
+  const docsFrame = container.querySelector('iframe[title="Report.docx"]')
+  expect(sheetsFrame).not.toBeNull()
+  expect(docsFrame).not.toBeNull()
+  expect(docsFrame?.getAttribute('aria-hidden')).toBe('true')
+
+  act(() =>
+    root.render(
+      <EditorFrame
+        bootstrap={{
+          ...withDocs,
+          tabs: withDocs.tabs.map((tab) => ({
+            ...tab,
+            active: tab.kind === 'docs',
+          })),
+        }}
+      />,
+    ),
+  )
+  expect(container.querySelector('iframe[title="Forecast.xlsx"]')).toBe(sheetsFrame)
+  expect(container.querySelector('iframe[title="Report.docx"]')).toBe(docsFrame)
+  expect(sheetsFrame?.getAttribute('aria-hidden')).toBe('true')
+  expect(docsFrame?.getAttribute('aria-hidden')).toBe('false')
+})
+
 it('keeps the same Sheets frame mounted across Home and close/reopen transitions', () => {
   act(() => root.render(<EditorFrame bootstrap={bootstrap} />))
   const frame = container.querySelector('iframe')
