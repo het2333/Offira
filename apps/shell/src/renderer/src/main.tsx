@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { htmlLang } from '@genoffice/i18n'
 import {
   LocaleProvider,
+  GENOFFICE_PRODUCT_CONFIG,
   OfficeHostProvider,
   SharedShell,
   type ShellPlatformServices,
@@ -10,7 +11,7 @@ import {
 import type { HomeApi } from '../../shared/home-api'
 import type { IntegrationsApi } from '../../shared/integrations-api'
 import type { TabsApi } from '../../shared/tabs-api'
-import { createTemporaryElectronOfficeHost } from './temporary-electron-office-host'
+import { createElectronOfficeHost } from './electron-office-host'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/dropdown.css'
@@ -36,7 +37,7 @@ document.body.classList.add(IS_MAC ? 'mac' : 'overlay-title-bar')
 
 // resolve the persisted language, first-run flag, and theme before first paint
 // so the UI never flashes (home showing briefly before the onboarding overlay)
-const host = createTemporaryElectronOfficeHost(window.aiOffice, window.aiOfficeTabs)
+const host = createElectronOfficeHost(window)
 const platform: ShellPlatformServices = {
   home: window.aiOffice,
   tabs: window.aiOfficeTabs,
@@ -59,7 +60,7 @@ void host.settings.get().then(({ language: lang, onboardingSeen, theme }) => {
     <React.StrictMode>
       <OfficeHostProvider host={host} platform={platform}>
         <LocaleProvider initial={lang}>
-          <SharedShell initialOnboardingSeen={onboardingSeen} />
+          <SharedShell product={GENOFFICE_PRODUCT_CONFIG} initialOnboardingSeen={onboardingSeen} />
         </LocaleProvider>
       </OfficeHostProvider>
     </React.StrictMode>,

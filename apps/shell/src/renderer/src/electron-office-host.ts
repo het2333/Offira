@@ -11,7 +11,14 @@ import {
 import type { DocumentId, Revision } from '@nexusdesk/protocol'
 
 import type { HomeApi, RecentEntry } from '../../shared/home-api'
+import type { IntegrationsApi } from '../../shared/integrations-api'
 import type { TabSummary, TabsApi } from '../../shared/tabs-api'
+
+export interface ElectronPreloadWindow {
+  readonly aiOffice: HomeApi
+  readonly aiOfficeTabs: TabsApi
+  readonly aiOfficeIntegrations?: IntegrationsApi | undefined
+}
 
 function editorKind(entry: Pick<RecentEntry, 'ext'>): EditorKind {
   if (entry.ext === 'docx') return 'docs'
@@ -60,7 +67,9 @@ function shellTab(tab: TabSummary): ShellTabSummary {
   }
 }
 
-export function createTemporaryElectronOfficeHost(home: HomeApi, tabs: TabsApi): OfficeHost {
+export function createElectronOfficeHost(preload: ElectronPreloadWindow): OfficeHost {
+  const home = preload.aiOffice
+  const tabs = preload.aiOfficeTabs
   const tabListeners = new Set<(value: readonly ShellTabSummary[]) => void>()
   const settingsListeners = new Set<(value: ShellSettings) => void>()
 
@@ -95,12 +104,13 @@ export function createTemporaryElectronOfficeHost(home: HomeApi, tabs: TabsApi):
     capabilities: {
       mode: 'electron',
       editors: ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'],
-      nativeFilePicker: true,
+      nativeFilePicker: typeof home.browse === 'function',
       browserImport: false,
-      revealInFileManager: true,
-      trash: true,
-      updater: true,
-      credentialStore: true,
+      revealInFileManager: typeof home.revealPath === 'function',
+      trash: typeof home.deleteFiles === 'function',
+      updater:
+        typeof home.getUpdateChannel === 'function' && typeof home.setUpdateChannel === 'function',
+      credentialStore: false,
     },
     bootstrap,
     files: {
@@ -209,13 +219,28 @@ export function createTemporaryElectronOfficeHost(home: HomeApi, tabs: TabsApi):
     },
     platform: {
       async browse() {
+        if (!host.capabilities.nativeFilePicker) {
+          throw new HostError('UNSUPPORTED_CAPABILITY', 'Native file picker is unavailable.', false)
+        }
         await home.browse()
         return bootstrap()
       },
       revealFile(fileId) {
+        if (!host.capabilities.revealInFileManager) {
+          return Promise.reject(
+            new HostError(
+              'UNSUPPORTED_CAPABILITY',
+              'Reveal in file manager is unavailable.',
+              false,
+            ),
+          )
+        }
         return home.revealPath(fileId)
       },
       async trashFiles(fileIds) {
+        if (!host.capabilities.trash) {
+          throw new HostError('UNSUPPORTED_CAPABILITY', 'Trash is unavailable.', false)
+        }
         await home.deleteFiles([...fileIds])
         return (await home.recents()).entries.map(fileSummary)
       },

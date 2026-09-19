@@ -9,7 +9,7 @@ import type { OfficeHost } from '@nexusdesk/office-host'
 import type { HomeApi } from '../src/shared/home-api'
 import type { TabsApi } from '../src/shared/tabs-api'
 import { OfficeHostProvider, useOfficeHost } from '@nexusdesk/shell-ui'
-import { createTemporaryElectronOfficeHost } from '../src/renderer/src/temporary-electron-office-host'
+import { createElectronOfficeHost } from '../src/renderer/src/electron-office-host'
 
 function Consumer({ expected }: { expected?: OfficeHost }) {
   const host = useOfficeHost()
@@ -48,12 +48,13 @@ describe('OfficeHostProvider', () => {
   })
 })
 
-describe('temporary Electron OfficeHost composition adapter', () => {
+describe('Electron OfficeHost composition adapter', () => {
   it('maps preload tabs and settings into one semantic bootstrap', async () => {
     const home = {
       getLanguage: () => Promise.resolve('zh' as const),
       getTheme: () => Promise.resolve('system' as const),
       onboardingSeen: () => Promise.resolve(true),
+      browse: () => Promise.resolve(),
     } as HomeApi
     const tabs = {
       list: () =>
@@ -70,7 +71,10 @@ describe('temporary Electron OfficeHost composition adapter', () => {
         ]),
     } as TabsApi
 
-    const bootstrap = await createTemporaryElectronOfficeHost(home, tabs).bootstrap()
+    const bootstrap = await createElectronOfficeHost({
+      aiOffice: home,
+      aiOfficeTabs: tabs,
+    }).bootstrap()
 
     expect(bootstrap).toMatchObject({
       capabilities: { mode: 'electron', nativeFilePicker: true },

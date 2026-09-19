@@ -5,7 +5,7 @@ import type { IntegrationsApi } from '../src/shared/integrations-api'
 import type { TabsApi } from '../src/shared/tabs-api'
 import { LocaleProvider } from '@nexusdesk/shell-ui'
 import { OfficeHostProvider } from '@nexusdesk/shell-ui'
-import { createTemporaryElectronOfficeHost } from '../src/renderer/src/temporary-electron-office-host'
+import { createElectronOfficeHost } from '../src/renderer/src/electron-office-host'
 
 const tabs: TabsApi = {
   list: () =>
@@ -43,7 +43,7 @@ export function shellTestTree(
 ): React.ReactElement {
   const home = options.home ?? window.aiOffice ?? fallbackHome()
   const integrations = options.integrations ?? window.aiOfficeIntegrations
-  const host = createTemporaryElectronOfficeHost(home, tabs)
+  const host = createElectronOfficeHost({ aiOffice: home, aiOfficeTabs: tabs })
   return createElement(
     OfficeHostProvider,
     {
