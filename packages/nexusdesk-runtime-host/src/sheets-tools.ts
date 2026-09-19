@@ -82,6 +82,7 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
         throw new Error('spreadsheet editor returned an invalid edit proposal')
       }
       const proposal: AgentApprovalProposal = {
+        operationId,
         planHash,
         summary:
           typeof proposalData.summary === 'string' ? proposalData.summary : proposalResult.summary,

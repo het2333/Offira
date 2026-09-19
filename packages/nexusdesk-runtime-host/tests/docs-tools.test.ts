@@ -58,6 +58,7 @@ describe('official Harness Docs tools', () => {
     expect(approve).toHaveBeenCalledWith(
       'apply_document_operations',
       {
+        operationId: 'operation-1',
         planHash: 'plan-hash-1',
         summary: 'Apply one document operation.',
         targets: ['text:Original'],

@@ -410,22 +410,15 @@ describe('AgentRouter', () => {
       },
       reconnectedClientId,
     )
-    await until(() => router.hasApproval('editor-approval-1'))
-    router.handleClientFrame(
-      {
-        type: 'approval:response',
-        protocolVersion: PROTOCOL_VERSION,
-        id: 'editor-approval-1' as RequestId,
-        outcome: 'allowed-once',
-      },
-      reconnectedClientId,
-    )
+    // A committed operation is replayed from the Host journal. The browser
+    // must not be asked to approve an operation that cannot execute again.
     await until(
       () =>
         sent.filter(
           ({ frame }) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
         ).length === 2,
     )
+    expect(router.hasApproval('editor-approval-1')).toBe(false)
 
     router.handleClientFrame(
       {

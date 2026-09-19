@@ -14836,6 +14836,7 @@ function proposalFrom(result) {
   return {
     operationId,
     proposal: {
+      operationId,
       planHash,
       summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
@@ -14987,6 +14988,7 @@ function createSheetsTools(bridge) {
         throw new Error("spreadsheet editor returned an invalid edit proposal");
       }
       const proposal = {
+        operationId,
         planHash,
         summary: typeof proposalData.summary === "string" ? proposalData.summary : proposalResult.summary,
         targets: Array.isArray(proposalData.targets) ? proposalData.targets.filter((value) => typeof value === "string") : [],

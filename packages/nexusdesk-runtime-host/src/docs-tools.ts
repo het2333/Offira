@@ -57,6 +57,7 @@ function proposalFrom(result: AgentToolResult): {
   return {
     operationId,
     proposal: {
+      operationId,
       planHash,
       summary: typeof data.summary === 'string' ? data.summary : result.summary,
       targets: Array.isArray(data.targets)

@@ -57,6 +57,7 @@ describe('official Harness Sheets tools', () => {
     expect(approve).toHaveBeenCalledWith(
       'apply_sheet_operations',
       {
+        operationId: 'operation-1',
         planHash: 'plan-hash-1',
         summary: 'Apply one operation.',
         targets: ['Summary!B2'],

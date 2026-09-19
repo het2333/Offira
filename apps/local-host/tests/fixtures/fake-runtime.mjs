@@ -59,6 +59,7 @@ process.on('message', (frame) => {
         sessionId: frame.sessionId,
         toolName: 'apply_sheet_operations',
         proposal: {
+          operationId: 'operation-1',
           planHash: 'exact-plan-hash',
           summary: 'Update Summary!B2.',
           targets: ['Summary!B2'],

@@ -197,6 +197,14 @@ export class AgentRouter {
         this.options.supervisor.respondApproval(frame.id, 'unavailable')
         return
       }
+      const replay =
+        frame.proposal?.operationId === undefined
+          ? undefined
+          : this.options.operations.lookup(frame.proposal.operationId as OperationId)
+      if (replay !== undefined && replay.state !== 'reserved') {
+        this.options.supervisor.respondApproval(frame.id, 'allowed-once')
+        return
+      }
       const timer = setTimeout(() => {
         this.approvals.delete(frame.id)
         this.options.supervisor.respondApproval(frame.id, 'unavailable')
@@ -295,6 +303,48 @@ export class AgentRouter {
       clientId: owner.clientId,
       revision: frame.target.revision,
     })
+    if (frame.command === 'propose_ops') {
+      this.editorOperations.set(frame.target.operationId, {
+        clientId: owner.clientId,
+        requestId: frame.id,
+        target: frame.target,
+        command: frame.command,
+        request: frame,
+      })
+      this.options.sendToClient(owner.clientId, frame)
+      return
+    }
+    const operationPayload = {
+      documentId: frame.target.documentId,
+      editorType: frame.target.editorType,
+      command: frame.command,
+      arguments: frame.arguments,
+    }
+    const existing = this.options.operations.lookup(frame.target.operationId)
+    if (existing !== undefined) {
+      const replay = this.options.operations.reserve(frame.target.operationId, operationPayload)
+      if (replay.state !== 'reserved') {
+        this.editorOperations.set(frame.target.operationId, {
+          clientId: owner.clientId,
+          requestId: frame.id,
+          target: frame.target,
+          command: frame.command,
+          request: frame,
+        })
+        this.options.supervisor.respondEditor({
+          type: 'editor:result',
+          protocolVersion: 1,
+          id: frame.id,
+          target: frame.target,
+          result: replay.result,
+          currentRevision: this.options.documents.assertClient(
+            frame.target.documentId,
+            owner.clientId,
+          ).revision,
+        })
+        return
+      }
+    }
     if (
       frame.command === 'apply_ops' ||
       frame.command === 'save_sheet' ||
@@ -323,16 +373,7 @@ export class AgentRouter {
       command: frame.command,
       request: frame,
     })
-    if (frame.command === 'propose_ops') {
-      this.options.sendToClient(owner.clientId, frame)
-      return
-    }
-    const record = this.options.operations.reserve(frame.target.operationId, {
-      documentId: frame.target.documentId,
-      editorType: frame.target.editorType,
-      command: frame.command,
-      arguments: frame.arguments,
-    })
+    const record = this.options.operations.reserve(frame.target.operationId, operationPayload)
     if (record.state !== 'reserved') {
       this.options.supervisor.respondEditor({
         type: 'editor:result',
