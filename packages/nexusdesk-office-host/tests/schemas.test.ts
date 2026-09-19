@@ -117,4 +117,15 @@ describe('Office Host wire schemas', () => {
       }),
     ).toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' })
   })
+
+  it('represents revision, size, and invalid-content write failures explicitly', () => {
+    for (const code of ['REVISION_CONFLICT', 'CONTENT_TOO_LARGE', 'INVALID_DOCUMENT_CONTENT']) {
+      expect(
+        hostErrorSchema.parse({ code, message: 'Document write failed.', retryable: false }),
+      ).toMatchObject({ code })
+    }
+    expect(() =>
+      hostErrorSchema.parse({ code: 'RAW_ENGINE_ERROR', message: 'leak', retryable: false }),
+    ).toThrow()
+  })
 })

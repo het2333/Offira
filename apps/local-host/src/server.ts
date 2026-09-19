@@ -10,6 +10,7 @@ import {
   activateTabRequestSchema,
   closeTabRequestSchema,
   reorderTabRequestSchema,
+  shellDocumentSummarySchema,
   shellSettingsPatchSchema,
   type EditorKind,
   type ShellDocumentSummary,
@@ -20,6 +21,7 @@ import { createBootstrapAuth } from './bootstrap-auth'
 import type { AgentRouter } from './agent-router'
 import { AgentRouter as OwnedAgentRouter } from './agent-router'
 import { DocumentRegistry } from './document-registry'
+import { expectedRevision, readBinaryBody } from './document-content'
 import { DocumentDriverRegistry, type LocalDocument } from './document-driver'
 import { HarnessSupervisor } from './harness-supervisor'
 import { OperationStore } from './operation-store'
@@ -63,7 +65,11 @@ function sendHostError(response: ServerResponse, error: unknown): void {
         ? 403
         : error.code === 'DOCUMENT_NOT_FOUND' || error.code === 'TAB_NOT_FOUND'
           ? 404
-          : 400
+          : error.code === 'REVISION_CONFLICT'
+            ? 409
+            : error.code === 'CONTENT_TOO_LARGE'
+              ? 413
+              : 400
     sendJson(response, status, {
       code: error.code,
       message: error.message,
@@ -92,6 +98,19 @@ function requireMethod(
   sendJson(response, 405, {
     code: 'INVALID_REQUEST',
     message: `This endpoint requires ${method}.`,
+    retryable: false,
+  })
+  return false
+}
+
+function requireContentMethod(
+  request: import('node:http').IncomingMessage,
+  response: ServerResponse,
+): request is import('node:http').IncomingMessage & { method: 'GET' | 'PUT' } {
+  if (request.method === 'GET' || request.method === 'PUT') return true
+  sendJson(response, 405, {
+    code: 'INVALID_REQUEST',
+    message: 'This endpoint requires GET or PUT.',
     retryable: false,
   })
   return false
@@ -330,6 +349,63 @@ export async function startLocalHost(
           wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
+        }
+        return
+      }
+      const contentMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/content$/)
+      if (contentMatch !== null) {
+        if (!requireContentMethod(request, response)) return
+        const documentId = decodeURIComponent(contentMatch[1]!)
+        try {
+          const driver = options.documentDrivers?.require(documentId)
+          if (driver === undefined) {
+            throw new HostError(
+              'DOCUMENT_NOT_FOUND',
+              `Document ${documentId} is not registered with this Local Host.`,
+              false,
+            )
+          }
+          if (request.method === 'GET') {
+            if (driver.readContent === undefined) {
+              throw new HostError(
+                'UNSUPPORTED_CAPABILITY',
+                `Document ${documentId} does not expose binary content.`,
+                false,
+              )
+            }
+            const content = await driver.readContent()
+            response.writeHead(200, {
+              'Content-Type': content.contentType,
+              'Content-Length': content.bytes.byteLength,
+              'Cache-Control': 'no-store',
+            })
+            response.end(content.bytes)
+            return
+          }
+          if (driver.writeContent === undefined) {
+            throw new HostError(
+              'UNSUPPORTED_CAPABILITY',
+              `Document ${documentId} does not accept binary content.`,
+              false,
+            )
+          }
+          const revision = expectedRevision(request)
+          const bytes = await readBinaryBody(request)
+          sendJson(
+            response,
+            200,
+            shellDocumentSummarySchema.parse(await driver.writeContent(bytes, revision)),
+          )
+        } catch (error: unknown) {
+          if (error instanceof HostError && error.code === 'UNSUPPORTED_CAPABILITY') {
+            sendJson(response, 405, {
+              code: error.code,
+              message: error.message,
+              retryable: error.retryable,
+            })
+          } else {
+            sendHostError(response, error)
+          }
         }
         return
       }

@@ -101,6 +101,9 @@ export type HostErrorCode =
   | 'DOCUMENT_NOT_FOUND'
   | 'TAB_NOT_FOUND'
   | 'EDITOR_NOT_AVAILABLE'
+  | 'REVISION_CONFLICT'
+  | 'CONTENT_TOO_LARGE'
+  | 'INVALID_DOCUMENT_CONTENT'
   | 'HOST_DISCONNECTED'
   | 'INTERNAL_ERROR'
 
@@ -110,6 +113,8 @@ export interface HostErrorValue {
   readonly retryable: boolean
   readonly documentId?: DocumentId
 }
+
+export type DocumentWriteResult = ShellDocumentSummary
 
 export class HostError extends Error implements HostErrorValue {
   readonly name = 'HostError'
