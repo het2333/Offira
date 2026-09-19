@@ -30,7 +30,7 @@ describe('Slides editor adapter', () => {
     })
     const approvals = new Set<string>()
     const adapter = createSlidesEditorAdapter({
-      document: () => ({ documentId, clientId, revision, title: 'Deck.pptx', attached: true }),
+      document: () => ({ documentId, clientId, revision, contentVersion: 1, title: 'Deck.pptx', attached: true }),
       read: async () => ({ slides: [{ index: 0, id: 'slide-1', elements: [] }] }),
       runTransaction,
       save: async () => undefined,
@@ -52,5 +52,50 @@ describe('Slides editor adapter', () => {
     expect(first).toMatchObject({ ok: true, changes: { count: 1 } })
     expect(() => parseAgentToolResult(first)).not.toThrow()
     expect(JSON.stringify(first)).not.toMatch(/engine|electron|webcontents/i)
+  })
+
+  it('rejects an approved plan after an unsaved in-memory presentation edit', async () => {
+    let contentVersion = 1
+    const consumeApproval = vi.fn(() => true)
+    const runTransaction = vi.fn().mockResolvedValue({ applied: true, records: [] })
+    const adapter = createSlidesEditorAdapter({
+      document: () => ({
+        documentId,
+        clientId,
+        revision,
+        contentVersion,
+        title: 'Deck.pptx',
+        attached: true,
+      }),
+      read: async () => ({ slides: [] }),
+      runTransaction,
+      save: async () => undefined,
+      consumeApproval,
+    })
+    const plan = await adapter.propose(request())
+    contentVersion += 1
+
+    const result = await adapter.apply({ ...plan, approvalId: 'approval-1' } as ApprovedEditPlan)
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+    })
+    expect(consumeApproval).not.toHaveBeenCalled()
+    expect(runTransaction).not.toHaveBeenCalled()
+  })
+
+  it('rejects a save approval that was prepared for an older in-memory presentation', async () => {
+    const adapter = createSlidesEditorAdapter({
+      document: () => ({ documentId, clientId, revision, contentVersion: 2, title: 'Deck.pptx', attached: true }),
+      read: async () => ({ slides: [] }),
+      runTransaction: async () => ({ applied: true }),
+      save: async () => undefined,
+      consumeApproval: () => true,
+    })
+
+    const result = await (adapter.save as (id: DocumentId, contentVersion?: number) => Promise<unknown>)(documentId, 1)
+
+    expect(result).toMatchObject({ ok: false, warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })] })
   })
 })

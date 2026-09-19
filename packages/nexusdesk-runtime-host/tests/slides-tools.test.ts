@@ -47,7 +47,7 @@ describe('official Harness Slides tools', () => {
 
     expect(approve).toHaveBeenCalledWith(
       'apply_presentation_operations',
-      expect.objectContaining({ planHash: 'plan-hash-1', targets: ['slide:1'] }),
+      expect.objectContaining({ operationId: 'operation-1', planHash: 'plan-hash-1', targets: ['slide:1'] }),
       expect.anything(),
     )
     expect(request).toHaveBeenLastCalledWith(
@@ -57,5 +57,39 @@ describe('official Harness Slides tools', () => {
       { approvalId: 'approval-1', planHash: 'plan-hash-1', operationId: 'operation-1' },
     )
     expect(JSON.stringify(result)).not.toMatch(/engine|electron|webcontents/i)
+  })
+
+  it('binds an in-place save to its current presentation version before asking for approval', async () => {
+    const saveProposal: AgentToolResult = {
+      ok: true,
+      summary: 'Save the current presentation in place.',
+      warnings: [],
+      data: {
+        operationId: 'save-operation-1',
+        planHash: 'save-plan-hash-1',
+        summary: 'Save the current presentation in place.',
+        targets: ['current presentation'],
+        contentVersion: 2,
+      },
+    }
+    const request = vi.fn().mockResolvedValueOnce(saveProposal).mockResolvedValueOnce(success)
+    const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-1' })
+    const save = createSlidesTools({ request, approve })[2]!
+
+    await expect(save.execute({}, { signal: new AbortController().signal } as never)).resolves.toEqual(success)
+
+    expect(request).toHaveBeenNthCalledWith(1, 'propose_save', {}, expect.anything())
+    expect(approve).toHaveBeenCalledWith(
+      'save_presentation',
+      expect.objectContaining({ operationId: 'save-operation-1', planHash: 'save-plan-hash-1' }),
+      expect.anything(),
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      'save_presentation',
+      { inPlace: true, contentVersion: 2 },
+      expect.anything(),
+      { approvalId: 'approval-1', planHash: 'save-plan-hash-1', operationId: 'save-operation-1' },
+    )
   })
 })

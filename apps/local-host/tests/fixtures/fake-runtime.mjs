@@ -68,7 +68,7 @@ process.on('message', (frame) => {
       })
       return
     }
-    if (frame.prompt === 'docs-save-unapproved') {
+    if (frame.prompt === 'docs-save-unapproved' || frame.prompt === 'slides-save-unapproved') {
       process.send?.({
         type: 'editor:request',
         protocolVersion: 1,
@@ -78,10 +78,10 @@ process.on('message', (frame) => {
           documentId: activeTurn.documentId,
           editorType: activeTurn.editorType,
           revision: activeTurn.revision,
-          operationId: 'docs-save-operation-1',
+          operationId: `${activeTurn.editorType}-save-operation-1`,
           clientId: activeTurn.clientId,
         },
-        command: 'save_document',
+        command: activeTurn.editorType === 'slides' ? 'save_presentation' : 'save_document',
         arguments: { inPlace: true },
       })
       return
@@ -117,6 +117,40 @@ process.on('message', (frame) => {
           targets: ['Page.html'],
           warnings: [],
         },
+      })
+      return
+    }
+    if (frame.prompt === 'slides-save-wrong-plan' || frame.prompt === 'slides-save-reuse-approval') {
+      process.send?.({
+        type: 'approval:request',
+        protocolVersion: 1,
+        id: 'slides-save-approval-1',
+        sessionId: frame.sessionId,
+        toolName: 'save_presentation',
+        proposal: {
+          planHash: 'slides-save-plan-hash',
+          summary: 'Save the presentation.',
+          targets: ['presentation'],
+          warnings: [],
+        },
+      })
+      return
+    }
+    if (frame.prompt === 'slides-save-proposal') {
+      process.send?.({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'slides-save-proposal-request-1',
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: 'slides',
+          revision: activeTurn.revision,
+          operationId: 'slides-save-proposal-operation-1',
+          clientId: activeTurn.clientId,
+        },
+        command: 'propose_save',
+        arguments: {},
       })
       return
     }
@@ -171,6 +205,71 @@ process.on('message', (frame) => {
       }
       return
     }
+    if (frame.id === 'slides-save-approval-1' && frame.outcome === 'allowed-once') {
+      const request = (id, operationId, planHash) => ({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id,
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: 'slides',
+          revision: activeTurn.revision,
+          operationId,
+          clientId: activeTurn.clientId,
+        },
+        command: 'save_presentation',
+        arguments: { inPlace: true },
+        approval: { id: 'slides-save-approval-1', planHash },
+      })
+      if (activeTurn.prompt === 'slides-save-wrong-plan') {
+        process.send?.(
+          request(
+            'slides-save-wrong-request-1',
+            'slides-save-wrong-operation-1',
+            'wrong-plan-hash',
+          ),
+        )
+      } else {
+        process.send?.(
+          request(
+            'slides-save-reuse-request-1',
+            'slides-save-reuse-operation-1',
+            'slides-save-plan-hash',
+          ),
+        )
+        process.send?.(
+          request(
+            'slides-save-reuse-request-2',
+            'slides-save-reuse-operation-2',
+            'slides-save-plan-hash',
+          ),
+        )
+      }
+      return
+    }
+    if (frame.id === 'slides-save-proposal-approval-1' && frame.outcome === 'allowed-once') {
+      process.send?.({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'slides-save-request-1',
+        target: {
+          sessionId: activeTurn.sessionId,
+          documentId: activeTurn.documentId,
+          editorType: 'slides',
+          revision: activeTurn.revision,
+          operationId: 'slides-save-proposal-operation-1',
+          clientId: activeTurn.clientId,
+        },
+        command: 'save_presentation',
+        arguments: { inPlace: true, contentVersion: 2 },
+        approval: {
+          id: 'slides-save-proposal-approval-1',
+          planHash: 'slides-save-proposal-plan-hash',
+        },
+      })
+      return
+    }
     if (frame.id === 'editor-approval-1' && frame.outcome === 'allowed-once') {
       process.send?.({
         type: 'editor:request',
@@ -197,6 +296,25 @@ process.on('message', (frame) => {
       event: { type: 'test/approval-response', data: { id: frame.id, outcome: frame.outcome } },
     })
   } else if (frame.type === 'editor:result') {
+    if (
+      activeTurn?.prompt === 'slides-save-proposal' &&
+      frame.id === 'slides-save-proposal-request-1'
+    ) {
+      process.send?.({
+        type: 'approval:request',
+        protocolVersion: 1,
+        id: 'slides-save-proposal-approval-1',
+        sessionId: activeSession,
+        toolName: 'save_presentation',
+        proposal: {
+          planHash: frame.result?.data?.planHash,
+          summary: 'Save the presentation.',
+          targets: ['presentation'],
+          warnings: [],
+        },
+      })
+      return
+    }
     process.send?.({
       type: 'agent:event',
       protocolVersion: 1,

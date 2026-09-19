@@ -168,6 +168,211 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
+  it('rejects an unapproved native Slides save before it reaches the editor', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'slides-save-unapproved',
+      },
+      clientId,
+    )
+    await until(() =>
+      sent.some(
+        (frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+      ),
+    )
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: 'agent:event',
+        event: expect.objectContaining({
+          data: expect.objectContaining({
+            result: expect.objectContaining({
+              ok: false,
+              warnings: [expect.objectContaining({ code: 'EDITOR_ROUTE_REJECTED' })],
+            }),
+          }),
+        }),
+      }),
+    )
+    router.dispose()
+  })
+
+  it('rejects a Slides save whose approval hash differs from the granted plan', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'slides-save-wrong-plan',
+      },
+      clientId,
+    )
+    await until(() => router.hasApproval('slides-save-approval-1'))
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'slides-save-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
+    await until(() =>
+      sent.some(
+        (frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+      ),
+    )
+
+    expect(sent.some((frame) => frame.type === 'editor:request')).toBe(false)
+    router.dispose()
+  })
+
+  it('consumes a granted Slides save approval exactly once', async () => {
+    const documents = new DocumentRegistry()
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'slides-save-reuse-approval',
+      },
+      clientId,
+    )
+    await until(() => router.hasApproval('slides-save-approval-1'))
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'slides-save-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
+    await until(() =>
+      sent.some(
+        (frame) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',
+      ),
+    )
+
+    expect(sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    router.dispose()
+  })
+
+  it('does not cache a Slides save proposal in place of its approved save', async () => {
+    const documents = new DocumentRegistry()
+    const operations = new OperationStore()
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations,
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'slides-save-proposal',
+      },
+      clientId,
+    )
+    await until(() => sent.some((frame) => frame.type === 'editor:request'))
+    const proposal = sent.find((frame) => frame.type === 'editor:request') as EditorRequestFrame
+    expect(proposal.command).toBe('propose_save')
+
+    router.handleClientFrame(
+      {
+        type: 'editor:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: proposal.id,
+        target: proposal.target,
+        result: {
+          ok: true,
+          summary: 'Save the current presentation in place.',
+          warnings: [],
+          data: {
+            operationId: proposal.target.operationId,
+            planHash: 'slides-save-proposal-plan-hash',
+            contentVersion: 2,
+          },
+        },
+      },
+      clientId,
+    )
+    await until(() => router.hasApproval('slides-save-proposal-approval-1'))
+    expect(operations.lookup(proposal.target.operationId)).toBeUndefined()
+
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'slides-save-proposal-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
+    await until(() => sent.filter((frame) => frame.type === 'editor:request').length === 2)
+
+    expect(sent.filter((frame) => frame.type === 'editor:request').at(-1)).toMatchObject({
+      command: 'save_presentation',
+      target: { operationId: proposal.target.operationId },
+      arguments: { inPlace: true, contentVersion: 2 },
+    })
+    router.dispose()
+  })
+
   it('expires a pending approval and sends one terminal failure when runtime crashes', async () => {
     const documents = new DocumentRegistry()
     const operations = new OperationStore()

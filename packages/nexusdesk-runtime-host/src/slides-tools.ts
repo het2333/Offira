@@ -16,6 +16,8 @@ const output = {
   render: (_args: unknown, value: JsonValue) => [{ type: 'text' as const, text: JSON.stringify(value) }],
 }
 
+type ReplayableApprovalProposal = AgentApprovalProposal & { operationId: string }
+
 function result(value: AgentToolResult): AgentToolResult {
   return parseAgentToolResult({
     ok: value.ok, summary: value.summary, warnings: value.warnings,
@@ -27,7 +29,7 @@ function result(value: AgentToolResult): AgentToolResult {
   })
 }
 
-function proposal(value: AgentToolResult): { operationId: string; proposal: AgentApprovalProposal } {
+function proposal(value: AgentToolResult): { operationId: string; proposal: ReplayableApprovalProposal } {
   const data = (value.data ?? {}) as Record<string, JsonValue>
   if (typeof data.planHash !== 'string' || typeof data.operationId !== 'string') {
     throw new Error('presentation editor returned an invalid edit proposal')
@@ -35,12 +37,27 @@ function proposal(value: AgentToolResult): { operationId: string; proposal: Agen
   return {
     operationId: data.operationId,
     proposal: {
+      operationId: data.operationId,
       planHash: data.planHash,
       summary: typeof data.summary === 'string' ? data.summary : value.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((item): item is string => typeof item === 'string') : [],
       warnings: value.warnings,
     },
   }
+}
+
+function saveProposal(value: AgentToolResult): {
+  operationId: string
+  contentVersion: number
+  proposal: ReplayableApprovalProposal
+} {
+  const pending = proposal(value)
+  const data = (value.data ?? {}) as Record<string, JsonValue>
+  const contentVersion = data.contentVersion
+  if (typeof contentVersion !== 'number' || !Number.isSafeInteger(contentVersion) || contentVersion < 1) {
+    throw new Error('presentation editor returned an invalid save proposal')
+  }
+  return { ...pending, contentVersion }
 }
 
 export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
@@ -70,10 +87,16 @@ export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
       description: 'Save the open presentation in place. The model cannot choose or change the authorized path.',
       parameters: {}, output,
       async execute(_args, execution) {
-        const pending: AgentApprovalProposal = { planHash: 'save-current-presentation-in-place', summary: 'Save the current presentation in place.', targets: ['current presentation'], warnings: [] }
-        const approval = await bridge.approve('save_presentation', pending, execution)
+        const proposed = result(await bridge.request('propose_save', {}, execution))
+        if (!proposed.ok) return proposed as unknown as JsonValue
+        const pending = saveProposal(proposed)
+        const approval = await bridge.approve('save_presentation', pending.proposal, execution)
         if (!approval.approved || approval.approvalId === undefined) throw new Error('presentation save was not approved')
-        return result(await bridge.request('save_presentation', { inPlace: true }, execution, { approvalId: approval.approvalId, planHash: pending.planHash })) as unknown as JsonValue
+        return result(await bridge.request('save_presentation', { inPlace: true, contentVersion: pending.contentVersion }, execution, {
+          approvalId: approval.approvalId,
+          planHash: pending.proposal.planHash,
+          operationId: pending.operationId,
+        })) as unknown as JsonValue
       },
     }),
   ]

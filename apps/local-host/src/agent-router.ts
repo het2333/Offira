@@ -140,7 +140,7 @@ export class AgentRouter {
       // re-check ownership here without requiring the old revision to remain
       // current.
       const document = this.options.documents.assertClient(frame.target.documentId, clientId)
-      if (owner.command !== 'propose_ops') {
+      if (!isProposalCommand(owner.command)) {
         if (frame.result.ok) this.options.operations.commit(frame.target.operationId, frame.result)
         else this.options.operations.fail(frame.target.operationId, frame.result)
       }
@@ -349,6 +349,7 @@ export class AgentRouter {
       frame.command === 'apply_ops' ||
       frame.command === 'save_sheet' ||
       frame.command === 'save_document' ||
+      frame.command === 'save_presentation' ||
       frame.command === 'save_markdown' ||
       frame.command === 'save_html'
     ) {
@@ -375,6 +376,10 @@ export class AgentRouter {
       command: frame.command,
       request: frame,
     })
+    if (isProposalCommand(frame.command)) {
+      this.options.sendToClient(owner.clientId, frame)
+      return
+    }
     const record = this.options.operations.reserve(frame.target.operationId, operationPayload)
     if (record.state !== 'reserved') {
       this.options.supervisor.respondEditor({
@@ -434,4 +439,8 @@ function sameTarget(left: MutationTarget, right: MutationTarget): boolean {
     left.operationId === right.operationId &&
     left.clientId === right.clientId
   )
+}
+
+function isProposalCommand(command: string): boolean {
+  return command === 'propose_ops' || command === 'propose_save'
 }

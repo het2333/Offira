@@ -24,6 +24,8 @@ export interface SlidesDocumentState {
   documentId: DocumentId
   clientId: ClientId
   revision: Revision
+  /** Monotonic in-memory deck version; unlike disk revision, it advances for unsaved edits. */
+  contentVersion: number
   title: string
   attached: boolean
 }
@@ -31,9 +33,21 @@ export interface SlidesDocumentState {
 export interface SlidesEditorAdapterOptions {
   document(): SlidesDocumentState
   read(): Promise<JsonValue>
-  runTransaction(operations: JsonValue[]): Promise<{ applied: boolean; records?: Array<{ op: string; target?: string }>; failures?: Array<{ error: string }> }>
+  runTransaction(operations: JsonValue[]): Promise<{ applied: boolean; contentVersion?: number; records?: Array<{ op: string; target?: string }>; failures?: Array<{ error: string }> }>
   save(): Promise<void>
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
+}
+
+export interface SlidesSavePlan {
+  planHash: string
+  contentVersion: number
+  summary: string
+  targets: string[]
+  warnings: Array<{ code: string; message: string; target?: string }>
+}
+
+export interface SlidesEditorAdapter extends EditorAdapter {
+  proposeSave(request: EditRequest): Promise<SlidesSavePlan>
 }
 
 function canonical(value: unknown): string {
@@ -80,8 +94,13 @@ function sameTarget(left: EditPlan, right: SlidesDocumentState): boolean {
   return left.target.documentId === right.documentId && left.target.clientId === right.clientId && left.target.revision === right.revision && left.target.editorType === 'slides'
 }
 
-export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): EditorAdapter {
+function sameRequestTarget(request: EditRequest, current: SlidesDocumentState): boolean {
+  return request.documentId === current.documentId && request.clientId === current.clientId && request.revision === current.revision && request.editorType === 'slides'
+}
+
+export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): SlidesEditorAdapter {
   const applied = new Map<string, Promise<AgentEditResult>>()
+  const proposedContentVersions = new Map<string, { planHash: string; contentVersion: number }>()
   return {
     editorType: 'slides',
     capabilities: () => ({ editorType: 'slides', commands: ['read_presentation', 'apply_ops', 'save_presentation'], canUndo: false, canSave: true, canExport: false }),
@@ -98,15 +117,43 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
     async propose(request): Promise<EditPlan> {
       const current = options.document()
       if (request.command !== 'apply_ops') throw new Error('Presentation editor supports only apply_ops proposals')
-      if (request.documentId !== current.documentId || request.clientId !== current.clientId || request.revision !== current.revision || !current.attached) throw new Error('Presentation is no longer attached at the requested revision')
+      if (!sameRequestTarget(request, current) || !current.attached) throw new Error('Presentation is no longer attached at the requested revision')
       const ops = operations(request)
-      const planHash = await hash({ target: { documentId: request.documentId, clientId: request.clientId, revision: request.revision, editorType: request.editorType }, operations: ops })
+      const planHash = await hash({ target: { documentId: request.documentId, clientId: request.clientId, revision: request.revision, editorType: request.editorType }, contentVersion: current.contentVersion, operations: ops })
+      proposedContentVersions.set(request.operationId, { planHash, contentVersion: current.contentVersion })
       return { target: { sessionId: request.sessionId, documentId: request.documentId, clientId: request.clientId, editorType: 'slides', revision: request.revision, operationId: request.operationId }, planId: `slides-${request.operationId}`, planHash, summary: `Apply ${String(ops.length)} presentation operation${ops.length === 1 ? '' : 's'}.`, operations: ops, warnings: [] }
+    },
+    async proposeSave(request): Promise<SlidesSavePlan> {
+      const current = options.document()
+      if (!sameRequestTarget(request, current) || !current.attached) {
+        throw new Error('Presentation is no longer attached at the requested revision')
+      }
+      const planHash = await hash({
+        target: {
+          documentId: request.documentId,
+          clientId: request.clientId,
+          revision: request.revision,
+          editorType: request.editorType,
+        },
+        contentVersion: current.contentVersion,
+        command: 'save_presentation',
+      })
+      return {
+        planHash,
+        contentVersion: current.contentVersion,
+        summary: 'Save the current presentation in place.',
+        targets: ['current presentation'],
+        warnings: [],
+      }
     },
     async apply(plan: ApprovedEditPlan): Promise<AgentEditResult> {
       const current = options.document()
       if (!sameTarget(plan, current)) return failure('STALE_REVISION', 'The presentation changed or detached before this approved operation could apply.')
-      const actualHash = await hash({ target: { documentId: plan.target.documentId, clientId: plan.target.clientId, revision: plan.target.revision, editorType: plan.target.editorType }, operations: plan.operations })
+      const proposed = proposedContentVersions.get(plan.target.operationId)
+      if (proposed === undefined || proposed.planHash !== plan.planHash || proposed.contentVersion !== current.contentVersion) {
+        return failure('STALE_CONTENT', 'The presentation changed in memory after this plan was prepared.')
+      }
+      const actualHash = await hash({ target: { documentId: plan.target.documentId, clientId: plan.target.clientId, revision: plan.target.revision, editorType: plan.target.editorType }, contentVersion: proposed.contentVersion, operations: plan.operations })
       if (actualHash !== plan.planHash) return failure('PLAN_TAMPERED', 'The approved presentation plan no longer matches its operations.')
       const existing = applied.get(plan.target.operationId)
       if (existing !== undefined) return existing
@@ -115,7 +162,15 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
         const transaction = await options.runTransaction(plan.operations)
         if (!transaction.applied) return failure('TRANSACTION_FAILED', transaction.failures?.map((failure) => failure.error).join('; ') || 'The presentation transaction made no changes.')
         const changed = transaction.records?.length ?? plan.operations.length
-        return { ok: true, summary: `Applied ${String(changed)} presentation operation${changed === 1 ? '' : 's'}.`, changes: { targets: targets(plan.operations), count: changed }, warnings: [], verification: { passed: true, issues: [] }, transactionId: `slides-${plan.target.operationId}` as TransactionId }
+        return {
+          ok: true,
+          summary: `Applied ${String(changed)} presentation operation${changed === 1 ? '' : 's'}.`,
+          changes: { targets: targets(plan.operations), count: changed },
+          warnings: [],
+          verification: { passed: true, issues: [] },
+          transactionId: `slides-${plan.target.operationId}` as TransactionId,
+          ...(transaction.contentVersion === undefined ? {} : { data: { contentVersion: transaction.contentVersion } }),
+        }
       })()
       applied.set(plan.target.operationId, result)
       return result
@@ -125,9 +180,12 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
       return documentId === current.documentId && current.attached ? { passed: true, issues: [] } : { passed: false, issues: [{ code: 'DOCUMENT_DETACHED', message: 'The presentation is no longer attached.' }] }
     },
     async undo(_transactionId): Promise<AgentEditResult> { return failure('UNSUPPORTED_CAPABILITY', 'Undo is not exposed through the presentation Agent surface.') },
-    async save(documentId): Promise<AgentSaveResult> {
+    async save(documentId, expectedContentVersion?: number): Promise<AgentSaveResult> {
       const current = options.document()
       if (documentId !== current.documentId || !current.attached) return failure('DOCUMENT_DETACHED', 'The presentation is no longer attached.')
+      if (expectedContentVersion !== undefined && expectedContentVersion !== current.contentVersion) {
+        return failure('STALE_CONTENT', 'The presentation changed in memory after this save was approved.')
+      }
       await options.save()
       return { ok: true, summary: 'Saved the current presentation in place.', warnings: [] }
     },

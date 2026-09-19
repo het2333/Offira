@@ -15,6 +15,7 @@ import '@genoffice/ui/ai-panel-prefs.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import './styles.css'
 import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import { installSlidesBrowserHostApiForDocument, selectSlidesHost } from './browser-host-api'
 
 installScreenTips()
 
@@ -39,6 +40,17 @@ function applyTheme(theme: UiTheme): void {
 }
 
 async function bootstrap(): Promise<void> {
+  const selection = await selectSlidesHost({
+    search: window.location.search,
+    electronApi: window.slidesApi,
+    installBrowser: installSlidesBrowserHostApiForDocument,
+  })
+  const rootElement = document.getElementById('root')!
+  if (selection.kind === 'error') {
+    rootElement.textContent = selection.message
+    rootElement.setAttribute('role', 'alert')
+    return
+  }
   let lang: Lang = 'zh'
   let theme: UiTheme = 'system'
   try {
@@ -63,7 +75,7 @@ async function bootstrap(): Promise<void> {
       .catch(() => {})
     window.slidesApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   }
-  createRoot(document.getElementById('root')!).render(
+  createRoot(rootElement).render(
     <React.StrictMode>
       <LocaleProvider initial={lang}>
         {mode === 'audience' ? <AudienceView /> : <App />}

@@ -160,6 +160,8 @@ export interface ApplyTxnOp {
 
 export interface ApplyTxnResult {
   applied: boolean
+  /** Monotonic in-memory deck version; increments for every successful mutation, including unsaved edits. */
+  contentVersion?: number
   dryRun?: boolean
   /** dry-run: one line per validated op */
   plan?: string[]

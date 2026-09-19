@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "pretest": "npm run build:web-service -w @genoffice/slides",
     "dev": "tsx src/main.ts",
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --external:ws --outfile=lib/main.mjs",
     "test": "vitest run",

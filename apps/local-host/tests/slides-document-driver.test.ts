@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
@@ -25,6 +26,14 @@ async function fixture(): Promise<{ path: string; bytes: Uint8Array }> {
   return { path, bytes }
 }
 
+async function editableFixture(): Promise<{ path: string }> {
+  directory = await mkdtemp(join(tmpdir(), 'nexusdesk-slides-driver-'))
+  const path = join(directory, 'Deck.pptx')
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+  await writeFile(path, await readFile(resolve(repositoryRoot, 'packages/pptx-engine/tests/fixtures/01_standard_business.pptx')))
+  return { path }
+}
+
 describe('Slides Local Host driver', () => {
   it('exposes authorized PPTX bytes separately from its browser bootstrap metadata', async () => {
     const { path, bytes } = await fixture()
@@ -34,6 +43,7 @@ describe('Slides Local Host driver', () => {
       documentId: driver.document.documentId,
       title: basename(path),
       revision: 1,
+      contentVersion: 1,
       websocketUrl: 'ws://127.0.0.1:43123/ws',
       language: 'en',
       theme: 'system',
@@ -54,5 +64,28 @@ describe('Slides Local Host driver', () => {
     expect(await readFile(path)).toEqual(before)
     expect(driver.document.revision).toBe(1)
     expect((await readdir(directory!)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('opens, edits, and saves one real PPTX session in place', async () => {
+    const { path } = await editableFixture()
+    const driver = await createSlidesDocumentDriver(path)
+    const opened = (await driver.execute('slides:open', { fitWidthPx: 960 })) as {
+      slides: Array<{ nodes: Array<{ sourceId?: string; type: string }> }>
+    }
+    const title = opened.slides[0]!.nodes.find((node) => node.type === 'text' && node.sourceId)
+
+    expect(title?.sourceId).toBeDefined()
+    expect(
+      await driver.execute('slides:edit-text', {
+        slideIndex: 0,
+        sourceId: title!.sourceId,
+        paragraphs: [{ runs: [{ text: 'Saved by Local Web' }] }],
+      }),
+    ).not.toBeNull()
+    const saved = await driver.execute('slides:save', { expectedRevision: 1 })
+
+    expect(saved).toMatchObject({ ok: true, revision: 2 })
+    const reopened = await createSlidesDocumentDriver(path)
+    expect(JSON.stringify(await reopened.execute('slides:open', { fitWidthPx: 960 }))).toContain('Saved')
   })
 })
