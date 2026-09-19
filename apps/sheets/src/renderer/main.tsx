@@ -16,7 +16,11 @@ import { App } from './App'
 import { installCanvasFontFallback, registerCellFontAliases } from './cell-font-fallback'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
 import type { UiTheme } from '../shared/desktop-api'
-import { installBrowserHostApi, selectSheetsHost } from './browser-host-api'
+import {
+  installBrowserHostApi,
+  loadBrowserHostBootstrap,
+  selectSheetsHost,
+} from './browser-host-api'
 import './styles.css'
 
 if (import.meta.hot) {
@@ -61,10 +65,13 @@ async function bootstrap(): Promise<void> {
       search: window.location.search,
       electronApi: window.desktopApi,
       installBrowser: async () => {
-        const browserBootstrap = window.nexusdeskBootstrap
-        if (browserBootstrap === undefined) {
-          throw new Error('The authenticated NexusDesk document bootstrap is missing.')
-        }
+        const documentId = new URLSearchParams(window.location.search).get('documentId')
+        const browserBootstrap = window.nexusdeskBootstrap ?? (
+          documentId === null
+            ? undefined
+            : await loadBrowserHostBootstrap(documentId)
+        )
+        if (browserBootstrap === undefined) throw new Error('The document id is missing.')
         return installBrowserHostApi(browserBootstrap)
       },
     })

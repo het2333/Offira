@@ -43,6 +43,28 @@ export interface InstallBrowserHostOptions {
   transport?: BrowserHostTransport
 }
 
+export async function loadBrowserHostBootstrap(
+  documentId: string,
+  fetchBootstrap: typeof fetch = globalThis.fetch,
+): Promise<BrowserHostBootstrap> {
+  const response = await fetchBootstrap(
+    `/api/documents/${encodeURIComponent(documentId)}/bootstrap`,
+    { credentials: 'same-origin' },
+  )
+  if (!response.ok) throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
+  const value = await response.json() as Partial<BrowserHostBootstrap>
+  if (
+    typeof value.documentId !== 'string' ||
+    typeof value.title !== 'string' ||
+    typeof value.revision !== 'number' ||
+    typeof value.websocketUrl !== 'string' ||
+    value.workbook === undefined
+  ) {
+    throw new Error('Local Host returned an invalid document bootstrap')
+  }
+  return value as BrowserHostBootstrap
+}
+
 export class WebHostUnavailableError extends Error {
   readonly code = 'UNAVAILABLE_IN_WEB' as const
 

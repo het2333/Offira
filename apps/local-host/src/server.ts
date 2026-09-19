@@ -1,4 +1,6 @@
 import { createServer, type ServerResponse } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import { extname, resolve, sep } from 'node:path'
 
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 
@@ -17,6 +19,20 @@ export interface RunningLocalHost {
 export interface StartLocalHostOptions {
   documentRegistry?: DocumentRegistry
   agentRouter?: AgentRouter
+  documents?: LocalDocument[]
+  staticAssets?: { webRoot: string; sheetsRoot: string }
+  documentService?: {
+    bootstrap(document: LocalDocument, origin: string): Promise<unknown>
+    execute(document: LocalDocument, action: string, payload: unknown): Promise<unknown>
+  }
+}
+
+export interface LocalDocument {
+  documentId: string
+  title: string
+  editorType: 'sheets'
+  revision: number
+  path?: string
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -38,6 +54,51 @@ function cookieSession(cookie: string | undefined): string | undefined {
   return undefined
 }
 
+const CONTENT_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+}
+
+async function staticFile(root: string, pathname: string): Promise<{ body: Buffer; type: string } | undefined> {
+  const relative = pathname.replace(/^\/+/, '')
+  const path = resolve(root, relative)
+  const rootPrefix = `${resolve(root)}${sep}`
+  if (path !== resolve(root) && !path.startsWith(rootPrefix)) return undefined
+  try {
+    return {
+      body: await readFile(path),
+      type: CONTENT_TYPES[extname(path)] ?? 'application/octet-stream',
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function sendFile(response: ServerResponse, file: { body: Buffer; type: string }, immutable: boolean): void {
+  response.writeHead(200, {
+    'Content-Type': file.type,
+    'Content-Length': file.body.byteLength,
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-store',
+  })
+  response.end(file.body)
+}
+
+async function readJsonBody(request: import('node:http').IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.byteLength
+    if (size > 2_000_000) throw new Error('request body is too large')
+    chunks.push(buffer)
+  }
+  return chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
 /** Start one authenticated, loopback-only NexusDesk host. */
 export async function startLocalHost(options: StartLocalHostOptions = {}): Promise<RunningLocalHost> {
   const auth = createBootstrapAuth()
@@ -47,6 +108,7 @@ export async function startLocalHost(options: StartLocalHostOptions = {}): Promi
   let closing: Promise<void> | undefined
 
   const server = createServer((request, response) => {
+    void (async () => {
     if (!acceptHttpOrigin(request, origin)) {
       sendJson(response, 421, { error: 'invalid local host authority' })
       return
@@ -76,6 +138,63 @@ export async function startLocalHost(options: StartLocalHostOptions = {}): Promi
       sendJson(response, 401, { error: 'authentication required' })
       return
     }
+    if (url.pathname === '/api/bootstrap') {
+      sendJson(response, 200, {
+        documents: (options.documents ?? []).map(({ documentId, title, editorType, revision }) => ({
+          documentId,
+          title,
+          editorType,
+          revision,
+        })),
+      })
+      return
+    }
+    const documentMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/(bootstrap|[^/]+)$/)
+    if (documentMatch !== null) {
+      const documentId = decodeURIComponent(documentMatch[1]!)
+      const action = documentMatch[2]!
+      const document = (options.documents ?? []).find((candidate) => candidate.documentId === documentId)
+      if (document === undefined || options.documentService === undefined) {
+        sendJson(response, 404, { error: 'document service is unavailable' })
+        return
+      }
+      try {
+        const result = action === 'bootstrap'
+          ? await options.documentService.bootstrap(document, origin)
+          : await options.documentService.execute(document, action, await readJsonBody(request))
+        sendJson(response, 200, result)
+      } catch (error: unknown) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : 'document request failed' })
+      }
+      return
+    }
+    if (url.pathname.startsWith('/api/')) {
+      sendJson(response, 404, { error: 'not found' })
+      return
+    }
+    if (options.staticAssets !== undefined) {
+      if (url.pathname === '/sheets' || url.pathname.startsWith('/sheets/')) {
+        const relative = url.pathname.replace(/^\/sheets\/?/, '') || 'index.html'
+        const file = await staticFile(options.staticAssets.sheetsRoot, relative)
+          ?? await staticFile(options.staticAssets.sheetsRoot, 'index.html')
+        if (file !== undefined) {
+          sendFile(response, file, relative !== 'index.html')
+          return
+        }
+      } else {
+        const relative = url.pathname.replace(/^\//, '') || 'index.html'
+        const file = await staticFile(options.staticAssets.webRoot, relative)
+        if (file !== undefined) {
+          sendFile(response, file, relative !== 'index.html')
+          return
+        }
+        const fallback = await staticFile(options.staticAssets.webRoot, 'index.html')
+        if (fallback !== undefined) {
+          sendFile(response, fallback, false)
+          return
+        }
+      }
+    }
     if (url.pathname === '/') {
       const body = '<!doctype html><title>NexusDesk</title><div id="root"></div>'
       response.writeHead(200, {
@@ -87,6 +206,13 @@ export async function startLocalHost(options: StartLocalHostOptions = {}): Promi
       return
     }
     sendJson(response, 404, { error: 'not found' })
+    })().catch((error: unknown) => {
+      if (!response.headersSent) {
+        sendJson(response, 500, { error: error instanceof Error ? error.message : 'internal error' })
+      } else {
+        response.destroy()
+      }
+    })
   })
 
   const wsSessions = installWsSessionServer(server, {

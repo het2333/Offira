@@ -16,6 +16,7 @@ import { createBrowserAgentBridge } from '../src/renderer/agent/browser-agent-ap
 import {
   createBrowserDesktopApi,
   installBrowserHostApi,
+  loadBrowserHostBootstrap,
   selectSheetsHost,
   WebHostUnavailableError,
   type BrowserHostBootstrap,
@@ -287,6 +288,17 @@ describe('browser host installation', () => {
     handle.dispose()
     expect(target).toEqual({})
     expect(client.closeCount).toBe(1)
+  })
+
+  it('loads an authenticated editor bootstrap by stable document id', async () => {
+    const bootstrap = browserBootstrap()
+    const fetchBootstrap = vi.fn().mockResolvedValue(Response.json(bootstrap))
+
+    await expect(loadBrowserHostBootstrap('document / 1', fetchBootstrap)).resolves.toEqual(bootstrap)
+    expect(fetchBootstrap).toHaveBeenCalledWith(
+      '/api/documents/document%20%2F%201/bootstrap',
+      { credentials: 'same-origin' },
+    )
   })
 })
 

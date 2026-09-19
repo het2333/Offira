@@ -1,6 +1,13 @@
+import { resolve } from 'node:path'
+
 import { startLocalHost } from './server'
 
-const running = await startLocalHost()
+const running = await startLocalHost({
+  staticAssets: {
+    webRoot: resolve(process.cwd(), 'apps/web/dist'),
+    sheetsRoot: resolve(process.cwd(), 'apps/sheets/out/web'),
+  },
+})
 process.stdout.write(`${JSON.stringify({ bootstrapUrl: running.bootstrapUrl })}\n`)
 
 let stopping = false

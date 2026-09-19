@@ -29,6 +29,7 @@ export function createRendererServerOptions(environment: RendererEnvironment): S
 // renderer-only dev server (embedded by the shell via SHEETS_RENDERER_URL for HMR; no standalone Electron)
 export default defineConfig({
   root: 'src/renderer',
+  base: '/sheets/',
   plugins: [react()],
   server: createRendererServerOptions(process.env),
 })

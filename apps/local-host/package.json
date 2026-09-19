@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --external:ws --outfile=lib/main.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -14,6 +16,8 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.27.3",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   }

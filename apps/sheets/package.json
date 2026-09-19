@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build:web-renderer": "vite build --config vite.renderer.config.ts --outDir ../../out/web",
     "build": "npm run native:build && electron-vite build",
     "native:build": "cargo build --release --manifest-path native/xlsx-engine/Cargo.toml --config native/xlsx-engine/.cargo/config.toml",
     "native:build:universal": "node scripts/build-sidecar-universal.mjs",
