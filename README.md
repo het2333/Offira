@@ -466,6 +466,27 @@ The sheets app additionally needs a Rust toolchain for its xlsx sidecar
 automatically. See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks every
 change must pass and how pull requests land.
 
+### NexusDesk local Web milestone
+
+The experimental NexusDesk path combines a loopback-only Node host, the
+GenOffice Sheets editor, and DeepSeek Harness as a supervised native runtime.
+It preserves Harness provider/model selection and exposes the existing Sheets
+operation DSL as native Tools; MCP is not the product bridge. Tool results are
+curated for the Agent and never expose editor-engine objects.
+
+```bash
+npm run build:web
+npm run start:web       # prints a one-time authenticated bootstrap URL
+npm run test:e2e:local-web
+```
+
+The current milestone is a Chromium/Sheets vertical slice. Docs, Slides,
+packaging, Safari, Keychain-backed credentials, file-picker startup, and
+collaboration are not implemented yet. See
+[local Web development](docs/nexusdesk/local-web-development.md) for startup
+and debugging, and the [editor adapter contract](docs/nexusdesk/editor-adapter.md)
+before extending another editor.
+
 ## Community
 
 GenOffice is in active development and your feedback shapes it.

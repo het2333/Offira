@@ -129,7 +129,6 @@ export async function startLocalHost(
             ? {}
             : { nodeExecutable: options.runtimeCommand.nodeExecutable }),
         })
-  let wsSessions: ReturnType<typeof installWsSessionServer>
   const ownedRouter =
     options.agentRouter === undefined && supervisor !== undefined
       ? new OwnedAgentRouter({
@@ -261,7 +260,7 @@ export async function startLocalHost(
     })
   })
 
-  wsSessions = installWsSessionServer(server, {
+  const wsSessions = installWsSessionServer(server, {
     origin: () => origin,
     hasSession: (sessionId) => sessions.has(sessionId),
     documents,

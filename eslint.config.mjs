@@ -15,6 +15,8 @@ export default tseslint.config(
       '**/release/**',
       '**/target/**',
       '**/coverage/**',
+      'apps/local-host/lib/**',
+      'packages/nexusdesk-runtime-host/lib/**',
       'scripts/drivers/**',
       'apps/*/build/**',
       'packages/*/src/vendor/**',
