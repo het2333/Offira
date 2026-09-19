@@ -89,7 +89,7 @@ export function buildDocContext(editor: Editor): string {
     const line = `${i} | ${blockLabel(node)} | ${blockPreview(node)}`
     used += line.length + 1
     if (used > CONTEXT_MAX_CHARS) {
-      lines.push(`… (${blockCount - i} more blocks; use read_blocks to view them)`)
+      lines.push(`… (${blockCount - i} more blocks omitted from this bounded view)`)
       break
     }
     lines.push(line)

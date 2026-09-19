@@ -6,6 +6,13 @@ import { HostError, type EditorKind, shellDocumentSummarySchema } from '@nexusde
 
 import type { LocalDocumentDriver } from './document-driver'
 
+interface TextRecoveryRecord {
+  version: 1
+  editorType: Extract<EditorKind, 'markdown' | 'html'>
+  baselineHash: string
+  content: string
+}
+
 const TEXT_CONTENT_TYPES: Record<Extract<EditorKind, 'markdown' | 'html'>, string> = {
   markdown: 'text/markdown; charset=utf-8',
   html: 'text/html; charset=utf-8',
@@ -25,6 +32,14 @@ function validateUtf8(bytes: Uint8Array): void {
       false,
     )
   }
+}
+
+function contentHash(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+function recoveryPath(path: string): string {
+  return join(dirname(path), `.${basename(path)}.nexusdesk-recovery.json`)
 }
 
 async function atomicReplace(path: string, bytes: Uint8Array): Promise<void> {
@@ -53,7 +68,10 @@ export async function createTextDocumentDriver(
   editorType: Extract<EditorKind, 'markdown' | 'html'>,
 ): Promise<LocalDocumentDriver> {
   const authorizedPath = resolve(path)
-  validateUtf8(new Uint8Array(await readFile(authorizedPath)))
+  const initialBytes = new Uint8Array(await readFile(authorizedPath))
+  validateUtf8(initialBytes)
+  let baselineHash = contentHash(initialBytes)
+  const sidecarPath = recoveryPath(authorizedPath)
   const document = {
     documentId: `${documentPrefix(editorType)}-${createHash('sha256')
       .update(authorizedPath)
@@ -66,6 +84,53 @@ export async function createTextDocumentDriver(
   }
   let writeQueue: Promise<void> = Promise.resolve()
   let preview: Uint8Array | undefined
+  let recovery: Uint8Array | undefined
+
+  const clearRecovery = async (): Promise<void> => {
+    recovery = undefined
+    await unlink(sidecarPath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    })
+  }
+
+  const readValidRecovery = async (): Promise<Uint8Array | undefined> => {
+    try {
+      const raw = await readFile(sidecarPath, 'utf8')
+      const parsed = JSON.parse(raw) as Partial<TextRecoveryRecord>
+      if (
+        parsed.version !== 1 ||
+        parsed.editorType !== editorType ||
+        parsed.baselineHash !== baselineHash ||
+        typeof parsed.content !== 'string'
+      ) {
+        await clearRecovery()
+        return undefined
+      }
+      const bytes = new TextEncoder().encode(parsed.content)
+      validateUtf8(bytes)
+      return bytes
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      await clearRecovery()
+      return undefined
+    }
+  }
+  recovery = await readValidRecovery()
+
+  const assertBaseline = async (): Promise<void> => {
+    const diskBytes = new Uint8Array(await readFile(authorizedPath))
+    validateUtf8(diskBytes)
+    const diskHash = contentHash(diskBytes)
+    if (diskHash === baselineHash) return
+    await clearRecovery()
+    baselineHash = diskHash
+    document.revision += 1
+    throw new HostError(
+      'REVISION_CONFLICT',
+      'The document changed on disk after this editor loaded it.',
+      false,
+    )
+  }
 
   return {
     document,
@@ -78,6 +143,7 @@ export async function createTextDocumentDriver(
         language: 'en',
         theme: 'system',
         contentUrl: `/api/documents/${encodeURIComponent(document.documentId)}/content`,
+        recoveryUrl: `/api/documents/${encodeURIComponent(document.documentId)}/recovery`,
         ...(editorType === 'html'
           ? { previewUrl: `/api/documents/${encodeURIComponent(document.documentId)}/preview` }
           : {}),
@@ -91,7 +157,15 @@ export async function createTextDocumentDriver(
       )
     },
     async readContent() {
-      return { bytes: new Uint8Array(await readFile(authorizedPath)), contentType: TEXT_CONTENT_TYPES[editorType] }
+      const diskBytes = new Uint8Array(await readFile(authorizedPath))
+      validateUtf8(diskBytes)
+      const diskHash = contentHash(diskBytes)
+      if (diskHash !== baselineHash) {
+        await clearRecovery()
+        baselineHash = diskHash
+        document.revision += 1
+      }
+      return { bytes: recovery ?? diskBytes, contentType: TEXT_CONTENT_TYPES[editorType] }
     },
     async readPreview() {
       if (editorType !== 'html') {
@@ -119,9 +193,39 @@ export async function createTextDocumentDriver(
           )
         }
         validateUtf8(bytes)
+        await assertBaseline()
         await atomicReplace(authorizedPath, bytes)
+        baselineHash = contentHash(bytes)
+        await clearRecovery()
         document.revision += 1
         return shellDocumentSummarySchema.parse(document)
+      })
+      writeQueue = write.then(
+        () => undefined,
+        () => undefined,
+      )
+      return write
+    },
+    writeRecovery(bytes, expectedRevision) {
+      const write = writeQueue.then(async () => {
+        if (expectedRevision !== document.revision) {
+          throw new HostError(
+            'REVISION_CONFLICT',
+            'The document changed after this editor loaded it.',
+            false,
+          )
+        }
+        validateUtf8(bytes)
+        await assertBaseline()
+        const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+        const record: TextRecoveryRecord = {
+          version: 1,
+          editorType,
+          baselineHash,
+          content,
+        }
+        await atomicReplace(sidecarPath, new TextEncoder().encode(JSON.stringify(record)))
+        recovery = new Uint8Array(bytes)
       })
       writeQueue = write.then(
         () => undefined,

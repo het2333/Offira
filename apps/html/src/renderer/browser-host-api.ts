@@ -15,6 +15,7 @@ export interface HtmlBrowserBootstrap {
   language: HtmlLanguage
   theme: UiTheme
   contentUrl: string
+  recoveryUrl: string
   previewUrl: string
 }
 
@@ -28,6 +29,7 @@ export interface HtmlDocumentWriteResult {
 export interface HtmlBrowserTransport {
   readContent(): Promise<Uint8Array>
   writeContent(bytes: Uint8Array, expectedRevision: number): Promise<HtmlDocumentWriteResult>
+  writeRecovery(bytes: Uint8Array, expectedRevision: number): Promise<void>
   updatePreview(text: string): Promise<void>
 }
 
@@ -36,6 +38,7 @@ export interface HtmlBrowserHostHandle {
   readonly settings: Pick<HtmlBrowserBootstrap, 'language' | 'theme' | 'previewUrl'>
   readonly api: HtmlApi
   readonly bridge: HtmlBrowserAgentBridge
+  updateRecovery(text: string): Promise<void>
   updateRevision(revision: number): void
   dispose(): void
 }
@@ -81,7 +84,7 @@ export async function loadHtmlBrowserBootstrap(documentId: string, fetchBootstra
   const response = await fetchBootstrap(`/api/documents/${encodeURIComponent(documentId)}/bootstrap`, { credentials: 'same-origin' })
   if (!response.ok) throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
   const value = (await response.json()) as Partial<HtmlBrowserBootstrap>
-  if (typeof value.documentId !== 'string' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || typeof value.websocketUrl !== 'string' || typeof value.language !== 'string' || typeof value.theme !== 'string' || typeof value.contentUrl !== 'string' || typeof value.previewUrl !== 'string') {
+  if (typeof value.documentId !== 'string' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || typeof value.websocketUrl !== 'string' || typeof value.language !== 'string' || typeof value.theme !== 'string' || typeof value.contentUrl !== 'string' || typeof value.recoveryUrl !== 'string' || typeof value.previewUrl !== 'string') {
     throw new Error('Local Host returned an invalid HTML bootstrap')
   }
   return value as HtmlBrowserBootstrap
@@ -100,6 +103,12 @@ export function createHttpHtmlBrowserTransport(bootstrap: HtmlBrowserBootstrap, 
       const value = (await response.json()) as Partial<HtmlDocumentWriteResult>
       if (value.documentId !== bootstrap.documentId || value.editorType !== 'html' || typeof value.title !== 'string' || !Number.isSafeInteger(value.revision) || (value.revision ?? 0) <= expectedRevision) throw new Error('Local Host returned an invalid HTML write result')
       return value as HtmlDocumentWriteResult
+    },
+    async writeRecovery(bytes, expectedRevision) {
+      const response = await fetchImpl(bootstrap.recoveryUrl, {
+        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/octet-stream', 'If-Match': String(expectedRevision) }, body: toArrayBuffer(bytes),
+      })
+      if (!response.ok) throw await hostError(response)
     },
     async updatePreview(text) {
       const response = await fetchImpl(bootstrap.previewUrl, {
@@ -153,7 +162,7 @@ export function installHtmlBrowserHostApi(bootstrap: HtmlBrowserBootstrap, optio
   const settings = { language: bootstrap.language, theme: bootstrap.theme, previewUrl: bootstrap.previewUrl }
   let disposed = false
   let api!: HtmlApi
-  const handle: HtmlBrowserHostHandle = { document, settings, bridge, get api() { return api }, updateRevision(revision) { document.revision = revision; bridge.updateRevision(revision as import('@nexusdesk/protocol').Revision) }, dispose() { if (disposed) return; disposed = true; if (target.htmlApi === api) delete target.htmlApi; if (target.agentApi === bridge.agentApi) delete target.agentApi; if (target.nexusdeskHtmlHost === handle) delete target.nexusdeskHtmlHost; bridge.dispose(); client.close() } }
+  const handle: HtmlBrowserHostHandle = { document, settings, bridge, get api() { return api }, updateRecovery(text) { return transport.writeRecovery(new TextEncoder().encode(text), document.revision) }, updateRevision(revision) { document.revision = revision; bridge.updateRevision(revision as import('@nexusdesk/protocol').Revision) }, dispose() { if (disposed) return; disposed = true; if (target.htmlApi === api) delete target.htmlApi; if (target.agentApi === bridge.agentApi) delete target.agentApi; if (target.nexusdeskHtmlHost === handle) delete target.nexusdeskHtmlHost; bridge.dispose(); client.close() } }
   api = createHtmlBrowserApi(handle, transport)
   target.htmlApi = api
   target.agentApi = bridge.agentApi

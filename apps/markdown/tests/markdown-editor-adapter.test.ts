@@ -92,4 +92,48 @@ describe('Markdown editor adapter', () => {
     expect(consumeApproval).not.toHaveBeenCalled()
     expect(apply).not.toHaveBeenCalled()
   })
+
+  it('rejects a working copy that changes while approval is being consumed', async () => {
+    let releaseApproval!: () => void
+    const approvalPending = new Promise<void>((resolve) => {
+      releaseApproval = resolve
+    })
+    let approvalStarted!: () => void
+    const approvalStart = new Promise<void>((resolve) => {
+      approvalStarted = resolve
+    })
+    let contentVersion = 1
+    const apply = vi.fn().mockResolvedValue({ ok: true, summary: 'Applied.', warnings: [] })
+    const adapter = createMarkdownEditorAdapter({
+      document: () => ({
+        documentId: 'markdown-1' as never,
+        clientId: 'client-1' as never,
+        revision: 1 as never,
+        contentVersion,
+        title: 'Notes.md',
+        attached: true,
+      }),
+      read: () => ({ ok: true, summary: 'Read Markdown.', warnings: [] }),
+      apply,
+      save: vi.fn(),
+      consumeApproval: vi.fn(async () => {
+        approvalStarted()
+        await approvalPending
+        return true
+      }),
+    })
+    const plan = await adapter.propose(baseRequest)
+
+    const resultPending = adapter.apply({ ...plan, approvalId: 'approval-1' })
+    await approvalStart
+    contentVersion += 1
+    releaseApproval()
+    const result = await resultPending
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+    })
+    expect(apply).not.toHaveBeenCalled()
+  })
 })

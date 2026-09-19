@@ -16,6 +16,7 @@ export interface MarkdownBrowserBootstrap {
   language: MarkdownLanguage
   theme: UiTheme
   contentUrl: string
+  recoveryUrl: string
 }
 
 export interface MarkdownDocumentWriteResult {
@@ -28,6 +29,7 @@ export interface MarkdownDocumentWriteResult {
 export interface MarkdownBrowserTransport {
   readContent(): Promise<Uint8Array>
   writeContent(bytes: Uint8Array, expectedRevision: number): Promise<MarkdownDocumentWriteResult>
+  writeRecovery(bytes: Uint8Array, expectedRevision: number): Promise<void>
 }
 
 export interface MarkdownBrowserHostHandle {
@@ -35,6 +37,7 @@ export interface MarkdownBrowserHostHandle {
   readonly settings: Pick<MarkdownBrowserBootstrap, 'language' | 'theme'>
   readonly api: MarkdownApi
   readonly bridge: MarkdownBrowserAgentBridge
+  updateRecovery(text: string): Promise<void>
   updateRevision(revision: number): void
   dispose(): void
 }
@@ -107,7 +110,8 @@ export async function loadMarkdownBrowserBootstrap(
     typeof value.websocketUrl !== 'string' ||
     typeof value.language !== 'string' ||
     typeof value.theme !== 'string' ||
-    typeof value.contentUrl !== 'string'
+    typeof value.contentUrl !== 'string' ||
+    typeof value.recoveryUrl !== 'string'
   ) {
     throw new Error('Local Host returned an invalid Markdown bootstrap')
   }
@@ -143,6 +147,15 @@ export function createHttpMarkdownBrowserTransport(
         throw new Error('Local Host returned an invalid Markdown write result')
       }
       return value as MarkdownDocumentWriteResult
+    },
+    async writeRecovery(bytes, expectedRevision) {
+      const response = await fetchImpl(bootstrap.recoveryUrl, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/octet-stream', 'If-Match': String(expectedRevision) },
+        body: toArrayBuffer(bytes),
+      })
+      if (!response.ok) throw await hostError(response)
     },
   }
 }
@@ -258,6 +271,9 @@ export function installMarkdownBrowserHostApi(
     bridge,
     get api() {
       return api
+    },
+    updateRecovery(text) {
+      return transport.writeRecovery(new TextEncoder().encode(text), document.revision)
     },
     updateRevision(revision) {
       document.revision = revision

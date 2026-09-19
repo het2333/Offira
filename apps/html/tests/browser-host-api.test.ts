@@ -9,20 +9,23 @@ import {
 } from '../src/renderer/browser-host-api'
 
 function bootstrap(): HtmlBrowserBootstrap {
-  return { documentId: 'html-1', title: 'Page.html', revision: 1, websocketUrl: 'ws://127.0.0.1:43123/ws', language: 'en', theme: 'system', contentUrl: '/api/documents/html-1/content', previewUrl: '/api/documents/html-1/preview' }
+  return { documentId: 'html-1', title: 'Page.html', revision: 1, websocketUrl: 'ws://127.0.0.1:43123/ws', language: 'en', theme: 'system', contentUrl: '/api/documents/html-1/content', recoveryUrl: '/api/documents/html-1/recovery', previewUrl: '/api/documents/html-1/preview' }
 }
 
-function transport(): HtmlBrowserTransport & { writes: Array<{ text: string; revision: number }>; previews: string[] } {
+function transport(): HtmlBrowserTransport & { writes: Array<{ text: string; revision: number }>; recoveries: Array<{ text: string; revision: number }>; previews: string[] } {
   const writes: Array<{ text: string; revision: number }> = []
+  const recoveries: Array<{ text: string; revision: number }> = []
   const previews: string[] = []
   return {
     writes,
+    recoveries,
     previews,
     async readContent() { return new TextEncoder().encode('<h1>Initial</h1>') },
     async writeContent(bytes, revision) {
       writes.push({ text: new TextDecoder().decode(bytes), revision })
       return { documentId: 'html-1', title: 'Page.html', editorType: 'html', revision: revision + 1 }
     },
+    async writeRecovery(bytes, revision) { recoveries.push({ text: new TextDecoder().decode(bytes), revision }) },
     async updatePreview(text) { previews.push(text) },
   }
 }
@@ -42,6 +45,16 @@ describe('HTML browser host API', () => {
     await expect(api.save({ text: '<h1>Updated</h1>', imageSources: [], mode: 'save' })).resolves.toEqual({ ok: true, path: 'nexusdesk://html-1' })
     expect(host.writes).toEqual([{ text: '<h1>Updated</h1>', revision: 1 }])
     expect(handle.document.revision).toBe(2)
+  })
+
+  it('uploads a recovery copy without advancing the saved revision', async () => {
+    const host = transport()
+    const handle = installHtmlBrowserHostApi(bootstrap(), { target: {}, transport: host })
+
+    await handle.updateRecovery('<h1>Unsaved</h1>')
+
+    expect(host.recoveries).toEqual([{ text: '<h1>Unsaved</h1>', revision: 1 }])
+    expect(handle.document.revision).toBe(1)
   })
 
   it('keeps its revision when the Host rejects an in-place save', async () => {

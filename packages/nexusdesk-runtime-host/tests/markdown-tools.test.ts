@@ -26,6 +26,24 @@ describe('official Harness Markdown tools', () => {
       'save_markdown',
     ])
     expect(JSON.stringify(tools)).not.toMatch(/tiptap|prosemirror|electron/i)
+    const applySchema = JSON.stringify(tools[1])
+    for (const operation of [
+      'insertContent',
+      'replaceBlocks',
+      'deleteBlocks',
+      'replaceText',
+      'setStyle',
+      'setLink',
+      'setBlockType',
+      'toggleList',
+      'moveBlocks',
+      'duplicateBlocks',
+      'insertTable',
+      'insertHorizontalRule',
+      'insertImage',
+      'editTable',
+      'setFrontmatter',
+    ]) expect(applySchema).toContain(operation)
   })
 
   it('binds one Markdown operation batch to the exact approved proposal', async () => {
@@ -46,7 +64,11 @@ describe('official Harness Markdown tools', () => {
     expect(request).toHaveBeenNthCalledWith(1, 'propose_ops', { ops: operations }, expect.anything())
     expect(approve).toHaveBeenCalledWith(
       'apply_markdown_operations',
-      expect.objectContaining({ planHash: 'plan-1', targets: ['block:0'] }),
+      expect.objectContaining({
+        operationId: 'operation-1',
+        planHash: 'plan-1',
+        targets: ['block:0'],
+      }),
       expect.anything(),
     )
     expect(request).toHaveBeenNthCalledWith(

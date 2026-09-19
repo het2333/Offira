@@ -25,6 +25,25 @@ const agentOutput = {
   render: (_args: unknown, value: JsonValue) => [{ type: 'text' as const, text: JSON.stringify(value) }],
 }
 
+const MARKDOWN_DSL_GUIDE = [
+  'Markdown DSL (ordered and atomic):',
+  'insertContent {after: number|"selection", markdown}',
+  'replaceBlocks {target: "selection"|{start,end?}, markdown}',
+  'deleteBlocks {target}',
+  'replaceText {target, find, replace}',
+  'setStyle {target, style: "bold"|"italic"|"strike"|"code", find?, mode?}',
+  'setLink {target, href: string|null, find?}',
+  'setBlockType {target, type: "paragraph"|"heading"|"blockquote"|"codeBlock", level?, language?}',
+  'toggleList {target, list: "bullet"|"ordered"|"task"}',
+  'moveBlocks {target, after}',
+  'duplicateBlocks {target}',
+  'insertTable {after, rows?, cols?, headerRow?}',
+  'insertHorizontalRule {after}',
+  'insertImage {after, src, alt?}',
+  'editTable {target, action, row?, col?}',
+  'setFrontmatter {yaml}',
+].join('\n')
+
 function agentResult(value: AgentToolResult): AgentToolResult {
   return parseAgentToolResult({
     ok: value.ok,
@@ -46,6 +65,7 @@ function proposalFrom(result: AgentToolResult): { operationId: string; proposal:
   return {
     operationId: data.operationId,
     proposal: {
+      operationId: data.operationId,
       planHash: data.planHash,
       summary: typeof data.summary === 'string' ? data.summary : result.summary,
       targets: Array.isArray(data.targets)
@@ -77,7 +97,7 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
         type: 'array',
         required: true,
         items: { type: 'json' },
-        description: 'Ordered existing Markdown apply_ops operations using fresh block indexes.',
+        description: `Use only the curated GenOffice operations below. Block indexes come from read_markdown.\n${MARKDOWN_DSL_GUIDE}`,
       },
     },
     output: agentOutput,

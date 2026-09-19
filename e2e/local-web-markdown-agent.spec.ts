@@ -39,11 +39,18 @@ test('Markdown browser saves one exact-approved native operation across reload',
     await page.keyboard.press('Meta+A')
     await page.keyboard.insertText('Manual')
     await expect(editor.locator('.ProseMirror')).toContainText('Manual')
-    const first = await runNativeTurn(editor, 'markdown-first')
+    await expect.poll(host.readText).toBe('# Initial\n')
+    await page.waitForTimeout(500)
+    await page.reload()
+    const recovered = page.frameLocator(`iframe[title="${host.name}"]`)
+    await expect(recovered.locator('.ProseMirror')).toContainText('Manual')
+    await expect.poll(host.readText).toBe('# Initial\n')
+    const first = await runNativeTurn(recovered, 'markdown-first')
     expect(first.approvals).toEqual([
       expect.objectContaining({ id: 'content-approval', planHash: expect.any(String) }),
       { id: 'content-save-approval', planHash: 'save-current-markdown-in-place' },
     ])
+    await expect.poll(host.hasRecovery).toBe(false)
     await page.reload()
     const reloaded = page.frameLocator(`iframe[title="${host.name}"]`)
     await expect(reloaded.locator('.ProseMirror')).toContainText('Manual')

@@ -182,6 +182,7 @@ export default function App() {
     return map ? spliceMarkdown(current, current.state.doc, map) : current.getMarkdown()
   }
   const filePathRef = useRef<string | null>(null)
+  const recoveryTimerRef = useRef<number | null>(null)
   const slashMenuRef = useRef<SlashMenuHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -200,6 +201,31 @@ export default function App() {
     setDirty(true)
     setSaveState('idle')
     window.markdownApi.setDirty(true)
+  }, [])
+
+  const scheduleRecovery = useCallback(() => {
+    const host = window.nexusdeskMarkdownHost
+    if (!host || statusRef.current !== 'ready') return
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current)
+    recoveryTimerRef.current = window.setTimeout(() => {
+      recoveryTimerRef.current = null
+      const current = editorRef.current
+      if (!current || statusRef.current !== 'ready') return
+      let body: string | undefined
+      const text = serializeMarkdown(
+        envelopeRef.current,
+        current.state.doc,
+        () => (body = bodyMarkdown(current)),
+        originalSourceRef.current,
+      )
+      void host.updateRecovery(text).catch((error: unknown) => {
+        console.error('[markdown] recovery upload failed:', error)
+      })
+    }, 250)
+  }, [])
+
+  useEffect(() => () => {
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current)
   }, [])
 
   const insertImage = useCallback(() => {
@@ -234,6 +260,7 @@ export default function App() {
       if (!transaction.getMeta('uiOnly')) {
         contentVersionRef.current += 1
         markDirty()
+        scheduleRecovery()
       }
       setOutlineItems(collectOutline(updated))
     },
@@ -309,8 +336,9 @@ export default function App() {
       setFmText(inner)
       envelopeRef.current.frontmatter = buildFrontmatterRaw(inner)
       markDirty()
+      scheduleRecovery()
     },
-    [markDirty],
+    [markDirty, scheduleRecovery],
   )
 
   /** Serialize and write to disk; false when canceled/failed (caller keeps the tab open) */

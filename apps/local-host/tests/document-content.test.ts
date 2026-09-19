@@ -24,9 +24,11 @@ async function authenticate(): Promise<string> {
 
 function createDriver(): LocalDocumentDriver & {
   writes: Array<{ bytes: Uint8Array; expectedRevision: number }>
+  recoveries: Array<{ bytes: Uint8Array; expectedRevision: number }>
 } {
   const writes: Array<{ bytes: Uint8Array; expectedRevision: number }> = []
-  const driver: LocalDocumentDriver & { writes: typeof writes } = {
+  const recoveries: Array<{ bytes: Uint8Array; expectedRevision: number }> = []
+  const driver: LocalDocumentDriver & { writes: typeof writes; recoveries: typeof recoveries } = {
     document: {
       documentId: 'doc-1',
       title: 'Report.docx',
@@ -34,6 +36,7 @@ function createDriver(): LocalDocumentDriver & {
       revision: 1,
     },
     writes,
+    recoveries,
     async bootstrap() {
       return {}
     },
@@ -54,6 +57,9 @@ function createDriver(): LocalDocumentDriver & {
       writes.push({ bytes, expectedRevision })
       driver.document.revision += 1
       return { ...driver.document } as ShellDocumentSummary
+    },
+    async writeRecovery(bytes: Uint8Array, expectedRevision: number) {
+      recoveries.push({ bytes: new Uint8Array(bytes), expectedRevision })
     },
     async close() {},
   }
@@ -198,5 +204,26 @@ describe('Local Host document content routes', () => {
     expect(await served.text()).toBe('<h1>Live</h1>')
     expect(driver.document.revision).toBe(1)
     expect(driver.writes).toHaveLength(0)
+  })
+
+  it('accepts an authenticated revision-bound recovery write without committing content', async () => {
+    const driver = createDriver()
+    const cookie = await startWith(driver)
+    const recovered = new TextEncoder().encode('# Unsaved\n')
+
+    const response = await fetch(`${running!.origin}/api/documents/doc-1/recovery`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/octet-stream',
+        'If-Match': '1',
+      },
+      body: recovered,
+    })
+
+    expect(response.status).toBe(204)
+    expect(driver.recoveries).toEqual([{ bytes: recovered, expectedRevision: 1 }])
+    expect(driver.writes).toHaveLength(0)
+    expect(driver.document.revision).toBe(1)
   })
 })

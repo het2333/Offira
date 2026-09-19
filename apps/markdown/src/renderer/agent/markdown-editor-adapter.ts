@@ -152,6 +152,11 @@ class MarkdownEditorAdapter implements EditorAdapter {
     }
     if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash))) return failure('APPROVAL_INVALID', 'approval does not authorize this exact Markdown plan')
     if ((await hashPlan(plan, proposedContentVersion)) !== plan.planHash) return failure('PLAN_TAMPERED', 'the approved Markdown plan no longer matches its hash')
+    const current = this.options.document()
+    if (!current.attached) return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
+    if (current.documentId !== plan.target.documentId || current.clientId !== plan.target.clientId) return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
+    if (current.revision !== plan.target.revision) return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+    if (current.contentVersion !== proposedContentVersion) return failure('STALE_CONTENT', 'the Markdown editor changed after this plan was prepared')
     const result = this.applyOnce(plan.operations)
     this.operations.set(plan.target.operationId, { planHash: plan.planHash, result })
     this.proposedContentVersions.delete(plan.target.operationId)

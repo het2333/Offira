@@ -621,7 +621,7 @@ export function createHtmlSkillCore(access: HtmlDocAccess): {
         const source = text.slice(selected.range[0], selected.range[1])
         const clipped =
           source.length > SELECTION_MAX_CHARS
-            ? `${source.slice(0, SELECTION_MAX_CHARS)}\n… (truncated; read_source sid=${selected.sid} for the rest)`
+            ? `${source.slice(0, SELECTION_MAX_CHARS)}\n… (selection truncated in this bounded view)`
             : source
         const l1 = lineOf(text, selected.range[0])
         const l2 = lineOf(text, Math.max(selected.range[0], selected.range[1] - 1))
@@ -634,7 +634,7 @@ export function createHtmlSkillCore(access: HtmlDocAccess): {
       const budget =
         CONTEXT_MAX_CHARS - head.join('\n').length - selection.length - briefBlock.length - 40
       if (outline.length > budget)
-        outline = `${outline.slice(0, Math.max(0, budget))}\n… (outline truncated; use get_outline)`
+        outline = `${outline.slice(0, Math.max(0, budget))}\n… (outline truncated in this bounded view)`
       return `${head.join('\n')}\n\noutline (sid = stable element id for apply_ops):\n${outline}${selection}${briefBlock}`
     },
 

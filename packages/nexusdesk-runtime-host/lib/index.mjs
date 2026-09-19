@@ -14849,6 +14849,7 @@ function proposalFrom(result) {
   return {
     operationId,
     proposal: {
+      operationId,
       planHash,
       summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
@@ -14942,6 +14943,24 @@ var agentOutput2 = {
   schema: { type: "json" },
   render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
 };
+var MARKDOWN_DSL_GUIDE = [
+  "Markdown DSL (ordered and atomic):",
+  'insertContent {after: number|"selection", markdown}',
+  'replaceBlocks {target: "selection"|{start,end?}, markdown}',
+  "deleteBlocks {target}",
+  "replaceText {target, find, replace}",
+  'setStyle {target, style: "bold"|"italic"|"strike"|"code", find?, mode?}',
+  "setLink {target, href: string|null, find?}",
+  'setBlockType {target, type: "paragraph"|"heading"|"blockquote"|"codeBlock", level?, language?}',
+  'toggleList {target, list: "bullet"|"ordered"|"task"}',
+  "moveBlocks {target, after}",
+  "duplicateBlocks {target}",
+  "insertTable {after, rows?, cols?, headerRow?}",
+  "insertHorizontalRule {after}",
+  "insertImage {after, src, alt?}",
+  "editTable {target, action, row?, col?}",
+  "setFrontmatter {yaml}"
+].join("\n");
 function agentResult2(value) {
   return parseAgentToolResult({
     ok: value.ok,
@@ -14962,6 +14981,7 @@ function proposalFrom2(result) {
   return {
     operationId: data.operationId,
     proposal: {
+      operationId: data.operationId,
       planHash: data.planHash,
       summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
@@ -14988,7 +15008,8 @@ function createMarkdownTools(bridge) {
         type: "array",
         required: true,
         items: { type: "json" },
-        description: "Ordered existing Markdown apply_ops operations using fresh block indexes."
+        description: `Use only the curated GenOffice operations below. Block indexes come from read_markdown.
+${MARKDOWN_DSL_GUIDE}`
       }
     },
     output: agentOutput2,
@@ -15039,19 +15060,36 @@ function createMarkdownTools(bridge) {
 // src/html-tools.ts
 import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
 var output = { schema: { type: "json" }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] };
+var HTML_DSL_GUIDE = [
+  "HTML DSL (stable sid targets from read_html):",
+  "str_replace {old, new, sid?, replace_all?}",
+  "replace_element {sid, html}",
+  "set_inner_html {sid, html}",
+  "set_text {sid, text}",
+  'insert_html {sid, position: "before"|"after"|"prepend"|"append", html}',
+  "remove {sid}",
+  'move {sid, position: "before"|"after", ref_sid}',
+  "set_attr {sid, name, value: string|null}",
+  "set_style {sid, styles: {property: string|null}}",
+  "set_tag {sid, tag}",
+  "set_text_node {sid, index, text}",
+  "wrap_text {sid, start, end, tag, attrs?}",
+  "unwrap {sid}"
+].join("\n");
 function bounded(value) {
   return parseAgentToolResult({ ok: value.ok, summary: value.summary, warnings: value.warnings, ...value.changes ? { changes: value.changes } : {}, ...value.verification ? { verification: value.verification } : {}, ...value.transactionId ? { transactionId: value.transactionId } : {}, ...value.data ? { data: value.data } : {} });
 }
 function proposal(result) {
   const data = result.data ?? {};
   if (typeof data.operationId !== "string" || typeof data.planHash !== "string") throw new Error("HTML editor returned an invalid edit proposal");
-  return { operationId: data.operationId, proposal: { planHash: data.planHash, summary: typeof data.summary === "string" ? data.summary : result.summary, targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [], warnings: result.warnings } };
+  return { operationId: data.operationId, proposal: { operationId: data.operationId, planHash: data.planHash, summary: typeof data.summary === "string" ? data.summary : result.summary, targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [], warnings: result.warnings } };
 }
 function createHtmlTools(bridge) {
   const read = defineTool3({ name: "read_html", description: "Read a bounded structural view of the current HTML document.", parameters: {}, output, isConcurrencySafe: () => true, async execute(_args, execution) {
     return bounded(await bridge.request("read_html", {}, execution));
   } });
-  const apply = defineTool3({ name: "apply_html_operations", description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.", parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: "Ordered HTML apply_ops operations using fresh stable element ids." } }, output, async execute(args, execution) {
+  const apply = defineTool3({ name: "apply_html_operations", description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.", parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: `Use only the curated GenOffice operations below. Stable sid values come from read_html.
+${HTML_DSL_GUIDE}` } }, output, async execute(args, execution) {
     const proposed = bounded(await bridge.request("propose_ops", { ops: args.operations }, execution));
     if (!proposed.ok) return proposed;
     const value = proposal(proposed);
@@ -15131,6 +15169,7 @@ function createSheetsTools(bridge) {
         throw new Error("spreadsheet editor returned an invalid edit proposal");
       }
       const proposal2 = {
+        operationId,
         planHash,
         summary: typeof proposalData.summary === "string" ? proposalData.summary : proposalResult.summary,
         targets: Array.isArray(proposalData.targets) ? proposalData.targets.filter((value) => typeof value === "string") : [],

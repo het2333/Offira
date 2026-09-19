@@ -437,6 +437,43 @@ export async function startLocalHost(
         }
         return
       }
+      const recoveryMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/recovery$/)
+      if (recoveryMatch !== null) {
+        if (request.method !== 'PUT') {
+          sendJson(response, 405, {
+            code: 'INVALID_REQUEST',
+            message: 'This endpoint requires PUT.',
+            retryable: false,
+          })
+          return
+        }
+        const documentId = decodeURIComponent(recoveryMatch[1]!)
+        try {
+          const driver = options.documentDrivers?.require(documentId)
+          if (driver?.writeRecovery === undefined) {
+            throw new HostError(
+              'UNSUPPORTED_CAPABILITY',
+              `Document ${documentId} does not support working-copy recovery.`,
+              false,
+            )
+          }
+          const revision = expectedRevision(request)
+          await driver.writeRecovery(await readBinaryBody(request), revision)
+          response.writeHead(204, { 'Cache-Control': 'no-store' })
+          response.end()
+        } catch (error: unknown) {
+          if (error instanceof HostError && error.code === 'UNSUPPORTED_CAPABILITY') {
+            sendJson(response, 405, {
+              code: error.code,
+              message: error.message,
+              retryable: error.retryable,
+            })
+          } else {
+            sendHostError(response, error)
+          }
+        }
+        return
+      }
       const documentMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/(bootstrap|[^/]+)$/)
       if (documentMatch !== null) {
         const documentId = decodeURIComponent(documentMatch[1]!)

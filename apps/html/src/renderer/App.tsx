@@ -236,6 +236,18 @@ export default function App() {
   selectedSidRef.current = selectedSid
   const dirty = text !== savedText
 
+  useEffect(() => {
+    const host = window.nexusdeskHtmlHost
+    if (!host || status !== 'ready' || !dirty) return
+    const serialized = serializeDocText({ text, envelope: envelopeRef.current })
+    const timer = window.setTimeout(() => {
+      void host.updateRecovery(serialized).catch((error: unknown) => {
+        console.error('[html] recovery upload failed:', error)
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [dirty, status, text])
+
   const getMap = useCallback((): ParseMap => {
     const cached = mapRef.current
     // the initial load swaps the text without bumping the version, so the source itself is part of the key
@@ -1381,16 +1393,19 @@ export default function App() {
       createHtmlEditorAdapter({
         document: () => {
           const client = host.bridge.client()
-          return { documentId: host.document.documentId as never, clientId: (client.clientId ?? '') as never, revision: host.document.revision as never, title: host.document.title, attached: client.attached && client.clientId !== undefined }
+          return { documentId: host.document.documentId as never, clientId: (client.clientId ?? '') as never, revision: host.document.revision as never, contentVersion: versionRef.current, title: host.document.title, attached: client.attached && client.clientId !== undefined }
         },
         read: () =>
           statusRef.current !== 'ready'
             ? { ok: false, summary: 'The HTML editor is not ready.', warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The HTML editor is not ready.' }] }
-            : { ok: true, summary: 'Read the current HTML document.', warnings: [], data: { context: skill.buildContext?.() ?? '' } },
+            : { ok: true, summary: 'Read the current HTML document.', warnings: [], data: { context: (skill.buildContext?.() ?? '').replace('use read_source or get_outline with from_sid / depth', 'additional elements omitted from this bounded view') } },
         async apply(operations) {
           if (statusRef.current !== 'ready') return { ok: false, summary: 'The HTML editor is not ready.', warnings: [{ code: 'DOCUMENT_NOT_READY', message: 'The HTML editor is not ready.' }] }
-          const outcome = await skill.executeTool({ id: `nexusdesk-${crypto.randomUUID()}`, name: 'apply_ops', input: { ops: operations } })
-          return { ok: !outcome.isError && outcome.mutated === true, summary: outcome.summary, warnings: outcome.isError ? [{ code: 'APPLY_FAILED', message: outcome.output }] : [], ...(outcome.mutated ? { changes: { targets: [], count: operations.length } } : {}) }
+          flushPending()
+          const outcome = applyOps(operations as HtmlOp[], false)
+          return outcome.ok
+            ? { ok: true, summary: `Applied ${String(operations.length)} HTML operation(s).`, warnings: [], changes: { targets: [], count: operations.length } }
+            : { ok: false, summary: 'HTML operations were not applied.', warnings: outcome.errors.map((error) => ({ code: `HTML_${error.kind.toUpperCase()}`, message: error.message, target: `operation:${String(error.index)}` })) }
         },
         async save() {
           const ok = await doSave('save')

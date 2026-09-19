@@ -19,19 +19,25 @@ function bootstrap(): MarkdownBrowserBootstrap {
     language: 'en',
     theme: 'system',
     contentUrl: '/api/documents/markdown-1234/content',
+    recoveryUrl: '/api/documents/markdown-1234/recovery',
   }
 }
 
-function transport(): MarkdownBrowserTransport & { writes: Array<{ bytes: Uint8Array; revision: number }> } {
+function transport(): MarkdownBrowserTransport & { writes: Array<{ bytes: Uint8Array; revision: number }>; recoveries: Array<{ bytes: Uint8Array; revision: number }> } {
   const writes: Array<{ bytes: Uint8Array; revision: number }> = []
+  const recoveries: Array<{ bytes: Uint8Array; revision: number }> = []
   return {
     writes,
+    recoveries,
     async readContent() {
       return source
     },
     async writeContent(bytes, revision) {
       writes.push({ bytes: new Uint8Array(bytes), revision })
       return { documentId: 'markdown-1234', title: 'Notes.md', editorType: 'markdown', revision: 2 }
+    },
+    async writeRecovery(bytes, revision) {
+      recoveries.push({ bytes: new Uint8Array(bytes), revision })
     },
   }
 }
@@ -57,6 +63,20 @@ describe('Markdown browser host API', () => {
       Array.from(new TextEncoder().encode('# Updated\n')),
     )
     expect(handle.document.revision).toBe(2)
+  })
+
+  it('uploads a recovery copy at the current revision without advancing it', async () => {
+    const host = transport()
+    const handle = installMarkdownBrowserHostApi(bootstrap(), { target: {}, transport: host })
+
+    await handle.updateRecovery('# Unsaved\n')
+
+    expect(host.recoveries).toHaveLength(1)
+    expect(host.recoveries[0]?.revision).toBe(1)
+    expect(Array.from(host.recoveries[0]?.bytes ?? [])).toEqual(
+      Array.from(new TextEncoder().encode('# Unsaved\n')),
+    )
+    expect(handle.document.revision).toBe(1)
   })
 
   it('does not advance the revision after a rejected Host save', async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -11,6 +11,7 @@ export async function launchContentLocalWeb(editorType: 'markdown' | 'html') {
   const directory = await mkdtemp(join(tmpdir(), `nexusdesk-${editorType}-e2e-`))
   const name = editorType === 'markdown' ? 'Notes.md' : 'Page.html'
   const path = join(directory, name)
+  const recoveryPath = join(directory, `.${name}.nexusdesk-recovery.json`)
   const countPath = join(directory, 'apply-count.json')
   await writeFile(path, editorType === 'markdown' ? '# Initial\n' : '<h1>Initial</h1>')
   const driver = await createTextDocumentDriver(path, editorType)
@@ -30,6 +31,7 @@ export async function launchContentLocalWeb(editorType: 'markdown' | 'html') {
     name,
     async readText() { return readFile(path, 'utf8') },
     async readApplyCount() { return JSON.parse(await readFile(countPath, 'utf8')) as { applyCount: number } },
+    async hasRecovery() { try { await access(recoveryPath); return true } catch { return false } },
     async close() { await running.close(); await rm(directory, { recursive: true, force: true }) },
   }
 }
