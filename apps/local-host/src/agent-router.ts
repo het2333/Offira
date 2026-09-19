@@ -24,6 +24,7 @@ interface ApprovalOwner extends SessionOwner {
   sessionId: SessionId
   timer: NodeJS.Timeout
   planHash?: string
+  operationId?: OperationId
 }
 
 interface EditorOperationOwner {
@@ -214,6 +215,9 @@ export class AgentRouter {
         sessionId: frame.sessionId,
         timer,
         ...(frame.proposal === undefined ? {} : { planHash: frame.proposal.planHash }),
+        ...(frame.proposal?.operationId === undefined
+          ? {}
+          : { operationId: frame.proposal.operationId as OperationId }),
       })
       this.options.sendToClient(owner.clientId, frame as AgentServerFrame)
       return
@@ -365,7 +369,8 @@ export class AgentRouter {
         granted.sessionId !== frame.target.sessionId ||
         granted.documentId !== frame.target.documentId ||
         granted.clientId !== frame.target.clientId ||
-        granted.planHash !== authorization.planHash
+        granted.planHash !== authorization.planHash ||
+        (granted.operationId !== undefined && granted.operationId !== frame.target.operationId)
       ) {
         throw new Error(`runtime request ${frame.id} has no matching one-time approval`)
       }

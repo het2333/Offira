@@ -14783,8 +14783,30 @@ var DOCS_TOOL_NAMES = [
   "apply_document_operations",
   "save_document"
 ];
-var PDF_TOOL_NAMES = ["read_pdf", "apply_pdf_operations", "save_pdf"];
-var OFFICE_TOOL_NAMES = [...SHEETS_TOOL_NAMES, ...DOCS_TOOL_NAMES, ...PDF_TOOL_NAMES];
+var PDF_TOOL_NAMES = [
+  "read_pdf",
+  "markup_pdf_text",
+  "read_pdf_annotations",
+  "edit_pdf_text",
+  "insert_pdf_text",
+  "add_pdf_note",
+  "list_pdf_page_images",
+  "list_pdf_form_fields",
+  "insert_pdf_image",
+  "transform_pdf_image",
+  "fill_pdf_form",
+  "rotate_pdf_pages",
+  "delete_pdf_page",
+  "reorder_pdf_pages",
+  "set_pdf_metadata",
+  "redact_pdf",
+  "save_pdf"
+];
+var OFFICE_TOOL_NAMES = [
+  ...SHEETS_TOOL_NAMES,
+  ...DOCS_TOOL_NAMES,
+  ...PDF_TOOL_NAMES
+];
 function officeToolNames(editorType) {
   if (editorType === "docs") return DOCS_TOOL_NAMES;
   if (editorType === "sheets") return SHEETS_TOOL_NAMES;
@@ -14929,7 +14951,9 @@ function createDocsTools(bridge) {
 import { defineTool as defineTool2 } from "@deepseek-ai/dsh-tools";
 var agentOutput2 = {
   schema: { type: "json" },
-  render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
+  render: (_args, value) => [
+    { type: "text", text: JSON.stringify(value) }
+  ]
 };
 function agentResult2(value) {
   return parseAgentToolResult({
@@ -14947,13 +14971,16 @@ function proposalFrom2(result) {
   const data = result.data ?? {};
   const planHash = data.planHash;
   const operationId = data.operationId;
-  if (typeof planHash !== "string" || typeof operationId !== "string") {
+  const snapshotHash = data.snapshotHash;
+  if (typeof planHash !== "string" || typeof operationId !== "string" || typeof snapshotHash !== "string") {
     throw new Error("PDF editor returned an invalid edit proposal");
   }
   return {
     operationId,
     proposal: {
       planHash,
+      operationId,
+      snapshotHash,
       summary: typeof data.summary === "string" ? data.summary : result.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
       warnings: result.warnings
@@ -14983,30 +15010,42 @@ function createPdfTools(bridge) {
       );
     }
   });
-  const apply = defineTool2({
-    name: "apply_pdf_operations",
-    description: "Apply one ordered batch of supported GenOffice PDF operations after exact user approval.",
+  const markup = defineTool2({
+    name: "markup_pdf_text",
+    description: "Highlight, underline, or strike out verified text on one PDF page after exact user approval. Read the page first and pass text exactly as it appears.",
     parameters: {
-      operations: {
-        type: "array",
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      text: { type: "string", required: true, description: "Exact text to mark on that page." },
+      type: {
+        type: "string",
         required: true,
-        items: { type: "json" },
-        description: "Ordered PDF apply_ops operations. Read the PDF first and use only operations it advertises."
-      }
+        enum: ["highlight", "underline", "strikeout"],
+        description: "Markup type."
+      },
+      color: { type: "string", description: "Optional #RRGGBB color." },
+      all: { type: "boolean", description: "Mark every occurrence on the page." }
     },
     output: agentOutput2,
     async execute(args, exec) {
+      const semantic = {
+        op: "markup_pdf_text",
+        page: args.page,
+        text: args.text,
+        type: args.type,
+        ...args.color === void 0 ? {} : { color: args.color },
+        ...args.all === void 0 ? {} : { all: args.all }
+      };
       const proposalResult = agentResult2(
-        await bridge.request("propose_ops", { ops: args.operations }, exec)
+        await bridge.request("propose_ops", { ops: [semantic] }, exec)
       );
       if (!proposalResult.ok) return proposalResult;
       const { operationId, proposal } = proposalFrom2(proposalResult);
-      const approval = await bridge.approve("apply_pdf_operations", proposal, exec);
+      const approval = await bridge.approve("markup_pdf_text", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("PDF mutation was not approved");
+        throw new Error("PDF markup was not approved");
       }
       return agentResult2(
-        await bridge.request("apply_ops", { ops: args.operations }, exec, {
+        await bridge.request("apply_ops", {}, exec, {
           approvalId: approval.approvalId,
           planHash: proposal.planHash,
           operationId
@@ -15014,18 +15053,306 @@ function createPdfTools(bridge) {
       );
     }
   });
+  const annotations = defineTool2({
+    name: "read_pdf_annotations",
+    description: "Read sticky notes and text markups on a bounded PDF page range.",
+    parameters: {
+      start: { type: "integer", description: "First page number (1-based)." },
+      end: { type: "integer", description: "Last page number (inclusive)." }
+    },
+    output: agentOutput2,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      return agentResult2(
+        await bridge.request(
+          "read_pdf",
+          {
+            include: "annotations",
+            ...args.start === void 0 ? {} : { start: args.start },
+            ...args.end === void 0 ? {} : { end: args.end }
+          },
+          exec
+        )
+      );
+    }
+  });
+  const mutate = (name, description, parameters, semantic) => defineTool2({
+    name,
+    description,
+    parameters,
+    output: agentOutput2,
+    async execute(args, exec) {
+      const proposalResult = agentResult2(
+        await bridge.request(
+          "propose_ops",
+          {
+            ops: [semantic(args)]
+          },
+          exec
+        )
+      );
+      if (!proposalResult.ok) return proposalResult;
+      const { operationId, proposal } = proposalFrom2(proposalResult);
+      const approval = await bridge.approve(name, proposal, exec);
+      if (!approval.approved || approval.approvalId === void 0)
+        throw new Error(`${name} was not approved`);
+      return agentResult2(
+        await bridge.request("apply_ops", {}, exec, {
+          approvalId: approval.approvalId,
+          planHash: proposal.planHash,
+          operationId
+        })
+      );
+    }
+  });
+  const editText = mutate(
+    "edit_pdf_text",
+    "Replace one exact text run on a page after approval.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      oldText: { type: "string", required: true, description: "Exact existing text to replace." },
+      newText: {
+        type: "string",
+        required: true,
+        description: "Replacement text; empty removes the run."
+      }
+    },
+    (args) => ({
+      op: "edit_pdf_text",
+      page: args.page,
+      oldText: args.oldText,
+      newText: args.newText
+    })
+  );
+  const insertText = mutate(
+    "insert_pdf_text",
+    "Insert new text at a PDF-space baseline after approval.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      text: { type: "string", required: true, description: "Text to insert." },
+      x: { type: "number", required: true, description: "Baseline x in PDF points." },
+      y: { type: "number", required: true, description: "Baseline y in PDF points." },
+      fontSize: { type: "number", description: "Font size in points; defaults to 14." },
+      color: { type: "string", description: "Optional #RRGGBB color." }
+    },
+    (args) => ({
+      op: "insert_pdf_text",
+      page: args.page,
+      text: args.text,
+      x: args.x,
+      y: args.y,
+      ...args.fontSize === void 0 ? {} : { fontSize: args.fontSize },
+      ...args.color === void 0 ? {} : { color: args.color }
+    })
+  );
+  const addNote = mutate(
+    "add_pdf_note",
+    "Add a sticky note at a PDF-space point after approval.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      text: { type: "string", required: true, description: "Note contents." },
+      x: { type: "number", required: true, description: "Pin x in PDF points." },
+      y: { type: "number", required: true, description: "Pin y in PDF points." },
+      color: { type: "string", description: "Optional #RRGGBB color." }
+    },
+    (args) => ({
+      op: "add_pdf_note",
+      page: args.page,
+      text: args.text,
+      x: args.x,
+      y: args.y,
+      ...args.color === void 0 ? {} : { color: args.color }
+    })
+  );
+  const images = defineTool2({
+    name: "list_pdf_page_images",
+    description: "List content-stream images embedded in the current PDF.",
+    parameters: {},
+    output: agentOutput2,
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      return agentResult2(
+        await bridge.request("read_pdf", { include: "images" }, exec)
+      );
+    }
+  });
+  const forms = defineTool2({
+    name: "list_pdf_form_fields",
+    description: "List interactive PDF form fields and their current values.",
+    parameters: {},
+    output: agentOutput2,
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      return agentResult2(
+        await bridge.request("read_pdf", { include: "forms" }, exec)
+      );
+    }
+  });
+  const insertImage = mutate(
+    "insert_pdf_image",
+    "Insert base64-encoded PNG content into a PDF rectangle after approval.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      image: {
+        type: "string",
+        required: true,
+        description: "PNG base64 without a data URL prefix."
+      },
+      rect: {
+        type: "array",
+        required: true,
+        items: { type: "number" },
+        description: "[x1,y1,x2,y2] in PDF points."
+      },
+      layer: {
+        type: "string",
+        enum: ["aboveText", "belowText"],
+        description: "Content layer; defaults to aboveText."
+      }
+    },
+    (args) => ({
+      op: "insert_pdf_image",
+      page: args.page,
+      image: args.image,
+      rect: args.rect,
+      ...args.layer === void 0 ? {} : { layer: args.layer }
+    })
+  );
+  const transformImage = mutate(
+    "transform_pdf_image",
+    "Move or resize one discovered PDF image after approval.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." },
+      oldRect: {
+        type: "array",
+        required: true,
+        items: { type: "number" },
+        description: "Current [x1,y1,x2,y2] from list_pdf_page_images."
+      },
+      rect: {
+        type: "array",
+        required: true,
+        items: { type: "number" },
+        description: "New [x1,y1,x2,y2] in PDF points."
+      },
+      layer: { type: "string", enum: ["aboveText", "belowText"], description: "Content layer." }
+    },
+    (args) => ({
+      op: "transform_pdf_image",
+      page: args.page,
+      oldRect: args.oldRect,
+      rect: args.rect,
+      ...args.layer === void 0 ? {} : { layer: args.layer }
+    })
+  );
+  const form = mutate(
+    "fill_pdf_form",
+    "Set one interactive PDF form field after approval.",
+    {
+      name: { type: "string", required: true, description: "AcroForm field name." },
+      kind: {
+        type: "string",
+        required: true,
+        enum: ["text", "checkbox", "radio", "choice"],
+        description: "Field kind."
+      },
+      value: {
+        type: "json",
+        required: true,
+        description: "Value appropriate for the selected field kind."
+      }
+    },
+    (args) => ({
+      op: "fill_pdf_form",
+      name: args.name,
+      kind: args.kind,
+      value: args.value
+    })
+  );
+  const rotatePages = mutate(
+    "rotate_pdf_pages",
+    "Rotate selected pages after approval.",
+    {
+      pages: {
+        type: "array",
+        required: true,
+        items: { type: "integer" },
+        description: "1-based pages to rotate."
+      },
+      dir: {
+        type: "integer",
+        required: true,
+        enum: [-90, 90, 180],
+        description: "Rotation in degrees."
+      }
+    },
+    (args) => ({ op: "rotate_pdf_pages", pages: args.pages, dir: args.dir })
+  );
+  const deletePage = mutate(
+    "delete_pdf_page",
+    "Delete one page after approval; at least one page must remain.",
+    {
+      page: { type: "integer", required: true, description: "Page number (1-based)." }
+    },
+    (args) => ({ op: "delete_pdf_page", page: args.page })
+  );
+  const reorderPages = mutate(
+    "reorder_pdf_pages",
+    "Reorder every page after approval.",
+    {
+      pages: {
+        type: "array",
+        required: true,
+        items: { type: "integer" },
+        description: "Complete 1-based page order."
+      }
+    },
+    (args) => ({ op: "reorder_pdf_pages", pages: args.pages })
+  );
+  const metadata = mutate(
+    "set_pdf_metadata",
+    "Update document metadata after approval.",
+    {
+      title: { type: "string", description: "Document title." },
+      author: { type: "string", description: "Document author." },
+      subject: { type: "string", description: "Document subject." },
+      keywords: { type: "string", description: "Document keywords." }
+    },
+    (args) => ({
+      op: "set_pdf_metadata",
+      ...Object.fromEntries(
+        ["title", "author", "subject", "keywords"].filter((key) => typeof args[key] === "string").map((key) => [key, args[key]])
+      )
+    })
+  );
+  const redactionUnavailable = defineTool2({
+    name: "redact_pdf",
+    description: "Permanently redact PDF content.",
+    parameters: {},
+    output: agentOutput2,
+    isConcurrencySafe: () => true,
+    async execute() {
+      return agentResult2({
+        ok: false,
+        summary: "Permanent redaction is unavailable in Local Web because it requires a separate Save As destination.",
+        warnings: [
+          {
+            code: "UNAVAILABLE_IN_WEB",
+            message: "The Local Web driver permits only the authorized in-place file and rejects permanent redaction."
+          }
+        ]
+      });
+    }
+  });
   const save = defineTool2({
     name: "save_pdf",
-    description: "Save the open PDF in place. The model cannot choose or change the authorized path.",
+    description: "Save the open PDF in place after exact user approval. The model cannot choose or change the authorized path.",
     parameters: {},
     output: agentOutput2,
     async execute(_args, exec) {
-      const proposal = {
-        planHash: "save-current-pdf-in-place",
-        summary: "Save the current PDF in place.",
-        targets: ["current PDF"],
-        warnings: []
-      };
+      const proposalResult = agentResult2(await bridge.request("propose_save", {}, exec));
+      if (!proposalResult.ok) return proposalResult;
+      const { operationId, proposal } = proposalFrom2(proposalResult);
       const approval = await bridge.approve("save_pdf", proposal, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("PDF save was not approved");
@@ -15033,12 +15360,31 @@ function createPdfTools(bridge) {
       return agentResult2(
         await bridge.request("save_pdf", { inPlace: true }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal.planHash
+          planHash: proposal.planHash,
+          operationId
         })
       );
     }
   });
-  return [read, apply, save];
+  return [
+    read,
+    markup,
+    annotations,
+    editText,
+    insertText,
+    addNote,
+    images,
+    forms,
+    insertImage,
+    transformImage,
+    form,
+    rotatePages,
+    deletePage,
+    reorderPages,
+    metadata,
+    redactionUnavailable,
+    save
+  ];
 }
 
 // src/sheets-tools.ts

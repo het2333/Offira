@@ -28,6 +28,7 @@ export interface PdfEditorAdapter {
   snapshot(): Promise<string>
   propose(
     operations: JsonValue[],
+    snapshotHash: string,
   ): Promise<Omit<PdfEditPlan, 'operations' | 'snapshotHash'> & { operations?: JsonValue[] }>
   proposeSave(): Promise<Omit<PdfEditPlan, 'operations'>>
   apply(plan: PdfEditPlan & { approvalId: string }): Promise<AgentToolResult>
@@ -133,7 +134,7 @@ export function createPdfBrowserAgentBridge(
         return failure('INVALID_REQUEST', 'PDF operations must be an array')
       const operations = args.ops as JsonValue[]
       const snapshotHash = await adapter.snapshot()
-      const proposed = await adapter.propose(operations)
+      const proposed = await adapter.propose(operations, snapshotHash)
       const plan: PdfEditPlan = {
         ...proposed,
         snapshotHash,

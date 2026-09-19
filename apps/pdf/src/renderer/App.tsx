@@ -5773,6 +5773,16 @@ export default function App() {
             data: { images: images as unknown as JsonValue },
           }
         }
+        if (arguments_.include === 'forms') {
+          return {
+            ok: true,
+            summary: `Read ${String(formCatalog?.fields.size ?? 0)} PDF form field${formCatalog?.fields.size === 1 ? '' : 's'}.`,
+            warnings: [],
+            data: {
+              fields: [...(formCatalog?.fields.values() ?? [])] as unknown as JsonValue,
+            },
+          }
+        }
         const execution = await executePdfTool({ ...aiApi, confirmFileOp: async () => false }, {
           id: 'nexusdesk-read-pdf',
           name: 'read_pages',
@@ -5788,12 +5798,12 @@ export default function App() {
         }
       },
       snapshot: pendingSnapshot,
-      async propose(operations) {
+      async propose(operations, snapshotHash) {
         const parsed = await resolveHarnessOperations(operations)
         const plan = planEditOps(parsed, editOpContext(), newId)
         if (plan.failures.length > 0) throw new Error(plan.failures[0]!.error)
         return {
-          planHash: await hash({ command: 'apply_ops', operations: plan.ops }),
+          planHash: await hash({ command: 'apply_ops', snapshotHash, operations: plan.ops }),
           summary: `Apply ${String(plan.ops.length)} PDF operation${plan.ops.length === 1 ? '' : 's'}.`,
           targets: targetsFor(plan.ops),
           operations: plan.ops as JsonValue[],

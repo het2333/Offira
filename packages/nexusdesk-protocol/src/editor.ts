@@ -12,6 +12,8 @@ export interface AgentWarning {
 export interface AgentApprovalProposal {
   /** Stable mutation identity used by the Host to replay a terminal result without reapproval. */
   operationId?: string
+  /** Renderer snapshot/content version bound into planHash at proposal time. */
+  snapshotHash?: string
   planHash: string
   summary: string
   targets: string[]

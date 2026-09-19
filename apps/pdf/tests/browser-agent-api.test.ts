@@ -71,13 +71,11 @@ describe('PDF browser Agent bridge', () => {
     const adapter: PdfEditorAdapter = {
       read: vi.fn().mockResolvedValue({ ok: true, summary: 'read', warnings: [] }),
       snapshot: vi.fn().mockResolvedValue('snapshot-1'),
-      propose: vi
-        .fn()
-        .mockResolvedValue({
-          planHash: 'plan-hash',
-          summary: 'Rotate page 1.',
-          targets: ['page:1'],
-        }),
+      propose: vi.fn().mockResolvedValue({
+        planHash: 'plan-hash',
+        summary: 'Rotate page 1.',
+        targets: ['page:1'],
+      }),
       proposeSave: vi.fn(),
       apply: vi.fn().mockResolvedValue({ ok: true, summary: 'applied', warnings: [] }),
       save: vi.fn().mockResolvedValue({ ok: true, summary: 'saved', warnings: [] }),
@@ -107,6 +105,10 @@ describe('PDF browser Agent bridge', () => {
     expect(adapter.apply).toHaveBeenCalledWith(
       expect.objectContaining({ approvalId: 'approval-1', planHash: 'plan-hash' }),
     )
+    expect(adapter.propose).toHaveBeenCalledWith(
+      [{ op: 'rotatePages', pages: [1], dir: 90 }],
+      'snapshot-1',
+    )
     expect(client.sent.at(-1)).toMatchObject({
       type: 'editor:result',
       result: { ok: true, summary: 'applied' },
@@ -122,13 +124,11 @@ describe('PDF browser Agent bridge', () => {
         .fn()
         .mockResolvedValueOnce('snapshot-before')
         .mockResolvedValueOnce('snapshot-after'),
-      propose: vi
-        .fn()
-        .mockResolvedValue({
-          planHash: 'plan-hash',
-          summary: 'Rotate page 1.',
-          targets: ['page:1'],
-        }),
+      propose: vi.fn().mockResolvedValue({
+        planHash: 'plan-hash',
+        summary: 'Rotate page 1.',
+        targets: ['page:1'],
+      }),
       proposeSave: vi.fn(),
       apply: vi.fn(),
       save: vi.fn(),
@@ -159,6 +159,50 @@ describe('PDF browser Agent bridge', () => {
     expect(client.sent.at(-1)).toMatchObject({
       type: 'editor:result',
       result: { ok: false, warnings: [{ code: 'STALE_PLAN' }] },
+    })
+    bridge.dispose()
+  })
+
+  it('rejects a tampered approval hash without applying the proposal', async () => {
+    const client = new FakeClient()
+    const adapter: PdfEditorAdapter = {
+      read: vi.fn(),
+      snapshot: vi.fn().mockResolvedValue('snapshot-1'),
+      propose: vi
+        .fn()
+        .mockResolvedValue({
+          planHash: 'plan-hash',
+          summary: 'Rotate page 1.',
+          targets: ['page:1'],
+        }),
+      proposeSave: vi.fn(),
+      apply: vi.fn(),
+      save: vi.fn(),
+    }
+    const bridge = createPdfBrowserAgentBridge({
+      client,
+      documentId: 'pdf-1' as DocumentId,
+      revision: 1 as Revision,
+    })
+    bridge.attachEditor(adapter)
+    client.emit(request('propose_ops', undefined, 'operation-tampered'))
+    await vi.waitFor(() =>
+      expect(client.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(1),
+    )
+    client.emit(
+      request(
+        'apply_ops',
+        { id: 'approval-1' as RequestId, planHash: 'different-plan' },
+        'operation-tampered',
+      ),
+    )
+    await vi.waitFor(() =>
+      expect(client.sent.filter((frame) => frame.type === 'editor:result')).toHaveLength(2),
+    )
+    expect(adapter.apply).not.toHaveBeenCalled()
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'editor:result',
+      result: { ok: false, warnings: [{ code: 'APPROVAL_INVALID' }] },
     })
     bridge.dispose()
   })

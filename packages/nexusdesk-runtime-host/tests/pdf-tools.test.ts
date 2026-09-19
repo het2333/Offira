@@ -30,6 +30,7 @@ describe('official Harness PDF tools', () => {
       'insert_pdf_text',
       'add_pdf_note',
       'list_pdf_page_images',
+      'list_pdf_form_fields',
       'insert_pdf_image',
       'transform_pdf_image',
       'fill_pdf_form',
@@ -53,6 +54,7 @@ describe('official Harness PDF tools', () => {
         data: {
           operationId: 'operation-1',
           planHash: 'plan-hash-1',
+          snapshotHash: 'snapshot-1',
           summary: 'Rotate page 1.',
           targets: ['page:1'],
         },
@@ -77,6 +79,7 @@ describe('official Harness PDF tools', () => {
       {
         operationId: 'operation-1',
         planHash: 'plan-hash-1',
+        snapshotHash: 'snapshot-1',
         summary: 'Rotate page 1.',
         targets: ['page:1'],
         warnings: [],
@@ -97,7 +100,12 @@ describe('official Harness PDF tools', () => {
         ok: true,
         summary: 'Save the current PDF in place.',
         warnings: [],
-        data: { operationId: 'save-operation', planHash: 'save-plan', targets: ['current PDF'] },
+        data: {
+          operationId: 'save-operation',
+          planHash: 'save-plan',
+          snapshotHash: 'save-snapshot',
+          targets: ['current PDF'],
+        },
       })
       .mockResolvedValueOnce(success)
     const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-save' })

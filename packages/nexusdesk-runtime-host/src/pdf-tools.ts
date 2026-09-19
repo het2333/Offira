@@ -48,23 +48,26 @@ function proposalFrom(result: AgentToolResult): {
   const data = (result.data ?? {}) as Record<string, JsonValue>
   const planHash = data.planHash
   const operationId = data.operationId
-  if (typeof planHash !== 'string' || typeof operationId !== 'string') {
+  const snapshotHash = data.snapshotHash
+  if (
+    typeof planHash !== 'string' ||
+    typeof operationId !== 'string' ||
+    typeof snapshotHash !== 'string'
+  ) {
     throw new Error('PDF editor returned an invalid edit proposal')
   }
   return {
     operationId,
     proposal: {
       planHash,
-      // Kept narrow until the shared protocol commit that formalizes this field is
-      // merged into this worktree; the Local Host uses it to replay a terminal result
-      // without opening a second approval prompt for the same operation id.
       operationId,
+      snapshotHash,
       summary: typeof data.summary === 'string' ? data.summary : result.summary,
       targets: Array.isArray(data.targets)
         ? data.targets.filter((target): target is string => typeof target === 'string')
         : [],
       warnings: result.warnings,
-    } as AgentApprovalProposal & { operationId: string },
+    },
   }
 }
 
@@ -268,6 +271,18 @@ export function createPdfTools(bridge: PdfToolBridge): ToolDefinition[] {
       ) as unknown as JsonValue
     },
   })
+  const forms = defineTool({
+    name: 'list_pdf_form_fields',
+    description: 'List interactive PDF form fields and their current values.',
+    parameters: {},
+    output: agentOutput,
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      return agentResult(
+        await bridge.request('read_pdf', { include: 'forms' }, exec),
+      ) as unknown as JsonValue
+    },
+  })
   const insertImage = mutate(
     'insert_pdf_image',
     'Insert base64-encoded PNG content into a PDF rectangle after approval.',
@@ -466,6 +481,7 @@ export function createPdfTools(bridge: PdfToolBridge): ToolDefinition[] {
     insertText,
     addNote,
     images,
+    forms,
     insertImage,
     transformImage,
     form,

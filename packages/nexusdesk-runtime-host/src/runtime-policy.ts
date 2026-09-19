@@ -17,7 +17,26 @@ export const SLIDES_TOOL_NAMES = [
   'undo_presentation',
   'redo_presentation',
 ] as const
-export const PDF_TOOL_NAMES = ['read_pdf', 'apply_pdf_operations', 'save_pdf'] as const
+/** Curated, semantic-only PDF capabilities registered by createPdfTools(). */
+export const PDF_TOOL_NAMES = [
+  'read_pdf',
+  'markup_pdf_text',
+  'read_pdf_annotations',
+  'edit_pdf_text',
+  'insert_pdf_text',
+  'add_pdf_note',
+  'list_pdf_page_images',
+  'list_pdf_form_fields',
+  'insert_pdf_image',
+  'transform_pdf_image',
+  'fill_pdf_form',
+  'rotate_pdf_pages',
+  'delete_pdf_page',
+  'reorder_pdf_pages',
+  'set_pdf_metadata',
+  'redact_pdf',
+  'save_pdf',
+] as const
 export const OFFICE_TOOL_NAMES = [
   ...SHEETS_TOOL_NAMES,
   ...DOCS_TOOL_NAMES,
