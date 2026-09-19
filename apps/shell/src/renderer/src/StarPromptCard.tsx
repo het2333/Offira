@@ -1,4 +1,5 @@
 import { useI18n } from './locale'
+import { useShellPlatform } from './office-host-context'
 import './star-prompt.css'
 
 /**
@@ -30,9 +31,10 @@ function StarIcon() {
 
 export function StarPromptCard({ docOpens, onClose }: StarPromptCardProps) {
   const { t } = useI18n()
+  const { home: homeApi } = useShellPlatform()
 
   const react = (action: 'starred' | 'later') => {
-    void window.aiOffice.starPromptAction(action).catch(() => {})
+    void homeApi.starPromptAction(action).catch(() => {})
     onClose()
   }
 
@@ -68,7 +70,7 @@ export function StarPromptCard({ docOpens, onClose }: StarPromptCardProps) {
         <button
           className="star-prompt-go"
           onClick={() => {
-            void window.aiOffice.openGitHubRepo().catch(() => {})
+            void homeApi.openGitHubRepo().catch(() => {})
             react('starred')
           }}
         >

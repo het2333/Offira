@@ -14,24 +14,16 @@ import type {
   FolderEntry,
   FolderListing,
   FolderRoot,
-  HomeApi,
   MoveConflictPolicy,
   RecentEntry,
 } from '../../shared/home-api'
-import type { IntegrationsApi } from '../../shared/integrations-api'
 import { useDismissablePopover } from '@genoffice/ui'
 import { fileCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 import { SettingsModal } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
-
-declare global {
-  interface Window {
-    aiOffice: HomeApi
-    aiOfficeIntegrations?: IntegrationsApi
-  }
-}
+import { useShellPlatform } from './office-host-context'
 
 /** page size of the home list; scrolling to the bottom auto-loads the next page */
 const PAGE_SIZE = 50
@@ -296,6 +288,7 @@ function writeTreeState(state: TreeState): void {
  * refetches them (the main process reports changed directories via watch).
  */
 function useFolderListings() {
+  const { home: homeApi } = useShellPlatform()
   const [listings, setListings] = useState<ReadonlyMap<string, FolderListing>>(new Map())
   // dir → whether a reload was requested while its request was in flight (the
   // in-flight answer may predate the change, so it is fetched once more)
@@ -307,7 +300,7 @@ function useFolderListings() {
       return
     }
     inflight.current.set(dir, false)
-    void window.aiOffice
+    void homeApi
       .listFolder(dir)
       .then((listing) => {
         setListings((prev) => {
@@ -371,6 +364,7 @@ function FolderPicker({
   onPick,
 }: FolderPickerProps) {
   const { t } = useI18n()
+  const { home: homeApi } = useShellPlatform()
   const { listings, load } = useFolderListings()
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set([root.path]))
   const [picked, setPicked] = useState<string | null>(null)
@@ -405,7 +399,7 @@ function FolderPicker({
     const parent = pending?.parent
     const name = pending?.name.trim()
     if (!parent || !name) return
-    const result = await window.aiOffice.createFolder(parent, name)
+    const result = await homeApi.createFolder(parent, name)
     if (!result.ok) {
       window.alert(result.error ?? t('renameFailed'))
       return
@@ -656,6 +650,7 @@ function AccountEntry({
   onStatusChange?: (status: AccountStatus | null) => void
 }) {
   const { t } = useI18n()
+  const { home: homeApi, integrations: integrationsApi } = useShellPlatform()
   const [status, setStatus] = useState<AccountStatus | null>(null)
 
   useEffect(() => {
@@ -681,7 +676,7 @@ function AccountEntry({
   // query login state once on mount
   useEffect(() => {
     let alive = true
-    void window.aiOffice.accountStatus?.().then((s) => {
+    void homeApi.accountStatus?.().then((s) => {
       if (alive) setStatus(s)
     })
     return () => {
@@ -694,7 +689,7 @@ function AccountEntry({
   useEffect(() => {
     if (settingsOpen) return
     let alive = true
-    void window.aiOfficeIntegrations?.status().then((st) => {
+    void integrationsApi?.status().then((st) => {
       if (alive) setSkillUpdate(skillUpdateDue(st))
     })
     return () => {
@@ -704,12 +699,12 @@ function AccountEntry({
 
   // login progress pushed from main (gsk login CLI output)
   useEffect(() => {
-    const off = window.aiOffice.onAccountLogin?.((ev) => {
+    const off = homeApi.onAccountLogin?.((ev) => {
       if (ev.phase === 'url') {
         if (ev.url) setAuthUrl(ev.url)
         if (ev.expiresInSec) loginDeadline.current = Date.now() + ev.expiresInSec * 1000
       } else if (ev.phase === 'success') {
-        void window.aiOffice.accountStatus().then((s) => {
+        void homeApi.accountStatus().then((s) => {
           if (s.loggedIn) {
             setStatus(s)
             setWaiting(false)
@@ -731,7 +726,7 @@ function AccountEntry({
   useEffect(() => {
     if (!waiting) return
     const timer = setInterval(() => {
-      void window.aiOffice.accountStatus().then((s) => {
+      void homeApi.accountStatus().then((s) => {
         if (s.loggedIn) {
           setStatus(s)
           setWaiting(false)
@@ -762,7 +757,7 @@ function AccountEntry({
   const doLogout = () => {
     setLoggingOut(true)
     statusSeq.current++
-    void window.aiOffice.accountLogout().then(() => {
+    void homeApi.accountLogout().then(() => {
       setLoggingOut(false)
       setStatus({ loggedIn: false })
     })
@@ -776,7 +771,7 @@ function AccountEntry({
     setUrlCopied(false)
     loginDeadline.current = Date.now() + LOGIN_MAX_WAIT_MS
     setLoginNonce((n) => n + 1)
-    void window.aiOffice.accountLogin().then((launched) => {
+    void homeApi.accountLogin().then((launched) => {
       if (!launched) {
         setWaiting(false)
         setLoginError('launch')
@@ -784,7 +779,7 @@ function AccountEntry({
     })
   }
 
-  const openLoginUrl = () => void window.aiOffice.openLoginUrl?.()
+  const openLoginUrl = () => void homeApi.openLoginUrl?.()
 
   const copyLoginUrl = () => {
     if (!authUrl) return
@@ -798,7 +793,7 @@ function AccountEntry({
     // refresh the login state / credit balance; drop the response
     // when a logout happened while it was in flight
     const seq = statusSeq.current
-    void window.aiOffice.accountStatus?.().then((s) => {
+    void homeApi.accountStatus?.().then((s) => {
       if (seq === statusSeq.current) setStatus(s)
     })
     setSettingsOpen(true)
@@ -969,6 +964,7 @@ const CLOUD_REVEAL_STEP = 100
 function CloudProjectsView() {
   const i18n = useI18n()
   const { t } = i18n
+  const { home: homeApi } = useShellPlatform()
   const [snapshot, setSnapshot] = useState<CloudProjectsSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -985,7 +981,7 @@ function CloudProjectsView() {
   // !snapshot && !loading branch below renders the retry state
   const startSync = () => {
     setSyncing(true)
-    void window.aiOffice.cloudProjectsSync?.().then((synced) => {
+    void homeApi.cloudProjectsSync?.().then((synced) => {
       setSyncing(false)
       setLoading(false)
       if (synced) setSnapshot(synced)
@@ -996,7 +992,7 @@ function CloudProjectsView() {
 
   useEffect(() => {
     let cancelled = false
-    void window.aiOffice.cloudProjectsCached?.().then((stored) => {
+    void homeApi.cloudProjectsCached?.().then((stored) => {
       if (cancelled || !stored) return
       setSnapshot((prev) => prev ?? stored)
       setLoading(false)
@@ -1009,7 +1005,7 @@ function CloudProjectsView() {
 
   // the sign-in button reuses the account login flow; sync once it lands
   useEffect(() => {
-    const off = window.aiOffice.onAccountLogin?.((ev) => {
+    const off = homeApi.onAccountLogin?.((ev) => {
       if (ev.phase === 'success') {
         setLoginWaiting(false)
         startSyncRef.current()
@@ -1027,7 +1023,7 @@ function CloudProjectsView() {
 
   const startLogin = () => {
     setLoginWaiting(true)
-    void window.aiOffice.accountLogin?.().then((ok) => {
+    void homeApi.accountLogin?.().then((ok) => {
       if (!ok) setLoginWaiting(false)
     })
   }
@@ -1039,7 +1035,7 @@ function CloudProjectsView() {
   }
 
   const openProject = (projectUrl: string) => {
-    void window.aiOffice.openCloudProject?.(projectUrl)
+    void homeApi.openCloudProject?.(projectUrl)
   }
 
   // filter / search / sort are all local over the snapshot — no requests
@@ -1342,6 +1338,7 @@ function DropToOpenOverlay(): ReactElement | null {
 export function Home() {
   const i18n = useI18n()
   const { t, lang } = i18n
+  const { home: homeApi } = useShellPlatform()
   // ── Paged list state (rows loaded for the current view + filter) ──
   const [entries, setEntries] = useState<RecentEntry[]>([])
   /** total count under the current view + filter (not just the loaded rows) */
@@ -1424,7 +1421,7 @@ export function Home() {
   const dragExpandTimer = useRef<number | null>(null)
 
   const loadRoot = useCallback(() => {
-    void window.aiOffice.folderRoot().then((next) => {
+    void homeApi.folderRoot().then((next) => {
       setRoot((prev) => {
         if (prev && prev.path !== next.path) {
           // the default save folder changed in settings: the old tree is meaningless
@@ -1473,7 +1470,7 @@ export function Home() {
   }, [root, selectedFolder, listings])
 
   useEffect(() => {
-    return window.aiOffice.onFolderChanged((dirs) => {
+    return homeApi.onFolderChanged((dirs) => {
       invalidateFolders(dirs.filter(trackedFolder))
     })
   }, [invalidateFolders, trackedFolder])
@@ -1489,8 +1486,8 @@ export function Home() {
     const seq = ++requestSeq.current
     const ext = filter === 'all' ? undefined : filter
     const limit = keepCount ? Math.max(entriesLen.current, PAGE_SIZE) : PAGE_SIZE
-    const primary = view === 'recent' ? window.aiOffice.recents : window.aiOffice.starred
-    const secondary = view === 'recent' ? window.aiOffice.starred : window.aiOffice.recents
+    const primary = view === 'recent' ? homeApi.recents : homeApi.starred
+    const secondary = view === 'recent' ? homeApi.starred : homeApi.recents
     void primary({ offset: 0, limit, ext }).then((page) => {
       if (seq !== requestSeq.current) return
       setEntries(page.entries)
@@ -1545,7 +1542,7 @@ export function Home() {
     setLoadingMore(true)
     const seq = requestSeq.current
     const ext = filter === 'all' ? undefined : filter
-    const api = view === 'recent' ? window.aiOffice.recents : window.aiOffice.starred
+    const api = view === 'recent' ? homeApi.recents : homeApi.starred
     void api({ offset: entriesLen.current, limit: PAGE_SIZE, ext }).then((page) => {
       setLoadingMore(false)
       if (seq !== requestSeq.current) return
@@ -1736,13 +1733,13 @@ export function Home() {
   }
 
   const toggleStar = (path: string) => {
-    void window.aiOffice.toggleStar(path).then(refresh)
+    void homeApi.toggleStar(path).then(refresh)
   }
 
   const removeRecent = (paths: string[]) => {
     setRowMenu(null)
     setSelected(new Set())
-    void window.aiOffice.removeRecent(paths).then(refresh)
+    void homeApi.removeRecent(paths).then(refresh)
   }
 
   const deleteFiles = (paths: string[]) => {
@@ -1754,12 +1751,12 @@ export function Home() {
     const paths = confirmDelete ?? []
     setConfirmDelete(null)
     setSelected(new Set())
-    void window.aiOffice.deleteFiles(paths).then(refresh)
+    void homeApi.deleteFiles(paths).then(refresh)
   }
 
   const duplicateFile = (path: string) => {
     setRowMenu(null)
-    void window.aiOffice.duplicateFile(path).then(refresh)
+    void homeApi.duplicateFile(path).then(refresh)
   }
 
   const startRename = (entry: RecentEntry) => {
@@ -1772,7 +1769,7 @@ export function Home() {
     setRenaming(null)
     if (!value || value === baseName(entry)) return
     const newName = entry.ext ? `${value}.${entry.ext}` : value
-    void window.aiOffice.renameFile(entry.path, newName).then((result) => {
+    void homeApi.renameFile(entry.path, newName).then((result) => {
       if (!result.ok) window.alert(result.error ?? t('renameFailed'))
       refresh()
     })
@@ -1802,7 +1799,7 @@ export function Home() {
     setCreating(null)
     setNewFolderName('')
     if (!pending || !name) return
-    const result = await window.aiOffice.createFolder(pending.parent, name)
+    const result = await homeApi.createFolder(pending.parent, name)
     if (!result.ok) {
       window.alert(result.error ?? t('renameFailed'))
       return
@@ -1823,7 +1820,7 @@ export function Home() {
     if (!pending) return
     const value = pending.value.trim()
     if (!value || value === fileName(pending.path)) return
-    const result = await window.aiOffice.renameFolder(pending.path, value)
+    const result = await homeApi.renameFolder(pending.path, value)
     if (!result.ok) {
       window.alert(result.error ?? t('renameFailed'))
       return
@@ -1843,7 +1840,7 @@ export function Home() {
     const dir = confirmDeleteFolder
     setConfirmDeleteFolder(null)
     if (!dir) return
-    await window.aiOffice.deleteFolder(dir)
+    await homeApi.deleteFolder(dir)
     if (selectedFolder && (selectedFolder === dir || isUnder(dir, selectedFolder))) {
       setSelectedFolder(dirOf(dir))
     }
@@ -1860,7 +1857,7 @@ export function Home() {
     setMovePicker(null)
     setConflict(null)
     setSelected(new Set())
-    const result = await window.aiOffice.movePaths(paths, targetDir, policy)
+    const result = await homeApi.movePaths(paths, targetDir, policy)
     if (result.moved.length > 0 && selectedFolder) {
       // a moved folder that held the selection drags the selection along
       for (const { from, to } of result.moved) {
@@ -1941,37 +1938,37 @@ export function Home() {
       ext: 'docx',
       title: t('newDoc'),
       sub: '.docx',
-      action: () => window.aiOffice.newDoc(newFileOpts),
+      action: () => homeApi.newDoc(newFileOpts),
     },
     {
       ext: 'xlsx',
       title: t('newSheet'),
       sub: '.xlsx',
-      action: () => window.aiOffice.newSheet(newFileOpts),
+      action: () => homeApi.newSheet(newFileOpts),
     },
     {
       ext: 'pptx',
       title: t('newSlide'),
       sub: '.pptx',
-      action: () => window.aiOffice.newSlide(newFileOpts),
+      action: () => homeApi.newSlide(newFileOpts),
     },
     {
       ext: 'md',
       title: t('newMarkdown'),
       sub: '.md',
-      action: () => window.aiOffice.newMarkdown(newFileOpts),
+      action: () => homeApi.newMarkdown(newFileOpts),
     },
     {
       ext: 'html',
       title: t('newHtml'),
       sub: '.html',
-      action: () => window.aiOffice.newHtml(newFileOpts),
+      action: () => homeApi.newHtml(newFileOpts),
     },
     {
       ext: 'pdf',
       title: t('newPdf'),
       sub: '.pdf',
-      action: () => window.aiOffice.newPdf(newFileOpts),
+      action: () => homeApi.newPdf(newFileOpts),
     },
   ]
 
@@ -1992,7 +1989,7 @@ export function Home() {
         ))}
         <button
           className="quick-card"
-          onClick={() => void window.aiOffice.browse()}
+          onClick={() => void homeApi.browse()}
           data-tip={OPEN_LOCAL_EXTENSIONS}
         >
           <span className="quick-folder">
@@ -2060,7 +2057,7 @@ export function Home() {
             role="menuitem"
             onClick={() => {
               setFolderMenu(null)
-              void window.aiOffice.revealPath(entry.path)
+              void homeApi.revealPath(entry.path)
             }}
           >
             {t('revealInFolder')}
@@ -2227,7 +2224,7 @@ export function Home() {
             <p>{t('rootUnusable')}</p>
             <button
               className="btn btn-secondary"
-              onClick={() => void window.aiOffice.pickDefaultSaveDir().then(() => loadRoot())}
+              onClick={() => void homeApi.pickDefaultSaveDir().then(() => loadRoot())}
             >
               {t('pickSaveDir')}
             </button>
@@ -2258,12 +2255,12 @@ export function Home() {
           onClick={() => {
             if (isRenaming) return
             if (entry.missing) setConfirmMissing(entry)
-            else void window.aiOffice.openPath(entry.path)
+            else void homeApi.openPath(entry.path)
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && event.target === event.currentTarget) {
               if (entry.missing) setConfirmMissing(entry)
-              else void window.aiOffice.openPath(entry.path)
+              else void homeApi.openPath(entry.path)
             }
           }}
         >
@@ -2346,7 +2343,7 @@ export function Home() {
                   role="menuitem"
                   onClick={() => {
                     setRowMenu(null)
-                    void window.aiOffice.openPath(entry.path)
+                    void homeApi.openPath(entry.path)
                   }}
                 >
                   {t('open')}
@@ -2355,7 +2352,7 @@ export function Home() {
                   role="menuitem"
                   onClick={() => {
                     setRowMenu(null)
-                    void window.aiOffice.revealPath(entry.path)
+                    void homeApi.revealPath(entry.path)
                   }}
                 >
                   {t('revealInFolder')}
@@ -2522,7 +2519,7 @@ export function Home() {
                   role="menuitem"
                   onClick={() => {
                     setFolderMenu(null)
-                    void window.aiOffice.revealPath(entry.path)
+                    void homeApi.revealPath(entry.path)
                   }}
                 >
                   {t('revealInFolder')}

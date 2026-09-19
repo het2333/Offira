@@ -6,7 +6,7 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Onboarding } from '../src/renderer/src/Onboarding'
-import { LocaleProvider } from '../src/renderer/src/locale'
+import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -29,9 +29,7 @@ afterEach(() => {
 
 function renderOnboarding(onDone: () => Promise<boolean>): void {
   act(() => {
-    root.render(
-      createElement(LocaleProvider, { initial: 'en' }, createElement(Onboarding, { onDone })),
-    )
+    root.render(shellTestTree(createElement(Onboarding, { onDone })))
   })
 }
 

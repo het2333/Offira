@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
 import type { IntegrationsApi, IntegrationsStatus } from '../src/shared/integrations-api'
 import { mcpClaudeCommand, mcpConfigJson, mcpLaunch } from '../src/renderer/src/IntegrationsPane'
-import { LocaleProvider } from '../src/renderer/src/locale'
 import { SettingsModal, type SettingsModalProps } from '../src/renderer/src/SettingsModal'
+import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
@@ -110,9 +110,7 @@ async function openIntegrations(
   window.aiOfficeIntegrations = api as IntegrationsApi
   await act(async () => {
     root.render(
-      createElement(
-        LocaleProvider,
-        { initial: 'en' },
+      shellTestTree(
         createElement(SettingsModal, {
           status: null,
           loggingOut: false,

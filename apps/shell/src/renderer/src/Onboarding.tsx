@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import appIcon from './assets/app-icon.png'
 import { useI18n } from './locale'
 import type { StringKey } from './locale'
+import { useShellPlatform } from './office-host-context'
 import './onboarding.css'
 
 interface OnboardingProps {
@@ -94,6 +95,7 @@ function SlideArt({ kind }: { kind: Slide['art'] }) {
 
 export function Onboarding({ onDone }: OnboardingProps) {
   const { t } = useI18n()
+  const { home: homeApi } = useShellPlatform()
   const [index, setIndex] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -195,10 +197,7 @@ export function Onboarding({ onDone }: OnboardingProps) {
               {s.showStar && (
                 <div className="onb-star">
                   <p className="onb-star-hint">{t('onbStarHint')}</p>
-                  <button
-                    className="onb-star-btn"
-                    onClick={() => void window.aiOffice.openGitHubRepo()}
-                  >
+                  <button className="onb-star-btn" onClick={() => void homeApi.openGitHubRepo()}>
                     <svg
                       width="13"
                       height="13"
@@ -223,7 +222,7 @@ export function Onboarding({ onDone }: OnboardingProps) {
               {s.showOffer && (
                 <div className="onb-offer">
                   <p className="onb-credits">{renderEmphasis(t('onbCredits'))}</p>
-                  <button className="onb-join" onClick={() => void window.aiOffice.openGenTeam()}>
+                  <button className="onb-join" onClick={() => void homeApi.openGenTeam()}>
                     {t('onbJoinGenTeam')}
                     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                       <path

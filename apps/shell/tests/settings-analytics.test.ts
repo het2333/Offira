@@ -6,8 +6,8 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
-import { LocaleProvider } from '../src/renderer/src/locale'
 import { SettingsModal } from '../src/renderer/src/SettingsModal'
+import { shellTestTree } from './test-shell-providers'
 
 const actEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -55,9 +55,7 @@ describe('Settings analytics consent', () => {
 
     await act(async () => {
       root.render(
-        createElement(
-          LocaleProvider,
-          { initial: 'en' },
+        shellTestTree(
           createElement(SettingsModal, {
             status: null,
             loggingOut: false,
@@ -112,9 +110,7 @@ describe('Settings AutoSave default', () => {
 
     await act(async () => {
       root.render(
-        createElement(
-          LocaleProvider,
-          { initial: 'en' },
+        shellTestTree(
           createElement(SettingsModal, {
             status: null,
             loggingOut: false,

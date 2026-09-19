@@ -6,8 +6,9 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
-import { LocaleProvider, useI18n } from '../src/renderer/src/locale'
+import { useI18n } from '../src/renderer/src/locale'
 import { McpServerSection } from '../src/renderer/src/McpServerSection'
+import { shellTestTree } from './test-shell-providers'
 
 /** the section as Settings → Integrations → MCP → B mounts it */
 function Section() {
@@ -81,7 +82,7 @@ async function renderModal(
   } as unknown as HomeApi
 
   await act(async () => {
-    root.render(createElement(LocaleProvider, { initial: 'en' }, createElement(Section)))
+    root.render(shellTestTree(createElement(Section)))
     await Promise.resolve()
   })
 }

@@ -2,6 +2,7 @@ import { createContext, useContext, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createI18n, htmlLang, type Lang, type Params } from '@genoffice/i18n'
 import { strings } from './strings'
+import { useOfficeHost } from './office-host-context'
 
 const translate = createI18n(strings)
 
@@ -16,6 +17,7 @@ interface LocaleValue {
 const LocaleContext = createContext<LocaleValue>({ lang: 'zh', setLang: () => {} })
 
 export function LocaleProvider({ initial, children }: { initial: Lang; children: ReactNode }) {
+  const host = useOfficeHost()
   const [lang, setLangState] = useState<Lang>(initial)
   const value = useMemo<LocaleValue>(
     () => ({
@@ -23,10 +25,10 @@ export function LocaleProvider({ initial, children }: { initial: Lang; children:
       setLang: (next) => {
         setLangState(next)
         document.documentElement.lang = htmlLang(next)
-        void window.aiOffice.setLanguage(next)
+        void host.settings.update({ language: next })
       },
     }),
-    [lang],
+    [host, lang],
   )
   return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>
 }

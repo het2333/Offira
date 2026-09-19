@@ -7,6 +7,7 @@ import type {
   IntegrationsStatus,
   SkillInstallState,
 } from '../../shared/integrations-api'
+import { useShellPlatform } from './office-host-context'
 
 // ── Settings → Integrations ─────────────────────────────────
 // Installs the bundled `genoffice` skill into the coding agents found on this
@@ -73,8 +74,6 @@ export function mcpConfigJson(launch: McpLaunch): string {
   return json.replace(/"args": \[[^\]]*\]/, `"args": ${JSON.stringify(launch.args)}`)
 }
 
-const api = () => window.aiOfficeIntegrations
-
 export function IntegrationsPane({
   t,
   onStatus,
@@ -82,6 +81,7 @@ export function IntegrationsPane({
   t: TFunc
   onStatus?: (s: IntegrationsStatus) => void
 }) {
+  const integrationsApi = useShellPlatform().integrations
   const [status, setStatus] = useState<IntegrationsStatus | null>(null)
   const [pending, setPending] = useState<Pending | null>(null)
   const [busy, setBusy] = useState(false)
@@ -90,7 +90,7 @@ export function IntegrationsPane({
   const [copied, setCopied] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const s = await api()?.status()
+    const s = await integrationsApi?.status()
     if (!s) return
     setStatus(s)
     onStatus?.(s)
@@ -101,7 +101,7 @@ export function IntegrationsPane({
   }, [refresh])
 
   const copy = (text: string, key: string) => {
-    void api()?.copyText(text)
+    void integrationsApi?.copyText(text)
     setCopied(key)
     window.setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500)
   }
@@ -110,8 +110,9 @@ export function IntegrationsPane({
     if (!pending || busy) return
     setBusy(true)
     try {
-      if (pending.kind === 'install') await api()!.installSkill(pending.target)
-      else if ('agentId' in pending.target) await api()!.uninstallSkill(pending.target.agentId)
+      if (pending.kind === 'install') await integrationsApi!.installSkill(pending.target)
+      else if ('agentId' in pending.target)
+        await integrationsApi!.uninstallSkill(pending.target.agentId)
       setNotice(
         pending.kind === 'install' && !pending.agentId ? { text: t('intgInstalledHint') } : null,
       )
@@ -144,7 +145,7 @@ export function IntegrationsPane({
   }
 
   const installElsewhere = async () => {
-    const dir = await api()?.pickSkillDir(t('intgPickDirTitle'))
+    const dir = await integrationsApi?.pickSkillDir(t('intgPickDirTitle'))
     if (!dir) return
     setNotice(null)
     const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/'
@@ -156,7 +157,7 @@ export function IntegrationsPane({
   }
 
   const downloadZip = async () => {
-    const path = await api()?.saveSkillZip(t('intgSaveZipTitle'))
+    const path = await integrationsApi?.saveSkillZip(t('intgSaveZipTitle'))
     if (path) setNotice({ text: t('intgSavedTo', { path }) })
   }
 

@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
-import type { TabsApi, TabSummary } from '../../shared/tabs-api'
+import type { ShellTabSummary } from '@nexusdesk/office-host'
 import { useI18n } from './locale'
-
-declare global {
-  interface Window {
-    aiOfficeTabs: TabsApi
-  }
-}
+import { useOfficeHost, useShellPlatform } from './office-host-context'
 
 function DocIcon() {
   return (
@@ -116,7 +111,7 @@ function HtmlIcon() {
   )
 }
 
-const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
+const KIND_ICON: Record<ShellTabSummary['kind'], ReactElement> = {
   home: <HomeIcon />,
   docs: <DocIcon />,
   sheets: <SheetIcon />,
@@ -128,7 +123,10 @@ const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
 
 export function TabBar() {
   const { t } = useI18n()
-  const [tabs, setTabs] = useState<TabSummary[]>([])
+  const host = useOfficeHost()
+  const platform = useShellPlatform()
+  const tabApi = { ...platform.tabs, ...host.tabs }
+  const [tabs, setTabs] = useState<readonly ShellTabSummary[]>([])
   const stripRef = useRef<HTMLDivElement>(null)
 
   // Chrome-style drag-to-reorder: the grabbed tab tracks the pointer 1:1 while
@@ -179,19 +177,19 @@ export function TabBar() {
         next.splice(Math.min(Math.max(drag.target, 1), next.length), 0, moved)
         return next
       })
-      void window.aiOfficeTabs.reorder(drag.id, drag.target)
+      void tabApi.reorder(drag.id, drag.target)
     }
   }
 
   useEffect(() => {
-    void window.aiOfficeTabs.list().then(setTabs)
-    return window.aiOfficeTabs.onChanged(setTabs)
+    void tabApi.list().then(setTabs)
+    return tabApi.onChanged(setTabs)
   }, [])
 
   // document tabs are sibling WebContentsViews: they see neither this press
   // nor a focus change, so relay it for them to dismiss open popovers
   useEffect(() => {
-    const notify = (): void => window.aiOfficeTabs.notifyChromePressed?.()
+    const notify = (): void => tabApi.notifyChromePressed?.()
     document.addEventListener('pointerdown', notify, true)
     return () => document.removeEventListener('pointerdown', notify, true)
   }, [])
@@ -244,7 +242,7 @@ export function TabBar() {
           aria-label={t('appMenu')}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect()
-            void window.aiOfficeTabs.showAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+            void tabApi.showAppMenu(Math.round(rect.left), Math.round(rect.bottom))
           }}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -284,7 +282,7 @@ export function TabBar() {
                 if ((event.target as HTMLElement).closest('.tab-close')) return
                 // Chrome-style: pressing a tab activates it immediately, so
                 // activation never depends on the click that a drag would eat
-                if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
+                if (!tab.active) void tabApi.activate(tab.id)
                 if (tab.id === 'home') return
                 const strip = stripRef.current
                 if (!strip) return
@@ -374,7 +372,7 @@ export function TabBar() {
                   aria-label={t('closeTab')}
                   onClick={(event) => {
                     event.stopPropagation()
-                    void window.aiOfficeTabs.close(tab.id)
+                    void tabApi.close(tab.id)
                   }}
                 >
                   ×
@@ -389,7 +387,7 @@ export function TabBar() {
           aria-label={t('newTab')}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect()
-            void window.aiOfficeTabs.showNewMenu(Math.round(rect.left), Math.round(rect.bottom))
+            void tabApi.showNewMenu(Math.round(rect.left), Math.round(rect.bottom))
           }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
@@ -410,7 +408,7 @@ export function TabBar() {
         aria-label={t('tabList')}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect()
-          void window.aiOfficeTabs.showMenu(Math.round(rect.left), Math.round(rect.bottom))
+          void tabApi.showMenu(Math.round(rect.left), Math.round(rect.bottom))
         }}
       >
         {/* window-with-tab-bar glyph: slanted tab cells above a full-width

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { McpStatus } from '../../shared/home-api'
+import { useShellPlatform } from './office-host-context'
 import type { TFunc } from './locale'
 
 // ── Settings → Integrations → MCP → local HTTP server ─────────
@@ -62,6 +63,7 @@ function CopyTextButton({ t, text }: { t: TFunc; text: string }) {
 }
 
 export function McpServerSection({ t }: { t: TFunc }) {
+  const { home: homeApi } = useShellPlatform()
   const [running, setRunning] = useState(false)
   const [enabled, setEnabled] = useState(false)
   const [port, setPort] = useState('3093')
@@ -87,7 +89,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
 
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getMcpStatus?.().then((s) => {
+    void homeApi.getMcpStatus?.().then((s) => {
       if (alive) takeStatus(s)
     })
     return () => {
@@ -107,7 +109,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
     logging?: boolean
   }) => {
     setSaving(true)
-    void window.aiOffice
+    void homeApi
       .setMcpSettings({
         enabled: patch.enabled ?? enabled,
         port: patch.port ?? (Number(port) || 3093),
@@ -120,7 +122,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
   }
 
   const fetchLogs = useCallback(() => {
-    void window.aiOffice
+    void homeApi
       .getMcpLogs?.()
       .then((lines) => setLogs(Array.isArray(lines) ? lines : []))
       .catch(() => {})
@@ -267,13 +269,13 @@ export function McpServerSection({ t }: { t: TFunc }) {
                 <button className="set-btn" onClick={fetchLogs}>
                   {t('setMcpLogRefresh')}
                 </button>
-                <button className="set-btn" onClick={() => void window.aiOffice.openMcpLogFile?.()}>
+                <button className="set-btn" onClick={() => void homeApi.openMcpLogFile?.()}>
                   {t('setMcpLogOpen')}
                 </button>
                 <button
                   className="set-btn"
                   onClick={() => {
-                    void window.aiOffice.clearMcpLogs?.().then(fetchLogs)
+                    void homeApi.clearMcpLogs?.().then(fetchLogs)
                   }}
                 >
                   {t('setMcpLogClear')}

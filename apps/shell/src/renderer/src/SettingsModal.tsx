@@ -29,6 +29,7 @@ import type { AccountStatus, AiCatalogEntry, UiTheme } from '../../shared/home-a
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import './settings.css'
+import { useShellPlatform } from './office-host-context'
 
 // ── Settings modal (opened from the account menu) ─────────
 // Genspark-style two-pane dialog: section nav on the left, fields on the right.
@@ -259,9 +260,8 @@ function Field({
 
 /** AI model pane: provider / model / key / base URL, saved to userData/ai-settings.json */
 function AiModelPane({ t }: { t: TFunc }) {
-  const [catalog, setCatalog] = useState<AiCatalogEntry[]>(
-    () => window.aiOffice.getAiProviders?.() ?? [],
-  )
+  const { home: homeApi } = useShellPlatform()
+  const [catalog, setCatalog] = useState<AiCatalogEntry[]>(() => homeApi.getAiProviders?.() ?? [])
   const [settings, setSettings] = useState<AiSettings | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -271,8 +271,8 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
   const refreshCodexModels = useCallback(async (cliPath = '', selectedModel = '') => {
-    if (!window.aiOffice.getCodexModels) return
-    const live = await window.aiOffice.getCodexModels(cliPath)
+    if (!homeApi.getCodexModels) return
+    const live = await homeApi.getCodexModels(cliPath)
     setCatalog((current) =>
       current.map((entry) => {
         if (entry.id !== 'codex') return entry
@@ -287,7 +287,7 @@ function AiModelPane({ t }: { t: TFunc }) {
 
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getAiSettings?.().then((s) => {
+    void homeApi.getAiSettings?.().then((s) => {
       if (!alive || !s) return
       // The switch is disabled with genspark, so never present it stranded
       // off. Display-only: s.provider may be the activeProvider fallback for
@@ -351,7 +351,7 @@ function AiModelPane({ t }: { t: TFunc }) {
     touch()
   }
   const save = () => {
-    window.aiOffice
+    homeApi
       .setAiSettings?.(settings)
       .then(() => {
         setDirty(false)
@@ -364,7 +364,7 @@ function AiModelPane({ t }: { t: TFunc }) {
   const test = () => {
     setTesting(true)
     setTestResult(null)
-    window.aiOffice
+    homeApi
       .testAiSettings?.(settings)
       .then((r) => {
         setTestResult(r ?? { ok: false })
@@ -575,11 +575,12 @@ type Capability = 'image' | 'analysis' | 'video' | 'search'
  * Saved into the same ai-settings.json as the chat provider.
  */
 function AiMediaPane({ t }: { t: TFunc }) {
+  const { home: homeApi } = useShellPlatform()
   const [mediaCatalog] = useState<AiMediaProviderMeta[]>(
-    () => window.aiOffice.getAiMediaProviders?.() ?? [],
+    () => homeApi.getAiMediaProviders?.() ?? [],
   )
   const [searchCatalog] = useState<AiSearchProviderMeta[]>(
-    () => window.aiOffice.getAiSearchProviders?.() ?? [],
+    () => homeApi.getAiSearchProviders?.() ?? [],
   )
   const [settings, setSettings] = useState<AiSettings | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -589,7 +590,7 @@ function AiMediaPane({ t }: { t: TFunc }) {
 
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getAiSettings?.().then((s) => {
+    void homeApi.getAiSettings?.().then((s) => {
       if (alive && s) setSettings(s)
     })
     return () => {
@@ -634,7 +635,7 @@ function AiMediaPane({ t }: { t: TFunc }) {
     })
 
   const save = () => {
-    window.aiOffice
+    homeApi
       .setAiSettings?.(settings)
       .then(() => {
         setDirty(false)
@@ -656,12 +657,12 @@ function AiMediaPane({ t }: { t: TFunc }) {
       )
       const checks: Promise<{ ok: boolean; error?: string } | undefined>[] = [...vendors].map(
         (id) =>
-          window.aiOffice.testAiMediaSettings?.({ provider: id, config: mediaConfigOf(id) }) ??
+          homeApi.testAiMediaSettings?.({ provider: id, config: mediaConfigOf(id) }) ??
           Promise.resolve(undefined),
       )
       if (search.provider !== 'genspark') {
         checks.push(
-          window.aiOffice.testAiSearchSettings?.({
+          homeApi.testAiSearchSettings?.({
             provider: search.provider,
             apiKey: search.providers[search.provider]?.apiKey ?? '',
           }) ?? Promise.resolve(undefined),
@@ -669,7 +670,7 @@ function AiMediaPane({ t }: { t: TFunc }) {
       }
       if (checks.length === 0) {
         checks.push(
-          window.aiOffice.testAiMediaSettings?.({
+          homeApi.testAiMediaSettings?.({
             provider: 'genspark',
             config: mediaConfigOf('genspark'),
           }) ?? Promise.resolve(undefined),
@@ -1009,6 +1010,7 @@ export function SettingsModal({
   onSkillUpdateDue,
 }: SettingsModalProps) {
   const { lang, setLang, t } = useI18n()
+  const { home: homeApi } = useShellPlatform()
   const [section, setSection] = useState<SectionId>('account')
   const [theme, setTheme] = useState<UiTheme>('system')
   const [saveDir, setSaveDir] = useState('')
@@ -1022,28 +1024,28 @@ export function SettingsModal({
 
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getTheme?.().then((th) => {
+    void homeApi.getTheme?.().then((th) => {
       if (alive) setTheme(th)
     })
-    void window.aiOffice.getDefaultSaveDir?.().then((dir) => {
+    void homeApi.getDefaultSaveDir?.().then((dir) => {
       if (alive && dir) setSaveDir(dir)
     })
-    void window.aiOffice.getAnalyticsEnabled?.().then((on) => {
+    void homeApi.getAnalyticsEnabled?.().then((on) => {
       if (alive) setAnalyticsOn(on !== false)
     })
-    void window.aiOffice.getAutoSaveDefault?.().then((v) => {
+    void homeApi.getAutoSaveDefault?.().then((v) => {
       if (alive) setAutoSaveOn(v.on)
     })
-    void window.aiOffice.getAiPanelPrefs?.().then((prefs) => {
+    void homeApi.getAiPanelPrefs?.().then((prefs) => {
       if (alive) setAiPrefs(prefs)
     })
-    void window.aiOffice.getUpdateChannel?.().then((ch) => {
+    void homeApi.getUpdateChannel?.().then((ch) => {
       if (alive) setChannel(ch)
     })
-    void window.aiOffice.getAppVersion?.().then((v) => {
+    void homeApi.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
-    void window.aiOffice.githubStars?.().then((n) => {
+    void homeApi.githubStars?.().then((n) => {
       if (alive && n !== null) setGithubStars(n)
     })
     return () => {
@@ -1061,18 +1063,18 @@ export function SettingsModal({
 
   const applyTheme = (next: UiTheme) => {
     setTheme(next)
-    void window.aiOffice.setTheme(next)
+    void homeApi.setTheme(next)
     if (next === 'system') document.documentElement.removeAttribute('data-theme')
     else document.documentElement.setAttribute('data-theme', next)
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
     setAiPrefs((prev) => ({ ...prev, ...patch }))
-    void window.aiOffice.setAiPanelPrefs(patch).then(setAiPrefs)
+    void homeApi.setAiPanelPrefs(patch).then(setAiPrefs)
   }
 
   const changeSaveDir = () => {
-    void window.aiOffice.pickDefaultSaveDir?.().then((dir) => {
+    void homeApi.pickDefaultSaveDir?.().then((dir) => {
       if (dir) setSaveDir(dir)
     })
   }
@@ -1135,7 +1137,7 @@ export function SettingsModal({
                       <button
                         className="set-btn"
                         data-tip={t('creditsTip')}
-                        onClick={() => void window.aiOffice.openCreditUsage?.()}
+                        onClick={() => void homeApi.openCreditUsage?.()}
                       >
                         {t('setViewUsage')}
                       </button>
@@ -1284,7 +1286,7 @@ export function SettingsModal({
                     onClick={() => {
                       const next = !autoSaveOn
                       setAutoSaveOn(next)
-                      void window.aiOffice.setAutoSaveDefault?.(next).catch(() => {})
+                      void homeApi.setAutoSaveDefault?.(next).catch(() => {})
                     }}
                   />
                 </div>
@@ -1304,7 +1306,7 @@ export function SettingsModal({
                     onClick={() => {
                       const next = !analyticsOn
                       setAnalyticsSaving(true)
-                      void window.aiOffice
+                      void homeApi
                         .setAnalyticsEnabled(next)
                         .then((persisted) => {
                           if (persisted) setAnalyticsOn(next)
@@ -1338,7 +1340,7 @@ export function SettingsModal({
                     onPick={(v) => {
                       const next = v === 'beta' ? 'beta' : 'stable'
                       setChannel(next)
-                      void window.aiOffice.setUpdateChannel(next)
+                      void homeApi.setUpdateChannel(next)
                     }}
                   />
                 </div>
@@ -1350,10 +1352,7 @@ export function SettingsModal({
                       : `github.com/genspark-ai/genoffice · ★ ${formatStars(githubStars)}`
                   }
                   action={
-                    <button
-                      className="set-btn"
-                      onClick={() => void window.aiOffice.openGitHubRepo?.()}
-                    >
+                    <button className="set-btn" onClick={() => void homeApi.openGitHubRepo?.()}>
                       {t('starOnGitHub')}
                     </button>
                   }
