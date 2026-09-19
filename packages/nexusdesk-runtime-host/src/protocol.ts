@@ -1,0 +1,64 @@
+import type {
+  AgentEventFrame,
+  ApprovalOutcome,
+  ClientId,
+  DocumentId,
+  EditorRequestFrame,
+  EditorResponseFrame,
+  Revision,
+  SessionId,
+} from '@nexusdesk/protocol'
+
+export { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+
+interface RuntimeFrameBase {
+  protocolVersion: number
+  id: string
+}
+
+export type RuntimeRequestFrame =
+  | (RuntimeFrameBase & {
+      type: 'agent:start'
+      sessionId: SessionId
+      documentId: DocumentId
+      clientId: ClientId
+      revision: Revision
+      cwd: string
+      prompt: string
+      provider?: string
+      model?: string
+    })
+  | (RuntimeFrameBase & { type: 'agent:cancel'; sessionId: SessionId; reason: 'user' })
+  | (RuntimeFrameBase & { type: 'approval:response'; outcome: ApprovalOutcome })
+  | EditorResponseFrame
+  | (RuntimeFrameBase & { type: 'shutdown' })
+
+export type RuntimeResponseFrame =
+  | { type: 'ready'; protocolVersion: number; pid: number; startedBundles: string[] }
+  | { type: 'fatal'; protocolVersion: number; message: string }
+  | { type: 'shutdown-complete'; protocolVersion: number }
+  | AgentEventFrame
+  | {
+      type: 'approval:request'
+      protocolVersion: number
+      id: string
+      sessionId: SessionId
+      toolName: string
+      reason?: string
+    }
+  | EditorRequestFrame
+
+export interface HarnessStreamChunk {
+  type: string
+  index?: number
+  text?: string
+  blockType?: string
+  name?: string
+  [key: string]: unknown
+}
+
+export interface HarnessDurableEvent {
+  type: string
+  seq?: number
+  data?: unknown
+}

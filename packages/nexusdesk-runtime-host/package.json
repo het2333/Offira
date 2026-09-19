@@ -1,0 +1,31 @@
+{
+  "name": "@nexusdesk/runtime-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./protocol": "./src/protocol.ts",
+    "./projection": "./src/projection.ts"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "smoke": "node tests/runtime-smoke.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-app-boot": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-brand": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.1.6-alpha.2",
+    "@nexusdesk/protocol": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
