@@ -468,11 +468,17 @@ change must pass and how pull requests land.
 
 ### NexusDesk local Web milestone
 
-The experimental NexusDesk path combines a loopback-only Node host, the
-GenOffice Sheets editor, and DeepSeek Harness as a supervised native runtime.
-It preserves Harness provider/model selection and exposes the existing Sheets
-operation DSL as native Tools; MCP is not the product bridge. Tool results are
-curated for the Agent and never expose editor-engine objects.
+The NexusDesk path combines a loopback-only Local Host, the shared GenOffice
+Shell UI, isolated editor bundles, and DeepSeek Harness as a supervised native
+runtime. The Web and Electron composition roots mount the same
+`@nexusdesk/shell-ui` package through different `OfficeHost` adapters. Local
+Host is authoritative for documents, tabs, settings, approvals, operation
+journals, and runtime lifecycle in the browser build.
+
+Harness provider/model selection remains intact. Existing editor operation DSLs
+are exposed as curated native Tools whose results are written for the Agent and
+never leak editor-engine objects. MCP remains available only to the upstream
+GenOffice compatibility product; it is not NexusDesk transport.
 
 ```bash
 npm run build:web
@@ -480,12 +486,17 @@ npm run start:web -- /absolute/path/to/Forecast.xlsx
 npm run test:e2e:local-web
 ```
 
-The current milestone is a Chromium/Sheets vertical slice. Docs, Slides,
-packaging, Safari, Keychain-backed credentials, file-picker startup, and
-collaboration are not implemented yet. See
+Open the one-time bootstrap URL printed by `start:web`; opening
+`apps/web/index.html` through `file://` is diagnostic-only and cannot start the
+product. The current milestone is a Chromium/Sheets vertical slice. Docs,
+Slides, NexusDesk desktop packaging, Safari, Keychain-backed credentials,
+file-picker startup, and collaboration follow separate implementation plans.
+See
 [local Web development](docs/nexusdesk/local-web-development.md) for startup
-and debugging, and the [editor adapter contract](docs/nexusdesk/editor-adapter.md)
-before extending another editor.
+and debugging, the [Office Host contract](docs/nexusdesk/office-host-contract.md)
+for Shell ownership, and the
+[editor adapter contract](docs/nexusdesk/editor-adapter.md) before extending
+another editor.
 
 ## Community
 

@@ -8,6 +8,12 @@ The public types live in `@nexusdesk/protocol`. Browser connection and editor
 registration helpers live in `@nexusdesk/web-client`. Sheets is the reference
 implementation in `apps/sheets/src/renderer/agent/sheets-adapter.ts`.
 
+This boundary is downstream of the
+[Office Host contract](office-host-contract.md). `OfficeHost` owns Shell state
+and product capabilities; `EditorAdapter` owns semantic read, propose, apply,
+verify, and save behavior inside one isolated editor bundle. Neither layer
+exposes the editor engine to Harness.
+
 ## Identity and authority
 
 Every mutating request carries one `MutationTarget`:
@@ -332,3 +338,9 @@ verification in an editor transaction and copy the rollback pattern from
    revision conflicts, reconnect replay, and saved-file reopening.
 6. Add a keyless Chromium acceptance test whose oracle is the saved native
    file, not assistant prose.
+
+Docs and Slides integration must preserve their current operation DSLs and add
+missing user-visible editing operations there before registration as native
+Tools. They require their own plans, adapter tests, routes, saved-file oracles,
+and recovery acceptance flows; Sheets support does not imply those editors are
+already available in the NexusDesk Web product.

@@ -1,12 +1,17 @@
 # NexusDesk local Web development
 
-NexusDesk's first Web milestone runs a loopback-only Node host, an authenticated
-Web shell, the GenOffice Sheets renderer, and a supervised DeepSeek Harness
-runtime. The browser never talks to Harness directly. The Local Host owns the
-session, document identity, approvals, operation journal, and runtime process.
+NexusDesk's first Web milestone runs a loopback-only Node host, the shared
+GenOffice Shell, the isolated GenOffice Sheets renderer, and a supervised
+DeepSeek Harness runtime. The browser never talks to Harness directly. Local
+Host owns documents, tabs, settings, sessions, approvals, operation journals,
+and the runtime process.
 
-This milestone proves Sheets in Chromium. Docs, Slides, file picking, packaged
-startup, Safari, Keychain integration, and collaboration are follow-on work.
+The Web and Electron composition roots mount the same
+`@nexusdesk/shell-ui` package. Their `OfficeHost` adapters provide the different
+transport and native capability surfaces; shared React components do not import
+Electron or Node. This milestone proves Sheets in Chromium. Docs, Slides, file
+picking, NexusDesk desktop packaging, Safari, Keychain integration, and
+collaboration follow separate plans.
 
 ## Prerequisites
 
@@ -40,6 +45,11 @@ Copy the complete URL, including the token, into the Codex built-in browser.
 The first request exchanges the token for an `HttpOnly; SameSite=Strict`
 session cookie and redirects to `/`; the same token cannot be replayed. Do not
 paste the bootstrap URL into logs, issues, or screenshots.
+
+Do not open `apps/web/index.html` directly. A `file://` launch is a diagnostic
+page only: it cannot exchange the one-time token, receive the secure cookie, or
+reach authenticated HTTP/WebSocket services. Always use the URL printed by
+`npm run start:web`.
 
 The production entry resolves the bundled Harness runtime and profile from the
 repository. Environment variables cannot replace the runtime entry path. Model
@@ -133,10 +143,13 @@ test artifacts and must not be committed.
 | Component                         | Responsibility                                                                                                          |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `apps/local-host`                 | Loopback HTTP/WebSocket authority, bootstrap authentication, document ownership, operation journal, Harness supervision |
-| `apps/web`                        | Authenticated document shell and editor iframe host                                                                     |
+| `apps/web`                        | Browser composition root, `OfficeHost` HTTP/WebSocket adapter, and shared Shell mount                                   |
+| `packages/nexusdesk-shell-ui`     | Host-neutral GenOffice Home, tabs, settings, product capability gates, and editor frame routing                         |
+| `packages/nexusdesk-office-host`  | Runtime-validated Shell contract for files, documents, tabs, settings, capabilities, and Agent-facing errors            |
 | `packages/nexusdesk-runtime-host` | DeepSeek Harness profile, multi-provider agent sessions, native Sheets Tools, stable IPC projection                     |
 | `packages/nexusdesk-protocol`     | Versioned JSON frames, branded identities, editor and Agent result contracts                                            |
 | `packages/nexusdesk-web-client`   | Browser WebSocket lifecycle, reconnect behavior, editor registration, Agent API                                         |
 | `apps/sheets`                     | GenOffice Sheets UI, XLSX engine integration, Sheets DSL adapter, apply/verify/save behavior                            |
 
-See [Editor adapter contract](editor-adapter.md) before adding another editor.
+See [Office Host contract](office-host-contract.md) for Shell/platform ownership
+and [Editor adapter contract](editor-adapter.md) before adding another editor.
