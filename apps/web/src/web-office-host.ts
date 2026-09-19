@@ -42,10 +42,6 @@ const BROWSER_CAPABILITIES: HostCapabilities = {
   credentialStore: false,
 }
 
-function unsupported(message: string): never {
-  throw new HostError('UNSUPPORTED_CAPABILITY', message, false)
-}
-
 export function createWebOfficeHost(
   fetcher: WebFetch = globalThis.fetch,
   socketFactory?: WebSocketFactory,
