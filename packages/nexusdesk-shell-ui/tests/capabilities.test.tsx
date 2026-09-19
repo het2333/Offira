@@ -105,10 +105,14 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
   expect(container.querySelector('.tab-app-menu-btn')).toBeNull()
   expect(container.querySelector('.tab-new-btn')).toBeNull()
   expect(container.querySelector('.tab-overflow-btn')).toBeNull()
+  expect(container.querySelector('.row-check')).toBeNull()
 
   const more = container.querySelector<HTMLButtonElement>('.more-btn')
   expect(more).not.toBeNull()
   await act(async () => more!.click())
   const menu = container.querySelector('[role="menu"]')
   expect(menu?.textContent).not.toMatch(/Reveal|Delete/)
+  expect(menu?.textContent).not.toMatch(
+    /Copy path|Move to folder|Rename|Duplicate|复制路径|移动到文件夹|重命名|创建副本/,
+  )
 })

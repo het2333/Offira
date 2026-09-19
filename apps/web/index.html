@@ -4,9 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NexusDesk</title>
+    <style>
+      .nexusdesk-launch-status {
+        box-sizing: border-box;
+        max-width: 720px;
+        margin: 12vh auto;
+        padding: 32px;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #17211b;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="nexusdesk-launch-status">
+        <h1>Starting NexusDesk…</h1>
+        <p>If this page was opened as a file, run: npm run start:web -- /absolute/file.xlsx</p>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

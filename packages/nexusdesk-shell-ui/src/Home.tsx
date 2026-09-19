@@ -2316,15 +2316,19 @@ export function Home() {
             }
           }}
         >
-          <span className="col-check" onClick={(event) => event.stopPropagation()}>
-            <input
-              type="checkbox"
-              className="row-check"
-              checked={selected.has(entry.path)}
-              onChange={(event) => toggleSelect(entry.path, event.target.checked)}
-              aria-label={t('selectFile', { name: entry.name })}
-            />
-          </span>
+          {host.capabilities.mode === 'electron' ? (
+            <span className="col-check" onClick={(event) => event.stopPropagation()}>
+              <input
+                type="checkbox"
+                className="row-check"
+                checked={selected.has(entry.path)}
+                onChange={(event) => toggleSelect(entry.path, event.target.checked)}
+                aria-label={t('selectFile', { name: entry.name })}
+              />
+            </span>
+          ) : (
+            <span className="col-check" />
+          )}
           <span className="recent-icon">
             <FileBadge ext={entry.ext} size={24} />
           </span>
@@ -2411,30 +2415,31 @@ export function Home() {
                     {t('revealInFolder')}
                   </button>
                 )}
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setRowMenu(null)
-                    void navigator.clipboard.writeText(entry.path)
-                  }}
-                >
-                  {t('copyPath')}
-                </button>
-                {root?.usable && !entry.missing && (
+                {host.capabilities.mode === 'electron' && (
                   <>
                     <div className="row-menu-divider" />
-                    <button role="menuitem" onClick={() => startMove([entry.path])}>
-                      {t('moveToFolder')}
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setRowMenu(null)
+                        void navigator.clipboard.writeText(entry.path)
+                      }}
+                    >
+                      {t('copyPath')}
+                    </button>
+                    {root?.usable && !entry.missing && (
+                      <button role="menuitem" onClick={() => startMove([entry.path])}>
+                        {t('moveToFolder')}
+                      </button>
+                    )}
+                    <button role="menuitem" onClick={() => startRename(entry)}>
+                      {t('rename')}
+                    </button>
+                    <button role="menuitem" onClick={() => duplicateFile(entry.path)}>
+                      {t('duplicate')}
                     </button>
                   </>
                 )}
-                <div className="row-menu-divider" />
-                <button role="menuitem" onClick={() => startRename(entry)}>
-                  {t('rename')}
-                </button>
-                <button role="menuitem" onClick={() => duplicateFile(entry.path)}>
-                  {t('duplicate')}
-                </button>
                 {canDelete && host.capabilities.trash && (
                   <>
                     <div className="row-menu-divider" />
@@ -2751,7 +2756,7 @@ export function Home() {
           aria-label={view === 'recent' ? t('secRecent') : t('secStarred')}
         >
           <div className="recents-toolbar">
-            {selectedPaths.length > 0 ? (
+            {host.capabilities.mode === 'electron' && selectedPaths.length > 0 ? (
               <div className="selection-bar">
                 <span className="selection-count">
                   {t('selectedCount', { n: selectedPaths.length })}
