@@ -183,6 +183,8 @@ export default function App() {
   }
   const filePathRef = useRef<string | null>(null)
   const recoveryTimerRef = useRef<number | null>(null)
+  const recoveryEpochRef = useRef(0)
+  const recoveryRequestRef = useRef<Promise<void> | null>(null)
   const slashMenuRef = useRef<SlashMenuHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -203,14 +205,26 @@ export default function App() {
     window.markdownApi.setDirty(true)
   }, [])
 
+  const cancelScheduledRecovery = useCallback(() => {
+    recoveryEpochRef.current += 1
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current)
+    recoveryTimerRef.current = null
+  }, [])
+
   const scheduleRecovery = useCallback(() => {
     const host = window.nexusdeskMarkdownHost
     if (!host || statusRef.current !== 'ready') return
-    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current)
+    cancelScheduledRecovery()
+    const epoch = recoveryEpochRef.current
     recoveryTimerRef.current = window.setTimeout(() => {
       recoveryTimerRef.current = null
       const current = editorRef.current
-      if (!current || statusRef.current !== 'ready') return
+      if (
+        epoch !== recoveryEpochRef.current ||
+        !current ||
+        statusRef.current !== 'ready' ||
+        !dirtyRef.current
+      ) return
       let body: string | undefined
       const text = serializeMarkdown(
         envelopeRef.current,
@@ -218,15 +232,19 @@ export default function App() {
         () => (body = bodyMarkdown(current)),
         originalSourceRef.current,
       )
-      void host.updateRecovery(text).catch((error: unknown) => {
+      const request = host.updateRecovery(text).catch((error: unknown) => {
         console.error('[markdown] recovery upload failed:', error)
       })
+      recoveryRequestRef.current = request
+      void request.finally(() => {
+        if (recoveryRequestRef.current === request) recoveryRequestRef.current = null
+      })
     }, 250)
-  }, [])
+  }, [cancelScheduledRecovery])
 
   useEffect(() => () => {
-    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current)
-  }, [])
+    cancelScheduledRecovery()
+  }, [cancelScheduledRecovery])
 
   const insertImage = useCallback(() => {
     void (async () => {
@@ -335,6 +353,7 @@ export default function App() {
     (inner: string) => {
       setFmText(inner)
       envelopeRef.current.frontmatter = buildFrontmatterRaw(inner)
+      contentVersionRef.current += 1
       markDirty()
       scheduleRecovery()
     },
@@ -348,6 +367,10 @@ export default function App() {
     savingRef.current = true
     setSaveState('saving')
     try {
+      // A recovery upload that began before this save must finish first so the
+      // Host's serialized document write is the final operation and clears it.
+      cancelScheduledRecovery()
+      await recoveryRequestRef.current
       // edits landing while the write is in flight (AI streaming, fast typing)
       // must keep the document dirty — compare doc identity after the await
       const docAtSave = current.state.doc
@@ -404,6 +427,7 @@ export default function App() {
         setImageBaseDir(dirOf(result.path))
         setFilePath(result.path)
         if (unchanged) {
+          cancelScheduledRecovery()
           dirtyRef.current = false
           setDirty(false)
           window.markdownApi.setDirty(false)
@@ -426,7 +450,7 @@ export default function App() {
     } finally {
       savingRef.current = false
     }
-  }, [])
+  }, [cancelScheduledRecovery])
 
   useEffect(() => {
     const browserHost = window.nexusdeskMarkdownHost

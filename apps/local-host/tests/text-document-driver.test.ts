@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -101,7 +101,7 @@ describe('text Local Host driver', () => {
 
     expect(await readFile(path, 'utf8')).toBe('# Saved\n')
     expect(JSON.parse(await readFile(recoveryPath, 'utf8'))).toMatchObject({
-      version: 1,
+      version: 2,
       editorType: 'markdown',
       content: '# Unsaved\n',
     })
@@ -137,6 +137,27 @@ describe('text Local Host driver', () => {
     await expect(reopened.readContent!()).resolves.toEqual({
       bytes: new TextEncoder().encode('<h1>External</h1>'),
       contentType: 'text/html; charset=utf-8',
+    })
+    await expect(readFile(recoveryPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('discards recovery after an offline ABA replacement restores the same bytes', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'nexusdesk-text-driver-'))
+    const path = join(directory, 'Notes.md')
+    const replacementPath = join(directory, 'replacement.md')
+    const recoveryPath = join(directory, '.Notes.md.nexusdesk-recovery.json')
+    await writeFile(path, '# Saved\n')
+    const first = await createTextDocumentDriver(path, 'markdown')
+    await first.writeRecovery!(new TextEncoder().encode('# Unsaved\n'), 1)
+
+    await writeFile(path, '# External\n')
+    await writeFile(replacementPath, '# Saved\n')
+    await rename(replacementPath, path)
+    const reopened = await createTextDocumentDriver(path, 'markdown')
+
+    await expect(reopened.readContent!()).resolves.toEqual({
+      bytes: new TextEncoder().encode('# Saved\n'),
+      contentType: 'text/markdown; charset=utf-8',
     })
     await expect(readFile(recoveryPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })

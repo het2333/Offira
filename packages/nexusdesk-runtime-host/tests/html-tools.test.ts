@@ -39,4 +39,17 @@ describe('official Harness HTML tools', () => {
     )
     expect(request).toHaveBeenNthCalledWith(2, 'apply_ops', { ops: operations }, expect.anything(), { approvalId: 'approval-1', planHash: 'plan-1', operationId: 'operation-1' })
   })
+  it.each([
+    ['apply_html_operations', 1],
+    ['save_html', 2],
+  ] as const)('returns APPROVAL_DENIED when %s is rejected', async (_name, index) => {
+    const request = vi.fn().mockResolvedValue({ ok: true, summary: 'Apply HTML.', warnings: [], data: { operationId: 'operation-1', planHash: 'plan-1', targets: ['sid:1'] } })
+    const tool = createHtmlTools({ request, approve: vi.fn().mockResolvedValue({ approved: false }) })[index]!
+    const args = index === 1 ? { operations: [{ op: 'remove', sid: 1 }] } : {}
+    await expect(tool.execute(args, execution())).resolves.toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_DENIED' })],
+    })
+    expect(request).toHaveBeenCalledTimes(index === 1 ? 1 : 0)
+  })
 })

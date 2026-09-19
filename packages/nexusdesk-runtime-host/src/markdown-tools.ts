@@ -57,6 +57,14 @@ function agentResult(value: AgentToolResult): AgentToolResult {
   })
 }
 
+function approvalDenied(action: string): AgentToolResult {
+  return agentResult({
+    ok: false,
+    summary: `${action} was not approved.`,
+    warnings: [{ code: 'APPROVAL_DENIED', message: `${action} was not approved.` }],
+  })
+}
+
 function proposalFrom(result: AgentToolResult): { operationId: string; proposal: AgentApprovalProposal } {
   const data = (result.data ?? {}) as Record<string, JsonValue>
   if (typeof data.planHash !== 'string' || typeof data.operationId !== 'string') {
@@ -107,7 +115,7 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
       const { operationId, proposal } = proposalFrom(proposed)
       const approval = await bridge.approve('apply_markdown_operations', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('Markdown mutation was not approved')
+        return approvalDenied('Markdown mutation') as unknown as JsonValue
       }
       return agentResult(
         await bridge.request('apply_ops', { ops: args.operations }, execution, {
@@ -132,7 +140,7 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
       }
       const approval = await bridge.approve('save_markdown', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('Markdown save was not approved')
+        return approvalDenied('Markdown save') as unknown as JsonValue
       }
       return agentResult(
         await bridge.request('save_markdown', { inPlace: true }, execution, {

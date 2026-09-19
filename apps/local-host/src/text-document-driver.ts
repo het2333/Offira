@@ -7,10 +7,19 @@ import { HostError, type EditorKind, shellDocumentSummarySchema } from '@nexusde
 import type { LocalDocumentDriver } from './document-driver'
 
 interface TextRecoveryRecord {
-  version: 1
+  version: 2
   editorType: Extract<EditorKind, 'markdown' | 'html'>
-  baselineHash: string
+  baseline: PersistentBaselineIdentity
   content: string
+}
+
+interface PersistentBaselineIdentity {
+  sha256: string
+  device: string
+  inode: string
+  size: string
+  mtimeNs: string
+  ctimeNs: string
 }
 
 const TEXT_CONTENT_TYPES: Record<Extract<EditorKind, 'markdown' | 'html'>, string> = {
@@ -36,6 +45,48 @@ function validateUtf8(bytes: Uint8Array): void {
 
 function contentHash(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
+}
+
+function sameBaseline(left: PersistentBaselineIdentity, right: PersistentBaselineIdentity): boolean {
+  return left.sha256 === right.sha256 &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+}
+
+function isBaseline(value: unknown): value is PersistentBaselineIdentity {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return ['sha256', 'device', 'inode', 'size', 'mtimeNs', 'ctimeNs'].every(
+    (key) => typeof record[key] === 'string',
+  )
+}
+
+async function readBaseline(path: string): Promise<{
+  bytes: Uint8Array
+  identity: PersistentBaselineIdentity
+}> {
+  const handle = await open(path, 'r')
+  try {
+    const bytes = new Uint8Array(await handle.readFile())
+    validateUtf8(bytes)
+    const stat = await handle.stat({ bigint: true })
+    return {
+      bytes,
+      identity: {
+        sha256: contentHash(bytes),
+        device: stat.dev.toString(),
+        inode: stat.ino.toString(),
+        size: stat.size.toString(),
+        mtimeNs: stat.mtimeNs.toString(),
+        ctimeNs: stat.ctimeNs.toString(),
+      },
+    }
+  } finally {
+    await handle.close()
+  }
 }
 
 function recoveryPath(path: string): string {
@@ -68,9 +119,8 @@ export async function createTextDocumentDriver(
   editorType: Extract<EditorKind, 'markdown' | 'html'>,
 ): Promise<LocalDocumentDriver> {
   const authorizedPath = resolve(path)
-  const initialBytes = new Uint8Array(await readFile(authorizedPath))
-  validateUtf8(initialBytes)
-  let baselineHash = contentHash(initialBytes)
+  const initial = await readBaseline(authorizedPath)
+  let baseline = initial.identity
   const sidecarPath = recoveryPath(authorizedPath)
   const document = {
     documentId: `${documentPrefix(editorType)}-${createHash('sha256')
@@ -98,9 +148,10 @@ export async function createTextDocumentDriver(
       const raw = await readFile(sidecarPath, 'utf8')
       const parsed = JSON.parse(raw) as Partial<TextRecoveryRecord>
       if (
-        parsed.version !== 1 ||
+        parsed.version !== 2 ||
         parsed.editorType !== editorType ||
-        parsed.baselineHash !== baselineHash ||
+        !isBaseline(parsed.baseline) ||
+        !sameBaseline(parsed.baseline, baseline) ||
         typeof parsed.content !== 'string'
       ) {
         await clearRecovery()
@@ -118,12 +169,10 @@ export async function createTextDocumentDriver(
   recovery = await readValidRecovery()
 
   const assertBaseline = async (): Promise<void> => {
-    const diskBytes = new Uint8Array(await readFile(authorizedPath))
-    validateUtf8(diskBytes)
-    const diskHash = contentHash(diskBytes)
-    if (diskHash === baselineHash) return
+    const disk = await readBaseline(authorizedPath)
+    if (sameBaseline(disk.identity, baseline)) return
     await clearRecovery()
-    baselineHash = diskHash
+    baseline = disk.identity
     document.revision += 1
     throw new HostError(
       'REVISION_CONFLICT',
@@ -157,15 +206,13 @@ export async function createTextDocumentDriver(
       )
     },
     async readContent() {
-      const diskBytes = new Uint8Array(await readFile(authorizedPath))
-      validateUtf8(diskBytes)
-      const diskHash = contentHash(diskBytes)
-      if (diskHash !== baselineHash) {
+      const disk = await readBaseline(authorizedPath)
+      if (!sameBaseline(disk.identity, baseline)) {
         await clearRecovery()
-        baselineHash = diskHash
+        baseline = disk.identity
         document.revision += 1
       }
-      return { bytes: recovery ?? diskBytes, contentType: TEXT_CONTENT_TYPES[editorType] }
+      return { bytes: recovery ?? disk.bytes, contentType: TEXT_CONTENT_TYPES[editorType] }
     },
     async readPreview() {
       if (editorType !== 'html') {
@@ -195,7 +242,7 @@ export async function createTextDocumentDriver(
         validateUtf8(bytes)
         await assertBaseline()
         await atomicReplace(authorizedPath, bytes)
-        baselineHash = contentHash(bytes)
+        baseline = (await readBaseline(authorizedPath)).identity
         await clearRecovery()
         document.revision += 1
         return shellDocumentSummarySchema.parse(document)
@@ -219,9 +266,9 @@ export async function createTextDocumentDriver(
         await assertBaseline()
         const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
         const record: TextRecoveryRecord = {
-          version: 1,
+          version: 2,
           editorType,
-          baselineHash,
+          baseline,
           content,
         }
         await atomicReplace(sidecarPath, new TextEncoder().encode(JSON.stringify(record)))

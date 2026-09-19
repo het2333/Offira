@@ -79,4 +79,27 @@ describe('official Harness Markdown tools', () => {
       { approvalId: 'approval-1', planHash: 'plan-1', operationId: 'operation-1' },
     )
   })
+
+  it.each([
+    ['apply_markdown_operations', 1],
+    ['save_markdown', 2],
+  ] as const)('returns APPROVAL_DENIED when %s is rejected', async (_name, index) => {
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      summary: 'Apply one Markdown operation.',
+      warnings: [],
+      data: { operationId: 'operation-1', planHash: 'plan-1', targets: ['block:0'] },
+    })
+    const tool = createMarkdownTools({
+      request,
+      approve: vi.fn().mockResolvedValue({ approved: false }),
+    })[index]!
+    const args = index === 1 ? { operations: [{ op: 'deleteBlocks', target: 0 }] } : {}
+
+    await expect(tool.execute(args, execution())).resolves.toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_DENIED' })],
+    })
+    expect(request).toHaveBeenCalledTimes(index === 1 ? 1 : 0)
+  })
 })

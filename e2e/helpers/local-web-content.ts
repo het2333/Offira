@@ -30,7 +30,7 @@ export async function launchContentLocalWeb(editorType: 'markdown' | 'html') {
     ...running,
     name,
     async readText() { return readFile(path, 'utf8') },
-    async readApplyCount() { return JSON.parse(await readFile(countPath, 'utf8')) as { applyCount: number } },
+    async readApplyCount() { return JSON.parse(await readFile(countPath, 'utf8')) as { applyCount: number; lastWarningCode?: string } },
     async hasRecovery() { try { await access(recoveryPath); return true } catch { return false } },
     async close() { await running.close(); await rm(directory, { recursive: true, force: true }) },
   }

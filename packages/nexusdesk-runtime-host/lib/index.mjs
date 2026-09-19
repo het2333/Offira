@@ -14973,6 +14973,13 @@ function agentResult2(value) {
     ...value.data === void 0 ? {} : { data: value.data }
   });
 }
+function approvalDenied(action) {
+  return agentResult2({
+    ok: false,
+    summary: `${action} was not approved.`,
+    warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }]
+  });
+}
 function proposalFrom2(result) {
   const data = result.data ?? {};
   if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
@@ -15019,7 +15026,7 @@ ${MARKDOWN_DSL_GUIDE}`
       const { operationId, proposal: proposal2 } = proposalFrom2(proposed);
       const approval = await bridge.approve("apply_markdown_operations", proposal2, execution);
       if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("Markdown mutation was not approved");
+        return approvalDenied("Markdown mutation");
       }
       return agentResult2(
         await bridge.request("apply_ops", { ops: args.operations }, execution, {
@@ -15044,7 +15051,7 @@ ${MARKDOWN_DSL_GUIDE}`
       };
       const approval = await bridge.approve("save_markdown", proposal2, execution);
       if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("Markdown save was not approved");
+        return approvalDenied("Markdown save");
       }
       return agentResult2(
         await bridge.request("save_markdown", { inPlace: true }, execution, {
@@ -15079,6 +15086,9 @@ var HTML_DSL_GUIDE = [
 function bounded(value) {
   return parseAgentToolResult({ ok: value.ok, summary: value.summary, warnings: value.warnings, ...value.changes ? { changes: value.changes } : {}, ...value.verification ? { verification: value.verification } : {}, ...value.transactionId ? { transactionId: value.transactionId } : {}, ...value.data ? { data: value.data } : {} });
 }
+function approvalDenied2(action) {
+  return bounded({ ok: false, summary: `${action} was not approved.`, warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }] });
+}
 function proposal(result) {
   const data = result.data ?? {};
   if (typeof data.operationId !== "string" || typeof data.planHash !== "string") throw new Error("HTML editor returned an invalid edit proposal");
@@ -15094,12 +15104,12 @@ ${HTML_DSL_GUIDE}` } }, output, async execute(args, execution) {
     if (!proposed.ok) return proposed;
     const value = proposal(proposed);
     const approval = await bridge.approve("apply_html_operations", value.proposal, execution);
-    if (!approval.approved || approval.approvalId === void 0) throw new Error("HTML mutation was not approved");
+    if (!approval.approved || approval.approvalId === void 0) return approvalDenied2("HTML mutation");
     return bounded(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: value.proposal.planHash, operationId: value.operationId }));
   } });
   const save = defineTool3({ name: "save_html", description: "Save the current HTML document in place. The model cannot choose the path.", parameters: {}, output, async execute(_args, execution) {
     const approved = await bridge.approve("save_html", { planHash: "save-current-html-in-place", summary: "Save the current HTML document in place.", targets: ["current document"], warnings: [] }, execution);
-    if (!approved.approved || approved.approvalId === void 0) throw new Error("HTML save was not approved");
+    if (!approved.approved || approved.approvalId === void 0) return approvalDenied2("HTML save");
     return bounded(await bridge.request("save_html", { inPlace: true }, execution, { approvalId: approved.approvalId, planHash: "save-current-html-in-place" }));
   } });
   return [read, apply, save];

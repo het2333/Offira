@@ -13,7 +13,7 @@ const trace = (value) => appendFileSync('/tmp/nexusdesk-content-runtime.log', `$
 const applied = new Set()
 const send = (frame) => process.send?.({ protocolVersion: 1, ...frame })
 const target = (operationId) => ({ sessionId: turn.sessionId, documentId: turn.documentId, editorType: turn.editorType, revision, operationId, clientId: turn.clientId })
-const record = (result) => { if (typeof result?.transactionId === 'string') applied.add(result.transactionId); writeFileSync(countPath, JSON.stringify({ applyCount: applied.size })) }
+const record = (result, lastWarningCode) => { if (typeof result?.transactionId === 'string') applied.add(result.transactionId); writeFileSync(countPath, JSON.stringify({ applyCount: applied.size, ...(lastWarningCode ? { lastWarningCode } : {}) })) }
 record()
 send({ type: 'ready', pid: process.pid, startedBundles: ['fake-content'] })
 
@@ -38,6 +38,11 @@ process.on('message', (frame) => {
       send({ type: 'approval:request', id: 'content-approval', sessionId: turn.sessionId, toolName: 'apply_content_operations', proposal: { operationId: 'content-operation', planHash, summary: frame.result?.summary, targets: frame.result?.data?.targets ?? [], warnings: [] } })
     } else if (pending === 'apply') {
       trace(`apply:${String(frame.result?.ok)}:${frame.result?.summary ?? ''}`)
+      if (!frame.result?.ok && turn.sessionId === 'markdown-frontmatter-stale') {
+        record(undefined, frame.result?.warnings?.[0]?.code)
+        send({ type: 'agent:event', sessionId: turn.sessionId, event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } })
+        return
+      }
       if (!frame.result?.ok) throw new Error(frame.result?.summary)
       record(frame.result)
       send({ type: 'approval:request', id: 'content-save-approval', sessionId: turn.sessionId, toolName: 'save_content', proposal: { operationId: 'content-save', planHash: turn.editorType === 'markdown' ? 'save-current-markdown-in-place' : 'save-current-html-in-place', summary: 'Save current document.', targets: ['current document'], warnings: [] } })
