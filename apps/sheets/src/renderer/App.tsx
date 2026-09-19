@@ -48,6 +48,7 @@ import {
 } from './univer-state'
 import { applyChangePlan, planFromOps, type OpExecutorContext } from './op-executor'
 import { installSheetsMcpBridge, type McpSheetHandlers } from './mcp-bridge'
+import { createSheetsAdapter } from './agent/sheets-adapter'
 import { renameChartRefsForSheet } from './workbook-ops'
 import {
   proposeOperations as proposeOperationsImpl,
@@ -109,11 +110,11 @@ import { greenTheme } from '@univerjs/themes'
 import { createUniver } from './create-univer'
 
 import {
-  AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,
   composeSkills,
   type AgentImage,
 } from '@genoffice/agent-core'
+import type { ClientId, Revision } from '@nexusdesk/protocol'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import { type WorkbookOperation } from '@genoffice/xlsx-gateway/domain/workbook-dsl'
 import {
@@ -142,6 +143,10 @@ import {
 } from './cross-highlight'
 import type { ApplyOutcome, ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
+import {
+  createAgentLoopRuntime,
+  type AgentLoopLike,
+} from './ai/loop-runtime'
 import {
   MAX_READ_RANGE_CELLS,
   type ActiveSheetInfo,
@@ -1130,10 +1135,11 @@ export function App(): React.JSX.Element {
   /** true once any tool of the run mutated the workbook */
   const runMutatedRef = useRef(false)
 
-  const agentLoopRef = useRef<AgentLoop | null>(null)
+  const agentLoopRef = useRef<AgentLoopLike | null>(null)
   if (!agentLoopRef.current) {
-    agentLoopRef.current = new AgentLoop({
+    agentLoopRef.current = createAgentLoopRuntime({
       transport: createElectronTransport(() => aiSettingsRef.current!),
+      getDocumentId: () => window.nexusdeskBrowserHost?.document.documentId ?? null,
       systemSuffix: aiLangDirective,
       skill: composeSkills('sheets+files', '', [
         createWorkbookSkill(sheetsSkillDeps()),
@@ -4170,7 +4176,7 @@ export function App(): React.JSX.Element {
   }
   useEffect(() => {
     const handlers = mcpSheetHandlersRef
-    return installSheetsMcpBridge({
+    const currentHandlers: McpSheetHandlers = {
       hasWorkbook: () => handlers.current?.hasWorkbook() ?? false,
       context: () => handlers.current?.context(),
       readCells: (addresses, sheetId) => handlers.current?.readCells(addresses, sheetId) ?? {},
@@ -4188,7 +4194,59 @@ export function App(): React.JSX.Element {
           ok: false,
           error: 'the spreadsheet is not ready',
         },
-    })
+    }
+    const uninstallMcp = installSheetsMcpBridge(currentHandlers)
+    const browserHost = window.nexusdeskBrowserHost
+    if (browserHost !== undefined) {
+      browserHost.attachEditor(createSheetsAdapter({
+        handlers: currentHandlers,
+        document: () => {
+          const connection = browserHost.bridge.client()
+          return {
+            documentId: browserHost.document.documentId,
+            clientId: connection.clientId ?? 'disconnected-client' as ClientId,
+            revision: browserHost.document.revision,
+            title: browserHost.document.title,
+            attached: connection.attached,
+          }
+        },
+        consumeApproval: (approvalId, planHash) =>
+          browserHost.bridge.consumeApproval(approvalId, planHash),
+        verify: async (operations) => {
+          const targets = formulaTargetsFromOps(operations)
+          if (targets.length === 0) return { passed: true, issues: [] }
+          const values = await awaitFormulaValues(targets, (addresses, sheetId) =>
+            readCellsImpl(readContext(), [...addresses], sheetId),
+          )
+          const resolved = new Map(values.map((value) => [
+            `${value.sheetId}!${value.address}`,
+            value.value,
+          ]))
+          const issues = targets.flatMap((target) => {
+            const key = `${target.sheetId}!${target.address}`
+            if (!resolved.has(key)) {
+              return [{
+                code: 'FORMULA_NOT_RESOLVED',
+                message: `${key} did not produce a value before verification timed out.`,
+                target: key,
+              }]
+            }
+            const value = resolved.get(key)
+            return typeof value === 'string' && value.startsWith('#')
+              ? [{ code: 'FORMULA_ERROR', message: `${key} evaluates to ${value}.`, target: key }]
+              : []
+          })
+          return { passed: issues.length === 0, issues }
+        },
+        rollback: async () => {
+          await univerRef.current?.univerAPI.undo()
+        },
+        commitRevision: () => {
+          browserHost.updateRevision((Number(browserHost.document.revision) + 1) as Revision)
+        },
+      }))
+    }
+    return uninstallMcp
   }, [])
   /// Re-renders the floating visuals after a journal mutation (edits and
   /// their undo/redo closures share it).

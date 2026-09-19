@@ -16,6 +16,7 @@ import { App } from './App'
 import { installCanvasFontFallback, registerCellFontAliases } from './cell-font-fallback'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
 import type { UiTheme } from '../shared/desktop-api'
+import { installBrowserHostApi, selectSheetsHost } from './browser-host-api'
 import './styles.css'
 
 if (import.meta.hot) {
@@ -54,14 +55,40 @@ async function loadCellFonts(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
+  let selection
+  try {
+    selection = await selectSheetsHost({
+      search: window.location.search,
+      electronApi: window.desktopApi,
+      installBrowser: async () => {
+        const browserBootstrap = window.nexusdeskBootstrap
+        if (browserBootstrap === undefined) {
+          throw new Error('The authenticated NexusDesk document bootstrap is missing.')
+        }
+        return installBrowserHostApi(browserBootstrap)
+      },
+    })
+  } catch (error: unknown) {
+    renderStartupError(error instanceof Error ? error.message : 'NexusDesk Sheets could not start.')
+    return
+  }
+  if (selection.kind === 'error') {
+    renderStartupError(selection.message)
+    return
+  }
+  const desktopApi = window.desktopApi
+  if (desktopApi === undefined) {
+    renderStartupError('NexusDesk Sheets could not start because its host API is unavailable.')
+    return
+  }
   let lang: Lang = 'zh'
   let theme: UiTheme = 'system'
   try {
     // per-promise catch: standalone runs have no app:get-theme handler, and
     // that rejection must not drop a resolved language
     ;[lang, theme] = await Promise.all([
-      window.desktopApi.getLanguage().catch(() => 'zh' as const),
-      window.desktopApi.getTheme().catch(() => 'system' as const),
+      desktopApi.getLanguage().catch(() => 'zh' as const),
+      desktopApi.getTheme().catch(() => 'system' as const),
     ])
   } catch {
     /* dev renderer without the preload bridge */
@@ -70,17 +97,29 @@ async function bootstrap(): Promise<void> {
   document.documentElement.lang = htmlLang(lang)
   applyTheme(theme)
   await loadCellFonts()
-  window.desktopApi?.onThemeChanged(applyTheme)
-  void window.desktopApi
-    ?.getAiPanelPrefs?.()
+  desktopApi.onThemeChanged(applyTheme)
+  void desktopApi
+    .getAiPanelPrefs()
     .then(applyAiPanelPrefs)
     .catch(() => {})
-  window.desktopApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
+  desktopApi.onAiPanelPrefsChanged(applyAiPanelPrefs)
   ReactDOM.createRoot(root!).render(
     <LocaleProvider initial={lang}>
       <App />
     </LocaleProvider>,
   )
+}
+
+function renderStartupError(message: string): void {
+  const view = document.createElement('main')
+  view.setAttribute('role', 'alert')
+  view.className = 'startup-error'
+  const heading = document.createElement('h1')
+  heading.textContent = 'NexusDesk Sheets could not start'
+  const detail = document.createElement('p')
+  detail.textContent = message
+  view.append(heading, detail)
+  root!.replaceChildren(view)
 }
 
 void bootstrap()
