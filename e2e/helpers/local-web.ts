@@ -77,6 +77,7 @@ export async function launchLocalWebHost() {
   }
   const directory = await mkdtemp(join(tmpdir(), 'nexusdesk-local-web-e2e-'))
   const path = join(directory, 'Forecast.xlsx')
+  const applyCountPath = join(directory, 'apply-count.json')
   const client = new XlsxSidecarClient(sidecarPath(repositoryRoot))
   await seedWorkbook(client, path)
   let opened: OpenWorkbook | undefined
@@ -106,6 +107,7 @@ export async function launchLocalWebHost() {
     ],
     runtimeCommand: {
       entry: resolve(repositoryRoot, 'e2e/fixtures/fake-harness-runtime.mjs'),
+      args: [applyCountPath],
     },
     documentService: {
       async bootstrap(document, origin) {
@@ -224,6 +226,10 @@ export async function launchLocalWebHost() {
 
   return {
     ...running,
+    async readApplyCount() {
+      const state = JSON.parse(await readFile(applyCountPath, 'utf8')) as { applyCount: number }
+      return state.applyCount
+    },
     async readFinalWorkbook() {
       const cli = resolve(repositoryRoot, 'packages/cli/dist/genoffice.cjs')
       if (!existsSync(cli)) {

@@ -14,8 +14,13 @@ test('authenticated browser applies and saves one approved formula-and-chart ope
 
   try {
     await page.goto(host.bootstrapUrl)
-    await expect(page.getByText('Local Host connected')).toBeVisible()
-    await page.getByRole('link', { name: 'Forecast.xlsx' }).first().click()
+    await expect(page.getByRole('tab', { name: /home/i })).toBeVisible()
+    await expect(page.getByText('Forecast.xlsx')).toBeVisible()
+    await page.getByText('Forecast.xlsx').first().dblclick()
+    await expect(page.getByRole('tab', { name: 'Forecast.xlsx' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
 
     const editor = page.frameLocator('iframe[title="Forecast.xlsx"]')
     await editor
@@ -28,9 +33,13 @@ test('authenticated browser applies and saves one approved formula-and-chart ope
     expect(approvals[0]).toContain('Apply 3 spreadsheet operation')
     expect(approvals[0]).toContain('计划校验值')
     expect(approvals[1]).toContain('Save the current spreadsheet in place')
+    await expect.poll(host.readApplyCount).toBe(1)
 
     await page.reload()
-    await expect(page.getByText('Local Host connected')).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Forecast.xlsx' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
     const reloadedEditor = page.frameLocator('iframe[title="Forecast.xlsx"]')
     await reloadedEditor
       .getByRole('textbox', { name: 'AI instruction' })
@@ -38,6 +47,7 @@ test('authenticated browser applies and saves one approved formula-and-chart ope
     await reloadedEditor.getByRole('textbox', { name: 'AI instruction' }).press('Enter')
     await expect(reloadedEditor.getByText('Workbook saved.')).toBeVisible()
     expect(approvals).toHaveLength(3)
+    await expect.poll(host.readApplyCount).toBe(1)
 
     const workbook = await host.readFinalWorkbook()
     expect(workbook.rows).toEqual([

@@ -256,7 +256,12 @@ export function TabBar() {
           </svg>
         </button>
       )}
-      <div className={dragVisual ? 'tab-strip dragging' : 'tab-strip'} ref={stripRef}>
+      <div
+        className={dragVisual ? 'tab-strip dragging' : 'tab-strip'}
+        ref={stripRef}
+        role="tablist"
+        aria-label="Open documents"
+      >
         {tabs.map((tab, index) => {
           // live transforms: the grabbed tab tracks the pointer; tabs between
           // the origin and the current target slide aside by the grabbed width
@@ -273,6 +278,9 @@ export function TabBar() {
           return (
             <div
               key={tab.id}
+              role="tab"
+              aria-selected={tab.active}
+              tabIndex={tab.active ? 0 : -1}
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
               // long file names ellipsize in the strip — hover reveals the
               // full title (the close button's own tooltip still wins there)
@@ -361,6 +369,11 @@ export function TabBar() {
               onPointerUp={(event) => finishDrag(event.pointerId, true)}
               onPointerCancel={(event) => finishDrag(event.pointerId, false)}
               onLostPointerCapture={(event) => finishDrag(event.pointerId, false)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return
+                event.preventDefault()
+                if (!tab.active) void tabApi.activate(tab.id)
+              }}
             >
               {/* highlight plate behind the content — hover capsule / active white body */}
               <span className="tab-plate" aria-hidden="true" />

@@ -1,8 +1,22 @@
+import { writeFileSync } from 'node:fs'
+
 let turn
 let pending
 let savedOnce = false
 let lastRevision = 1
 let pendingPlanHash
+const applyCountPath = process.argv[2]
+const appliedTransactions = new Set()
+
+const recordApply = (result) => {
+  const transactionId = result?.transactionId
+  if (typeof transactionId === 'string') appliedTransactions.add(transactionId)
+  if (applyCountPath) {
+    writeFileSync(applyCountPath, JSON.stringify({ applyCount: appliedTransactions.size }))
+  }
+}
+
+recordApply()
 
 const operations = [
   { op: 'set_cell', sheet: 'Summary', address: 'A4', value: 'Total' },
@@ -132,6 +146,7 @@ process.on('message', (frame) => {
         })
         return
       }
+      recordApply(frame.result)
       if (savedOnce) {
         finish()
         return
