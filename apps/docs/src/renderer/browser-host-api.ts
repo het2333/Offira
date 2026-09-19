@@ -1,7 +1,13 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
+import type { DocumentId, EditorAdapter, Revision } from '@nexusdesk/protocol'
+import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/web-client'
 
 import type { DesktopApi, OpenFileResult, UiTheme } from '../shared/ipc'
+import {
+  createDocsBrowserAgentBridge,
+  type DocsBrowserAgentBridge,
+} from './agent/browser-agent-api'
 
 type DocsLanguage = Awaited<ReturnType<DesktopApi['getLanguage']>>
 
@@ -47,15 +53,20 @@ export interface DocsBrowserHostHandle {
   readonly capabilities: DocsBrowserCapabilities
   readonly settings: Pick<DocsBrowserBootstrap, 'language' | 'theme'>
   readonly desktopApi: DesktopApi
+  readonly bridge: DocsBrowserAgentBridge
+  attachEditor(adapter: EditorAdapter): () => void
+  updateRevision(revision: number): void
   dispose(): void
 }
 
 export interface DocsBrowserHostTarget {
   desktop?: DesktopApi
+  agentApi?: AgentApi
   nexusdeskDocsHost?: DocsBrowserHostHandle
 }
 
 export interface InstallDocsBrowserHostOptions {
+  client?: NexusClient
   target?: DocsBrowserHostTarget
   transport?: DocsBrowserTransport
 }
@@ -188,7 +199,7 @@ const VOID_METHODS = new Set([
 
 /** Build the preload-shaped surface consumed by the unmodified Docs renderer. */
 export function createDocsBrowserDesktopApi(
-  handle: Pick<DocsBrowserHostHandle, 'document' | 'settings'>,
+  handle: Pick<DocsBrowserHostHandle, 'document' | 'settings' | 'updateRevision'>,
   transport: DocsBrowserTransport,
 ): DesktopApi {
   let pending = true
@@ -244,7 +255,7 @@ export function createDocsBrowserDesktopApi(
       }
       try {
         const result = await transport.writeContent(new Uint8Array(data), handle.document.revision)
-        handle.document.revision = result.revision
+        handle.updateRevision(result.revision)
         return { ok: true }
       } catch (error: unknown) {
         return { ok: false, error: errorMessage(error) }
@@ -317,6 +328,12 @@ export function installDocsBrowserHostApi(
 ): DocsBrowserHostHandle {
   const target = options.target ?? (window as unknown as DocsBrowserHostTarget)
   const transport = options.transport ?? createHttpDocsBrowserTransport(bootstrap)
+  const client = options.client ?? createNexusClient({ url: bootstrap.websocketUrl })
+  const bridge = createDocsBrowserAgentBridge({
+    client,
+    documentId: bootstrap.documentId as DocumentId,
+    revision: bootstrap.revision as Revision,
+  })
   const document = {
     documentId: bootstrap.documentId,
     title: bootstrap.title,
@@ -339,19 +356,32 @@ export function installDocsBrowserHostApi(
     document,
     capabilities,
     settings,
+    bridge,
     get desktopApi() {
       return desktopApi
+    },
+    attachEditor(adapter) {
+      return bridge.attachEditor(adapter)
+    },
+    updateRevision(revision) {
+      document.revision = revision
+      bridge.updateRevision(revision as Revision)
     },
     dispose() {
       if (disposed) return
       disposed = true
+      bridge.dispose()
+      client.close()
       if (target.desktop === desktopApi) delete target.desktop
+      if (target.agentApi === bridge.agentApi) delete target.agentApi
       if (target.nexusdeskDocsHost === handle) delete target.nexusdeskDocsHost
     },
   }
   desktopApi = createDocsBrowserDesktopApi(handle, transport)
   target.desktop = desktopApi
+  target.agentApi = bridge.agentApi
   target.nexusdeskDocsHost = handle
+  client.connect()
   return handle
 }
 

@@ -301,6 +301,8 @@ const WORD_COUNT_THROTTLE_MS = 400
 const MAX_FOLLOW_UP_PASSES = 6
 import { runHeadlessDocumentExport } from './headless-export'
 import { installMcpBridge } from './mcp-bridge'
+import { createDocsEditorAdapter } from './agent/docs-editor-adapter'
+import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
 import {
   allocateListNumId as allocateListNumIdImpl,
   continueNumbering as continueNumberingImpl,
@@ -1597,11 +1599,33 @@ export function App() {
     return () => window.clearInterval(timer)
   }, [tornDown])
 
-  // MCP bridge: let an external agent drive this visible editor. Commands arrive
-  // from the shell main process and run against the live ctx (refs refresh per render).
+  // Compatibility MCP and the native NexusDesk bridge share the same live
+  // editor context and transport-neutral Docs command executor.
   useEffect(() => {
     if (tornDown || !editor) return
-    return installMcpBridge({ getCtx: () => fileCtxRef.current })
+    const uninstallMcp = installMcpBridge({ getCtx: () => fileCtxRef.current })
+    const browserHost = window.nexusdeskDocsHost
+    const detachEditor = browserHost?.attachEditor(
+      createDocsEditorAdapter({
+        context: () => fileCtxRef.current,
+        document: () => {
+          const connection = browserHost.bridge.client()
+          return {
+            documentId: browserHost.document.documentId as DocumentId,
+            clientId: connection.clientId ?? ('disconnected-client' as ClientId),
+            revision: browserHost.document.revision as Revision,
+            title: browserHost.document.title,
+            attached: connection.attached,
+          }
+        },
+        consumeApproval: (approvalId, planHash) =>
+          browserHost.bridge.consumeApproval(approvalId, planHash),
+      }),
+    )
+    return () => {
+      detachEditor?.()
+      uninstallMcp()
+    }
   }, [tornDown, editor])
 
   // Recompute the document-level line-height factor while editing:

@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
 
 import { describe, expect, it, vi } from 'vitest'
+import type {
+  AgentServerFrame,
+  ClientFrame,
+  ClientId,
+} from '@nexusdesk/protocol'
+import type { NexusClient, NexusClientState } from '@nexusdesk/web-client'
 
 import {
   createDocsBrowserDesktopApi,
@@ -13,6 +19,33 @@ import {
 
 const sourceBytes = new TextEncoder().encode('authorized docx bytes')
 const nextBytes = new TextEncoder().encode('saved docx bytes')
+
+class FakeClient implements NexusClient {
+  state: NexusClientState = 'ready'
+  clientId = 'client-1' as ClientId
+  readonly sent: ClientFrame[] = []
+  connectCount = 0
+  closeCount = 0
+
+  connect() {
+    this.connectCount += 1
+  }
+  close() {
+    this.closeCount += 1
+  }
+  send(frame: ClientFrame) {
+    this.sent.push(frame)
+  }
+  request(): Promise<AgentServerFrame> {
+    throw new Error('not used')
+  }
+  onFrame() {
+    return () => undefined
+  }
+  onState() {
+    return () => undefined
+  }
+}
 
 function bootstrap(): DocsBrowserBootstrap {
   return {
@@ -146,6 +179,26 @@ describe('Docs browser host lifecycle', () => {
 
     handle.dispose()
     expect(target).toEqual({})
+  })
+
+  it('owns the native Agent API and keeps its registration revision synchronized', () => {
+    const target: Record<string, unknown> = {}
+    const client = new FakeClient()
+    const handle = installDocsBrowserHostApi(bootstrap(), {
+      target,
+      transport: transport(),
+      client,
+    })
+
+    expect(target.agentApi).toBe(handle.bridge.agentApi)
+    expect(client.connectCount).toBe(1)
+    handle.updateRevision(2)
+    expect(handle.document.revision).toBe(2)
+    expect(client.sent.at(-1)).toMatchObject({ type: 'editor:revision', revision: 2 })
+
+    handle.dispose()
+    expect(target).toEqual({})
+    expect(client.closeCount).toBe(1)
   })
 
   it('selects explicit local Web mode before an Electron preload', async () => {
