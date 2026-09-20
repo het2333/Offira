@@ -3892,9 +3892,9 @@ var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) =>
     }
     const _out = def.transform(payload.value, payload);
     if (ctx2.async) {
-      const output2 = _out instanceof Promise ? _out : Promise.resolve(_out);
-      return output2.then((output3) => {
-        payload.value = output3;
+      const output3 = _out instanceof Promise ? _out : Promise.resolve(_out);
+      return output3.then((output4) => {
+        payload.value = output4;
         payload.fallback = true;
         return payload;
       });
@@ -4315,12 +4315,12 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
       output: inst._def.output
     });
   };
-  inst.output = (output2) => {
+  inst.output = (output3) => {
     const F = inst.constructor;
     return new F({
       type: "function",
       input: inst._def.input,
-      output: output2
+      output: output3
     });
   };
   return inst;
@@ -13694,15 +13694,15 @@ var ZodTransform = /* @__PURE__ */ $constructor("ZodTransform", (inst, def) => {
         payload.issues.push(util_exports.issue(_issue));
       }
     };
-    const output2 = def.transform(payload.value, payload);
-    if (output2 instanceof Promise) {
-      return output2.then((output3) => {
-        payload.value = output3;
+    const output3 = def.transform(payload.value, payload);
+    if (output3 instanceof Promise) {
+      return output3.then((output4) => {
+        payload.value = output4;
         payload.fallback = true;
         return payload;
       });
     }
-    payload.value = output2;
+    payload.value = output3;
     payload.fallback = true;
     return payload;
   };
@@ -14783,6 +14783,12 @@ var DOCS_TOOL_NAMES = [
   "apply_document_operations",
   "save_document"
 ];
+var MARKDOWN_TOOL_NAMES = [
+  "read_markdown",
+  "apply_markdown_operations",
+  "save_markdown"
+];
+var HTML_TOOL_NAMES = ["read_html", "apply_html_operations", "save_html"];
 var SLIDES_TOOL_NAMES = [
   "read_presentation",
   "apply_presentation_operations",
@@ -14790,11 +14796,19 @@ var SLIDES_TOOL_NAMES = [
   "undo_presentation",
   "redo_presentation"
 ];
-var OFFICE_TOOL_NAMES = [...SHEETS_TOOL_NAMES, ...DOCS_TOOL_NAMES, ...SLIDES_TOOL_NAMES];
+var OFFICE_TOOL_NAMES = [
+  ...SHEETS_TOOL_NAMES,
+  ...DOCS_TOOL_NAMES,
+  ...SLIDES_TOOL_NAMES,
+  ...MARKDOWN_TOOL_NAMES,
+  ...HTML_TOOL_NAMES
+];
 function officeToolNames(editorType) {
   if (editorType === "docs") return DOCS_TOOL_NAMES;
   if (editorType === "sheets") return SHEETS_TOOL_NAMES;
   if (editorType === "slides") return SLIDES_TOOL_NAMES;
+  if (editorType === "markdown") return MARKDOWN_TOOL_NAMES;
+  if (editorType === "html") return HTML_TOOL_NAMES;
   throw new Error(`unsupported Office editor: ${editorType}`);
 }
 function configureOfficeToolScope(agentContext, editorType) {
@@ -14844,6 +14858,7 @@ function proposalFrom(result2) {
   return {
     operationId,
     proposal: {
+      operationId,
       planHash,
       summary: typeof data.summary === "string" ? data.summary : result2.summary,
       targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
@@ -14890,15 +14905,15 @@ function createDocsTools(bridge) {
         await bridge.request("propose_ops", { ops: args.operations }, exec)
       );
       if (!proposalResult.ok) return proposalResult;
-      const { operationId, proposal: proposal2 } = proposalFrom(proposalResult);
-      const approval = await bridge.approve("apply_document_operations", proposal2, exec);
+      const { operationId, proposal: proposal3 } = proposalFrom(proposalResult);
+      const approval = await bridge.approve("apply_document_operations", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("document mutation was not approved");
       }
       return agentResult(
         await bridge.request("apply_ops", { ops: args.operations }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal2.planHash,
+          planHash: proposal3.planHash,
           operationId
         })
       );
@@ -14910,20 +14925,20 @@ function createDocsTools(bridge) {
     parameters: {},
     output: agentOutput,
     async execute(_args, exec) {
-      const proposal2 = {
+      const proposal3 = {
         planHash: "save-current-document-in-place",
         summary: "Save the current document in place.",
         targets: ["current document"],
         warnings: []
       };
-      const approval = await bridge.approve("save_document", proposal2, exec);
+      const approval = await bridge.approve("save_document", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("document save was not approved");
       }
       return agentResult(
         await bridge.request("save_document", { inPlace: true }, exec, {
           approvalId: approval.approvalId,
-          planHash: proposal2.planHash
+          planHash: proposal3.planHash
         })
       );
     }
@@ -14931,9 +14946,187 @@ function createDocsTools(bridge) {
   return [read, apply, save];
 }
 
-// src/sheets-tools.ts
+// src/markdown-tools.ts
 import { defineTool as defineTool2 } from "@deepseek-ai/dsh-tools";
 var agentOutput2 = {
+  schema: { type: "json" },
+  render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
+};
+var MARKDOWN_DSL_GUIDE = [
+  "Markdown DSL (ordered and atomic):",
+  'insertContent {after: number|"selection", markdown}',
+  'replaceBlocks {target: "selection"|{start,end?}, markdown}',
+  "deleteBlocks {target}",
+  "replaceText {target, find, replace}",
+  'setStyle {target, style: "bold"|"italic"|"strike"|"code", find?, mode?}',
+  "setLink {target, href: string|null, find?}",
+  'setBlockType {target, type: "paragraph"|"heading"|"blockquote"|"codeBlock", level?, language?}',
+  'toggleList {target, list: "bullet"|"ordered"|"task"}',
+  "moveBlocks {target, after}",
+  "duplicateBlocks {target}",
+  "insertTable {after, rows?, cols?, headerRow?}",
+  "insertHorizontalRule {after}",
+  "insertImage {after, src, alt?}",
+  "editTable {target, action, row?, col?}",
+  "setFrontmatter {yaml}"
+].join("\n");
+function agentResult2(value) {
+  return parseAgentToolResult({
+    ok: value.ok,
+    summary: value.summary,
+    warnings: value.warnings,
+    ...value.changes === void 0 ? {} : { changes: value.changes },
+    ...value.verification === void 0 ? {} : { verification: value.verification },
+    ...value.continuation === void 0 ? {} : { continuation: value.continuation },
+    ...value.transactionId === void 0 ? {} : { transactionId: value.transactionId },
+    ...value.data === void 0 ? {} : { data: value.data }
+  });
+}
+function approvalDenied(action) {
+  return agentResult2({
+    ok: false,
+    summary: `${action} was not approved.`,
+    warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }]
+  });
+}
+function proposalFrom2(result2) {
+  const data = result2.data ?? {};
+  if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
+    throw new Error("Markdown editor returned an invalid edit proposal");
+  }
+  return {
+    operationId: data.operationId,
+    proposal: {
+      operationId: data.operationId,
+      planHash: data.planHash,
+      summary: typeof data.summary === "string" ? data.summary : result2.summary,
+      targets: Array.isArray(data.targets) ? data.targets.filter((target) => typeof target === "string") : [],
+      warnings: result2.warnings
+    }
+  };
+}
+function createMarkdownTools(bridge) {
+  const read = defineTool2({
+    name: "read_markdown",
+    description: "Read a bounded structural view of the current Markdown document.",
+    parameters: {},
+    output: agentOutput2,
+    isConcurrencySafe: () => true,
+    async execute(_args, execution) {
+      return agentResult2(await bridge.request("read_markdown", {}, execution));
+    }
+  });
+  const apply = defineTool2({
+    name: "apply_markdown_operations",
+    description: "Apply one ordered batch of existing GenOffice Markdown apply_ops operations after exact user approval.",
+    parameters: {
+      operations: {
+        type: "array",
+        required: true,
+        items: { type: "json" },
+        description: `Use only the curated GenOffice operations below. Block indexes come from read_markdown.
+${MARKDOWN_DSL_GUIDE}`
+      }
+    },
+    output: agentOutput2,
+    async execute(args, execution) {
+      const proposed = agentResult2(await bridge.request("propose_ops", { ops: args.operations }, execution));
+      if (!proposed.ok) return proposed;
+      const { operationId, proposal: proposal3 } = proposalFrom2(proposed);
+      const approval = await bridge.approve("apply_markdown_operations", proposal3, execution);
+      if (!approval.approved || approval.approvalId === void 0) {
+        return approvalDenied("Markdown mutation");
+      }
+      return agentResult2(
+        await bridge.request("apply_ops", { ops: args.operations }, execution, {
+          approvalId: approval.approvalId,
+          planHash: proposal3.planHash,
+          operationId
+        })
+      );
+    }
+  });
+  const save = defineTool2({
+    name: "save_markdown",
+    description: "Save the current Markdown document in place. The model cannot choose the path.",
+    parameters: {},
+    output: agentOutput2,
+    async execute(_args, execution) {
+      const proposal3 = {
+        planHash: "save-current-markdown-in-place",
+        summary: "Save the current Markdown document in place.",
+        targets: ["current document"],
+        warnings: []
+      };
+      const approval = await bridge.approve("save_markdown", proposal3, execution);
+      if (!approval.approved || approval.approvalId === void 0) {
+        return approvalDenied("Markdown save");
+      }
+      return agentResult2(
+        await bridge.request("save_markdown", { inPlace: true }, execution, {
+          approvalId: approval.approvalId,
+          planHash: proposal3.planHash
+        })
+      );
+    }
+  });
+  return [read, apply, save];
+}
+
+// src/html-tools.ts
+import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
+var output = { schema: { type: "json" }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] };
+var HTML_DSL_GUIDE = [
+  "HTML DSL (stable sid targets from read_html):",
+  "str_replace {old, new, sid?, replace_all?}",
+  "replace_element {sid, html}",
+  "set_inner_html {sid, html}",
+  "set_text {sid, text}",
+  'insert_html {sid, position: "before"|"after"|"prepend"|"append", html}',
+  "remove {sid}",
+  'move {sid, position: "before"|"after", ref_sid}',
+  "set_attr {sid, name, value: string|null}",
+  "set_style {sid, styles: {property: string|null}}",
+  "set_tag {sid, tag}",
+  "set_text_node {sid, index, text}",
+  "wrap_text {sid, start, end, tag, attrs?}",
+  "unwrap {sid}"
+].join("\n");
+function bounded(value) {
+  return parseAgentToolResult({ ok: value.ok, summary: value.summary, warnings: value.warnings, ...value.changes ? { changes: value.changes } : {}, ...value.verification ? { verification: value.verification } : {}, ...value.transactionId ? { transactionId: value.transactionId } : {}, ...value.data ? { data: value.data } : {} });
+}
+function approvalDenied2(action) {
+  return bounded({ ok: false, summary: `${action} was not approved.`, warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }] });
+}
+function proposal(result2) {
+  const data = result2.data ?? {};
+  if (typeof data.operationId !== "string" || typeof data.planHash !== "string") throw new Error("HTML editor returned an invalid edit proposal");
+  return { operationId: data.operationId, proposal: { operationId: data.operationId, planHash: data.planHash, summary: typeof data.summary === "string" ? data.summary : result2.summary, targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [], warnings: result2.warnings } };
+}
+function createHtmlTools(bridge) {
+  const read = defineTool3({ name: "read_html", description: "Read a bounded structural view of the current HTML document.", parameters: {}, output, isConcurrencySafe: () => true, async execute(_args, execution) {
+    return bounded(await bridge.request("read_html", {}, execution));
+  } });
+  const apply = defineTool3({ name: "apply_html_operations", description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.", parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: `Use only the curated GenOffice operations below. Stable sid values come from read_html.
+${HTML_DSL_GUIDE}` } }, output, async execute(args, execution) {
+    const proposed = bounded(await bridge.request("propose_ops", { ops: args.operations }, execution));
+    if (!proposed.ok) return proposed;
+    const value = proposal(proposed);
+    const approval = await bridge.approve("apply_html_operations", value.proposal, execution);
+    if (!approval.approved || approval.approvalId === void 0) return approvalDenied2("HTML mutation");
+    return bounded(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: value.proposal.planHash, operationId: value.operationId }));
+  } });
+  const save = defineTool3({ name: "save_html", description: "Save the current HTML document in place. The model cannot choose the path.", parameters: {}, output, async execute(_args, execution) {
+    const approved = await bridge.approve("save_html", { planHash: "save-current-html-in-place", summary: "Save the current HTML document in place.", targets: ["current document"], warnings: [] }, execution);
+    if (!approved.approved || approved.approvalId === void 0) return approvalDenied2("HTML save");
+    return bounded(await bridge.request("save_html", { inPlace: true }, execution, { approvalId: approved.approvalId, planHash: "save-current-html-in-place" }));
+  } });
+  return [read, apply, save];
+}
+
+// src/sheets-tools.ts
+import { defineTool as defineTool4 } from "@deepseek-ai/dsh-tools";
+var agentOutput3 = {
   schema: { type: "json" },
   render: (_args, value) => [
     {
@@ -14943,7 +15136,7 @@ var agentOutput2 = {
   ]
 };
 function createSheetsTools(bridge) {
-  const read = defineTool2({
+  const read = defineTool4({
     name: "read_sheet",
     description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
     parameters: {
@@ -14958,7 +15151,7 @@ function createSheetsTools(bridge) {
         description: "A bounded list of A1 cell or range addresses."
       }
     },
-    output: agentOutput2,
+    output: agentOutput3,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
       const result2 = await bridge.request(
@@ -14973,7 +15166,7 @@ function createSheetsTools(bridge) {
       return result2;
     }
   });
-  const apply = defineTool2({
+  const apply = defineTool4({
     name: "apply_sheet_operations",
     description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.",
     parameters: {
@@ -14984,7 +15177,7 @@ function createSheetsTools(bridge) {
         description: "Ordered GenOffice spreadsheet DSL operations. Use worksheet names from read_sheet."
       }
     },
-    output: agentOutput2,
+    output: agentOutput3,
     async execute(args, exec) {
       const proposalResult = await bridge.request("propose_ops", { ops: args.operations }, exec);
       if (!proposalResult.ok) return proposalResult;
@@ -14994,13 +15187,14 @@ function createSheetsTools(bridge) {
       if (typeof planHash !== "string" || typeof operationId !== "string") {
         throw new Error("spreadsheet editor returned an invalid edit proposal");
       }
-      const proposal2 = {
+      const proposal3 = {
+        operationId,
         planHash,
         summary: typeof proposalData.summary === "string" ? proposalData.summary : proposalResult.summary,
         targets: Array.isArray(proposalData.targets) ? proposalData.targets.filter((value) => typeof value === "string") : [],
         warnings: proposalResult.warnings
       };
-      const approval = await bridge.approve("apply_sheet_operations", proposal2, exec);
+      const approval = await bridge.approve("apply_sheet_operations", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet mutation was not approved");
       }
@@ -15012,25 +15206,25 @@ function createSheetsTools(bridge) {
       return result2;
     }
   });
-  const save = defineTool2({
+  const save = defineTool4({
     name: "save_sheet",
     description: "Save the open spreadsheet in place. The model cannot choose or change the destination path.",
     parameters: {},
-    output: agentOutput2,
+    output: agentOutput3,
     async execute(_args, exec) {
-      const proposal2 = {
+      const proposal3 = {
         planHash: "save-current-workbook-in-place",
         summary: "Save the current spreadsheet in place.",
         targets: ["current workbook"],
         warnings: []
       };
-      const approval = await bridge.approve("save_sheet", proposal2, exec);
+      const approval = await bridge.approve("save_sheet", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
         throw new Error("spreadsheet save was not approved");
       }
       const result2 = await bridge.request("save_sheet", { inPlace: true }, exec, {
         approvalId: approval.approvalId,
-        planHash: proposal2.planHash
+        planHash: proposal3.planHash
       });
       return result2;
     }
@@ -15039,8 +15233,8 @@ function createSheetsTools(bridge) {
 }
 
 // src/slides-tools.ts
-import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
-var output = {
+import { defineTool as defineTool5 } from "@deepseek-ai/dsh-tools";
+var output2 = {
   schema: { type: "json" },
   render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
 };
@@ -15056,7 +15250,7 @@ function result(value) {
     ...value.data === void 0 ? {} : { data: value.data }
   });
 }
-function proposal(value) {
+function proposal2(value) {
   const data = value.data ?? {};
   if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
     throw new Error("presentation editor returned an invalid edit proposal");
@@ -15073,7 +15267,7 @@ function proposal(value) {
   };
 }
 function saveProposal(value) {
-  const pending = proposal(value);
+  const pending = proposal2(value);
   const data = value.data ?? {};
   const contentVersion = data.contentVersion;
   if (typeof contentVersion !== "number" || !Number.isSafeInteger(contentVersion) || contentVersion < 1) {
@@ -15082,15 +15276,15 @@ function saveProposal(value) {
   return { ...pending, contentVersion };
 }
 function historyTool(name, action, bridge) {
-  return defineTool3({
+  return defineTool5({
     name,
     description: `${action === "undo" ? "Undo" : "Redo"} the latest presentation change after exact user approval.`,
     parameters: {},
-    output,
+    output: output2,
     async execute(_args, execution) {
       const proposed = result(await bridge.request("propose_history", { action }, execution));
       if (!proposed.ok) return proposed;
-      const pending = proposal(proposed);
+      const pending = proposal2(proposed);
       const approval = await bridge.approve(name, pending.proposal, execution);
       if (!approval.approved || approval.approvalId === void 0) throw new Error(`presentation ${action} was not approved`);
       return result(await bridge.request("apply_history", { action }, execution, {
@@ -15103,35 +15297,35 @@ function historyTool(name, action, bridge) {
 }
 function createSlidesTools(bridge) {
   return [
-    defineTool3({
+    defineTool5({
       name: "read_presentation",
       description: "Read a bounded structural view of the current presentation, including slide and element identities.",
       parameters: {},
-      output,
+      output: output2,
       isConcurrencySafe: () => true,
       async execute(_args, execution) {
         return result(await bridge.request("read_presentation", {}, execution));
       }
     }),
-    defineTool3({
+    defineTool5({
       name: "apply_presentation_operations",
       description: "Apply one ordered GenOffice presentation transaction after exact user approval.",
       parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: "Ordered GenOffice PPTX transaction operations using identities from read_presentation." } },
-      output,
+      output: output2,
       async execute(args, execution) {
         const proposed = result(await bridge.request("propose_ops", { ops: args.operations }, execution));
         if (!proposed.ok) return proposed;
-        const pending = proposal(proposed);
+        const pending = proposal2(proposed);
         const approval = await bridge.approve("apply_presentation_operations", pending.proposal, execution);
         if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation mutation was not approved");
         return result(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: pending.proposal.planHash, operationId: pending.operationId }));
       }
     }),
-    defineTool3({
+    defineTool5({
       name: "save_presentation",
       description: "Save the open presentation in place. The model cannot choose or change the authorized path.",
       parameters: {},
-      output,
+      output: output2,
       async execute(_args, execution) {
         const proposed = result(await bridge.request("propose_save", {}, execution));
         if (!proposed.ok) return proposed;
@@ -15329,15 +15523,15 @@ function createEditorToolBridge(editorType) {
       target.revision = reply.currentRevision;
       return reply.result;
     },
-    async approve(toolName, proposal2, execution) {
+    async approve(toolName, proposal3, execution) {
       if (execution.agent === void 0) return { approved: false };
       const sessionId = String(execution.agent.id ?? "");
       const pending = requestParentTracked({
         type: "approval:request",
         sessionId,
         toolName,
-        reason: proposal2.summary,
-        proposal: proposal2
+        reason: proposal3.summary,
+        proposal: proposal3
       });
       const reply = await pending.reply;
       return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
@@ -15347,6 +15541,8 @@ function createEditorToolBridge(editorType) {
 disposeOfficeTools = [
   ...createSheetsTools(createEditorToolBridge("sheets")),
   ...createDocsTools(createEditorToolBridge("docs")),
+  ...createMarkdownTools(createEditorToolBridge("markdown")),
+  ...createHtmlTools(createEditorToolBridge("html")),
   ...createSlidesTools(createEditorToolBridge("slides"))
 ].map((tool) => ctx.tools.register(tool));
 ctx.on(
@@ -15385,5 +15581,11 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles,
-  toolCatalogs: { docs: DOCS_TOOL_NAMES, sheets: SHEETS_TOOL_NAMES, slides: SLIDES_TOOL_NAMES }
+  toolCatalogs: {
+    docs: DOCS_TOOL_NAMES,
+    sheets: SHEETS_TOOL_NAMES,
+    slides: SLIDES_TOOL_NAMES,
+    markdown: MARKDOWN_TOOL_NAMES,
+    html: HTML_TOOL_NAMES
+  }
 });
