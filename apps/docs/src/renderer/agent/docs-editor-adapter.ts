@@ -30,6 +30,26 @@ const MAX_OPERATIONS = 200
 const MAX_TARGETS = 200
 const MAX_WARNINGS = 100
 const MAX_PAYLOAD_BYTES = 256 * 1024
+const MAX_PENDING_PROPOSALS = 128
+
+type DocsEditor = NonNullable<FileActionContext['editor']>
+
+interface ContentGeneration {
+  value: number
+}
+
+const contentGenerations = new WeakMap<DocsEditor, ContentGeneration>()
+
+function contentGeneration(editor: DocsEditor): ContentGeneration {
+  const existing = contentGenerations.get(editor)
+  if (existing !== undefined) return existing
+  const generation = { value: 0 }
+  editor.on('transaction', ({ transaction }) => {
+    if (transaction.docChanged) generation.value += 1
+  })
+  contentGenerations.set(editor, generation)
+  return generation
+}
 
 export interface DocsDocumentState {
   documentId: DocumentId
@@ -58,6 +78,13 @@ interface RecordedOperation {
 interface ProposedContentSnapshot {
   planHash: string
   contentHash: string
+  contentVersion: number
+}
+
+interface MatchedContentSnapshot {
+  editor: DocsEditor
+  document: ProseMirrorNode
+  contentVersion: number
 }
 
 function failure(code: string, message: string): AgentEditResult {
@@ -89,8 +116,9 @@ async function sha256(value: unknown): Promise<string> {
 async function hashPlan(
   plan: Pick<EditPlan, 'target' | 'operations'>,
   contentHash: string,
+  contentVersion: number,
 ): Promise<string> {
-  return sha256({ target: plan.target, operations: plan.operations, contentHash })
+  return sha256({ target: plan.target, operations: plan.operations, contentHash, contentVersion })
 }
 
 function transactionId(): TransactionId {
@@ -249,9 +277,10 @@ class DocsEditorAdapter implements EditorAdapter {
     const editor = this.options.context().editor
     if (!editor) throw new Error('the document editor is not ready')
     const contentDocument = editor.state.doc
+    const contentVersion = contentGeneration(editor).value
     const contentHash = await sha256(contentDocument.toJSON())
-    const planHash = await hashPlan({ target, operations }, contentHash)
-    this.proposedContent.set(target.operationId, { planHash, contentHash })
+    const planHash = await hashPlan({ target, operations }, contentHash, contentVersion)
+    this.rememberProposal(target.operationId, { planHash, contentHash, contentVersion })
     return {
       target,
       planId: `docs-plan-${globalThis.crypto.randomUUID()}`,
@@ -270,45 +299,118 @@ class DocsEditorAdapter implements EditorAdapter {
         : failure('OPERATION_ID_COLLISION', 'this operation id is already bound to another plan')
     }
     const document = this.options.document()
-    if (!document.attached) return failure('DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    if (!document.attached) {
+      return this.terminalFailure(plan, 'DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    }
     if (document.documentId !== plan.target.documentId) {
-      return failure('DOCUMENT_NOT_FOUND', `document ${plan.target.documentId} is not open`)
+      return this.terminalFailure(
+        plan,
+        'DOCUMENT_NOT_FOUND',
+        `document ${plan.target.documentId} is not open`,
+      )
     }
     if (document.clientId !== plan.target.clientId) {
-      return failure('WRONG_CLIENT', 'the document is open in another browser client')
+      return this.terminalFailure(
+        plan,
+        'WRONG_CLIENT',
+        'the document is open in another browser client',
+      )
     }
     if (document.revision !== plan.target.revision) {
-      return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+      return this.terminalFailure(
+        plan,
+        'STALE_REVISION',
+        'the document changed after this plan was prepared',
+      )
     }
     const proposedContent = this.proposedContent.get(plan.target.operationId)
     if (proposedContent === undefined || proposedContent.planHash !== plan.planHash) {
       return failure('APPROVAL_INVALID', 'approval does not authorize this exact document plan')
     }
     if ((await this.matchingProposedContent(proposedContent)) === undefined) {
-      this.proposedContent.delete(plan.target.operationId)
-      return failure('STALE_CONTENT', 'the Docs editor changed after this plan was prepared')
+      return this.terminalFailure(
+        plan,
+        'STALE_CONTENT',
+        'the Docs editor changed after this plan was prepared',
+      )
     }
     if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash))) {
-      return failure('APPROVAL_INVALID', 'approval does not authorize this exact document plan')
+      return this.terminalFailure(
+        plan,
+        'APPROVAL_INVALID',
+        'approval does not authorize this exact document plan',
+      )
     }
-    if ((await hashPlan(plan, proposedContent.contentHash)) !== plan.planHash) {
-      return failure('PLAN_TAMPERED', 'the approved document plan no longer matches its hash')
+    if (
+      (await hashPlan(plan, proposedContent.contentHash, proposedContent.contentVersion)) !==
+      plan.planHash
+    ) {
+      return this.terminalFailure(
+        plan,
+        'PLAN_TAMPERED',
+        'the approved document plan no longer matches its hash',
+      )
     }
     const current = this.options.document()
-    if (!current.attached) return failure('DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    if (!current.attached) {
+      return this.terminalFailure(plan, 'DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    }
     if (current.documentId !== plan.target.documentId) {
-      return failure('DOCUMENT_NOT_FOUND', `document ${plan.target.documentId} is not open`)
+      return this.terminalFailure(
+        plan,
+        'DOCUMENT_NOT_FOUND',
+        `document ${plan.target.documentId} is not open`,
+      )
     }
     if (current.clientId !== plan.target.clientId) {
-      return failure('WRONG_CLIENT', 'the document is open in another browser client')
+      return this.terminalFailure(
+        plan,
+        'WRONG_CLIENT',
+        'the document is open in another browser client',
+      )
     }
     if (current.revision !== plan.target.revision) {
-      return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+      return this.terminalFailure(
+        plan,
+        'STALE_REVISION',
+        'the document changed after this plan was prepared',
+      )
     }
     const approvedContent = await this.matchingProposedContent(proposedContent)
-    if (approvedContent === undefined || !this.hasCurrentDocument(approvedContent)) {
-      this.proposedContent.delete(plan.target.operationId)
-      return failure('STALE_CONTENT', 'the Docs editor changed after this plan was prepared')
+    const finalDocument = this.options.document()
+    if (!finalDocument.attached) {
+      return this.terminalFailure(plan, 'DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    }
+    if (finalDocument.documentId !== plan.target.documentId) {
+      return this.terminalFailure(
+        plan,
+        'DOCUMENT_NOT_FOUND',
+        `document ${plan.target.documentId} is not open`,
+      )
+    }
+    if (finalDocument.clientId !== plan.target.clientId) {
+      return this.terminalFailure(
+        plan,
+        'WRONG_CLIENT',
+        'the document is open in another browser client',
+      )
+    }
+    if (finalDocument.revision !== plan.target.revision) {
+      return this.terminalFailure(
+        plan,
+        'STALE_REVISION',
+        'the document changed after this plan was prepared',
+      )
+    }
+    if (
+      approvedContent === undefined ||
+      !this.hasCurrentContent(approvedContent, proposedContent)
+    ) {
+      return this.terminalFailure(
+        plan,
+        'STALE_CONTENT',
+        'the Docs editor changed after this plan was prepared',
+      )
     }
     const result = this.applyOnce(plan)
     this.operations.set(plan.target.operationId, { planHash: plan.planHash, result })
@@ -316,20 +418,55 @@ class DocsEditorAdapter implements EditorAdapter {
     return result
   }
 
-  private hasCurrentDocument(document: ProseMirrorNode): boolean {
+  private rememberProposal(operationId: OperationId, proposal: ProposedContentSnapshot): void {
+    this.proposedContent.delete(operationId)
+    this.proposedContent.set(operationId, proposal)
+    while (this.proposedContent.size > MAX_PENDING_PROPOSALS) {
+      const oldest = this.proposedContent.keys().next().value as OperationId | undefined
+      if (oldest === undefined) break
+      this.proposedContent.delete(oldest)
+    }
+  }
+
+  private discardProposal(plan: Pick<ApprovedEditPlan, 'target' | 'planHash'>): void {
+    const proposal = this.proposedContent.get(plan.target.operationId)
+    if (proposal?.planHash === plan.planHash) this.proposedContent.delete(plan.target.operationId)
+  }
+
+  private terminalFailure(
+    plan: Pick<ApprovedEditPlan, 'target' | 'planHash'>,
+    code: string,
+    message: string,
+  ): AgentEditResult {
+    this.discardProposal(plan)
+    return failure(code, message)
+  }
+
+  private hasCurrentContent(
+    matched: MatchedContentSnapshot,
+    proposed: ProposedContentSnapshot,
+  ): boolean {
     const editor = this.options.context().editor
-    return editor !== null && editor !== undefined && editor.state.doc === document
+    return (
+      editor === matched.editor &&
+      editor.state.doc === matched.document &&
+      contentGeneration(editor).value === proposed.contentVersion
+    )
   }
 
   private async matchingProposedContent(
     proposed: ProposedContentSnapshot,
-  ): Promise<ProseMirrorNode | undefined> {
+  ): Promise<MatchedContentSnapshot | undefined> {
     const editor = this.options.context().editor
     if (!editor) return undefined
     const document = editor.state.doc
+    const generation = contentGeneration(editor)
+    const contentVersion = generation.value
+    if (contentVersion !== proposed.contentVersion) return undefined
     const contentHash = await sha256(document.toJSON())
-    return contentHash === proposed.contentHash && this.hasCurrentDocument(document)
-      ? document
+    const matched = { editor, document, contentVersion }
+    return contentHash === proposed.contentHash && this.hasCurrentContent(matched, proposed)
+      ? matched
       : undefined
   }
 

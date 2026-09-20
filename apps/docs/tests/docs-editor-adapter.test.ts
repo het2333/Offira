@@ -61,6 +61,16 @@ function editRequest(overrides: Partial<EditRequest> = {}): EditRequest {
   }
 }
 
+function liveDocumentState() {
+  return {
+    documentId,
+    clientId,
+    revision,
+    title: 'Example.docx',
+    attached: true,
+  }
+}
+
 function setup() {
   const ctx = createContext()
   const approvals = new Map<string, string>()
@@ -77,6 +87,7 @@ function setup() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const editor of liveEditors.splice(0)) editor.destroy()
 })
 
@@ -102,6 +113,21 @@ describe('Docs editor adapter', () => {
     const afterEdit = await adapter.propose(editRequest())
 
     expect(afterEdit.planHash).not.toBe(beforeEdit.planHash)
+  })
+
+  it('binds the plan hash to a monotonic content generation after edit and undo', async () => {
+    const { adapter, ctx } = setup()
+    const beforeEdit = await adapter.propose(editRequest())
+    const editor = ctx.editor!
+
+    editor.view.dispatch(
+      editor.state.tr.insertText(' Temporary.', editor.state.doc.content.size - 1),
+    )
+    expect(editor.commands.undo()).toBe(true)
+    expect(editor.state.doc.textContent).toBe('Original text.')
+    const afterUndo = await adapter.propose(editRequest())
+
+    expect(afterUndo.planHash).not.toBe(beforeEdit.planHash)
   })
 
   it('binds apply to an exact one-time approval and replays by operation id', async () => {
@@ -218,6 +244,27 @@ describe('Docs editor adapter', () => {
     },
   )
 
+  it('rejects an old plan after the editor changes and undoes back to identical JSON', async () => {
+    const { adapter, approvals, ctx } = setup()
+    const plan = await adapter.propose(editRequest())
+    approvals.set('approval-1', plan.planHash)
+    const editor = ctx.editor!
+
+    editor.view.dispatch(
+      editor.state.tr.insertText(' Temporary.', editor.state.doc.content.size - 1),
+    )
+    expect(editor.commands.undo()).toBe(true)
+    expect(editor.state.doc.textContent).toBe('Original text.')
+    const result = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+    })
+    expect(approvals.has('approval-1')).toBe(true)
+    expect(editor.state.doc.textContent).toBe('Original text.')
+  })
+
   it('rechecks unsaved editor content after asynchronous approval consumption', async () => {
     const ctx = createContext()
     let approvalStarted!: () => void
@@ -251,6 +298,198 @@ describe('Docs editor adapter', () => {
       warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
     })
     expect(editor.state.doc.textContent).toBe('Original text. Typed.')
+  })
+
+  it.each([
+    {
+      change: 'attachment',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.attached = false
+      },
+      code: 'DOCUMENT_DETACHED',
+    },
+    {
+      change: 'document identity',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.documentId = 'document-2' as DocumentId
+      },
+      code: 'DOCUMENT_NOT_FOUND',
+    },
+    {
+      change: 'client identity',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.clientId = 'client-2' as ClientId
+      },
+      code: 'WRONG_CLIENT',
+    },
+    {
+      change: 'disk revision',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.revision = 2 as Revision
+      },
+      code: 'STALE_REVISION',
+    },
+  ])(
+    'synchronously rechecks $change after the final snapshot hash await',
+    async ({ mutate, code }) => {
+      const ctx = createContext()
+      const state = liveDocumentState()
+      let releaseDigest!: () => void
+      const digestPending = new Promise<void>((resolve) => {
+        releaseDigest = resolve
+      })
+      let finalDigestStarted!: () => void
+      const finalDigest = new Promise<void>((resolve) => {
+        finalDigestStarted = resolve
+      })
+      const digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle)
+      let digestCalls = 0
+      vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+        digestCalls += 1
+        if (digestCalls === 5) {
+          finalDigestStarted()
+          await digestPending
+        }
+        return digest(algorithm, data)
+      })
+      const adapter = createDocsEditorAdapter({
+        context: () => ctx,
+        document: () => state,
+        consumeApproval: () => true,
+      })
+      const plan = await adapter.propose(editRequest())
+
+      const resultPending = adapter.apply({ ...plan, approvalId: 'approval-1' })
+      await finalDigest
+      mutate(state)
+      releaseDigest()
+      const result = await resultPending
+
+      expect(result).toMatchObject({
+        ok: false,
+        warnings: [expect.objectContaining({ code })],
+      })
+      expect(ctx.editor?.state.doc.textContent).toBe('Original text.')
+    },
+  )
+
+  it.each([
+    {
+      failure: 'a detached browser',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.attached = false
+      },
+    },
+    {
+      failure: 'a different document',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.documentId = 'document-2' as DocumentId
+      },
+    },
+    {
+      failure: 'a different client',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.clientId = 'client-2' as ClientId
+      },
+    },
+    {
+      failure: 'a stale disk revision',
+      mutate: (state: ReturnType<typeof liveDocumentState>) => {
+        state.revision = 2 as Revision
+      },
+    },
+  ])('discards a proposal after $failure', async ({ mutate }) => {
+    const ctx = createContext()
+    const state = liveDocumentState()
+    const approvals = new Map<string, string>()
+    const adapter = createDocsEditorAdapter({
+      context: () => ctx,
+      document: () => state,
+      consumeApproval(id, hash) {
+        if (approvals.get(id) !== hash) return false
+        approvals.delete(id)
+        return true
+      },
+    })
+    const plan = await adapter.propose(editRequest())
+    approvals.set('approval-1', plan.planHash)
+
+    mutate(state)
+    const failed = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+    Object.assign(state, liveDocumentState())
+    const retried = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+    expect(failed.ok).toBe(false)
+    expect(retried).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+    })
+    expect(ctx.editor?.state.doc.textContent).toBe('Original text.')
+  })
+
+  it('discards a proposal after its exact approval is rejected', async () => {
+    const { adapter, approvals, ctx } = setup()
+    const plan = await adapter.propose(editRequest())
+
+    const rejected = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+    approvals.set('approval-1', plan.planHash)
+    const retried = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+    expect(rejected).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+    })
+    expect(retried).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+    })
+    expect(ctx.editor?.state.doc.textContent).toBe('Original text.')
+  })
+
+  it('bounds pending proposals while retaining the newest plan', async () => {
+    const { adapter, approvals, ctx } = setup()
+    const plans = []
+    for (let index = 0; index < 129; index += 1) {
+      plans.push(
+        await adapter.propose(
+          editRequest({ operationId: `operation-${String(index)}` as OperationId }),
+        ),
+      )
+    }
+    const oldest = plans[0]!
+    const newest = plans.at(-1)!
+    approvals.set('oldest-approval', oldest.planHash)
+    approvals.set('newest-approval', newest.planHash)
+
+    const evicted = await adapter.apply({ ...oldest, approvalId: 'oldest-approval' })
+    const retained = await adapter.apply({ ...newest, approvalId: 'newest-approval' })
+
+    expect(evicted).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+    })
+    expect(retained.ok).toBe(true)
+    expect(ctx.editor?.state.doc.textContent).toBe('Approved text.')
+  })
+
+  it('replaces a pending proposal without letting the old plan delete the new one', async () => {
+    const { adapter, approvals, ctx } = setup()
+    const oldPlan = await adapter.propose(editRequest())
+    const editor = ctx.editor!
+    editor.view.dispatch(editor.state.tr.insertText(' Typed.', editor.state.doc.content.size - 1))
+    const newPlan = await adapter.propose(editRequest())
+    approvals.set('old-approval', oldPlan.planHash)
+
+    const oldResult = await adapter.apply({ ...oldPlan, approvalId: 'old-approval' })
+    approvals.set('new-approval', newPlan.planHash)
+    const newResult = await adapter.apply({ ...newPlan, approvalId: 'new-approval' })
+
+    expect(oldResult).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+    })
+    expect(newResult.ok).toBe(true)
+    expect(editor.state.doc.textContent).toBe('Approved text. Typed.')
   })
 
   it('does not claim success when an approved operation changes nothing', async () => {
