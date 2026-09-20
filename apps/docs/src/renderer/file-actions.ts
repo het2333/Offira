@@ -334,6 +334,18 @@ function phasedHostFor(ctx: FileActionContext): PhasedContentHost {
 /** bumped when a document replacement starts; a slower one still parsing must not land */
 let openGeneration = 0
 
+// Renderer-local recovery guards travel with the exact open result without changing
+// the Electron IPC contract. Parsing/font loading must not outlive their edit guard.
+type FileOpenGuard = {
+  settle?(): void | Promise<void>
+  beforeInstall(): boolean
+  complete(): void
+}
+const openGuards = new WeakMap<object, FileOpenGuard>()
+export function guardFileOpen(result: NonNullable<OpenDocxResult>, guard: FileOpenGuard): void {
+  openGuards.set(result, guard)
+}
+
 export async function loadFile(
   ctx: FileActionContext,
   result: OpenDocxResult,
@@ -344,13 +356,16 @@ export async function loadFile(
     return 'password'
   }
   const generation = ++openGeneration
+  const guard = openGuards.get(result)
   try {
     const parsed = await parseDocx(new Uint8Array(result.data))
     if (generation !== openGeneration) return 'superseded'
-    setLazyMediaHashes(parsed.extras.lazyMediaHashes)
     // before setContent: blockAttrs/marks bake fontTable-driven factors and chains into the DOM
     const adopted = await adoptEmbeddedFonts(parsed.embeddedFonts)
+    if (guard?.settle) await guard.settle()
     if (!adopted || generation !== openGeneration) return 'superseded'
+    if (guard && !guard.beforeInstall()) return 'superseded'
+    setLazyMediaHashes(parsed.extras.lazyMediaHashes)
     setDocFontTable(parsed.fontTable)
     ctx.editor.storage.listNumbering.styles = parsed.styles
     ctx.editor.storage.listNumbering.docDefaults = parsed.docDefaults
@@ -461,6 +476,9 @@ export async function loadFile(
     ctx.setStatus(t('appOpenFailed', { error: String(err) }))
     showToast(t('appOpenFailed', { error: String(err) }), 'error')
     return 'failed'
+  } finally {
+    openGuards.delete(result)
+    guard?.complete()
   }
 }
 

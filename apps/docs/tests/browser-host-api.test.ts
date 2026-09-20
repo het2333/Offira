@@ -3,6 +3,12 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentServerFrame, ClientFrame, ClientId } from '@nexusdesk/protocol'
 import type { NexusClient, NexusClientState } from '@nexusdesk/web-client'
+import { Editor } from '@tiptap/core'
+import * as docxEngine from '@genoffice/docx-engine'
+import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
+import { editorExtensions } from '../src/renderer/editor/extensions'
+import { loadFile, type FileActionContext } from '../src/renderer/file-actions'
+import * as embeddedFonts from '../src/renderer/embedded-fonts'
 
 import {
   createDocsBrowserDesktopApi,
@@ -153,6 +159,145 @@ describe('Docs browser DesktopApi', () => {
 })
 
 describe('Docs browser host lifecycle', () => {
+  it.each(['download', 'parse', 'fonts'] as const)(
+    'preserves local header and comments edited while recovery waits for %s',
+    async (boundary) => {
+      const replacement = await buildDocx({
+        bodyXml: '<w:p><w:r><w:t>Remote replacement.</w:t></w:r></w:p>',
+      })
+      const current = {
+        ...bootstrap(),
+        workingCopy: {
+          documentEpoch: 'epoch-1',
+          workingRevision: 4,
+          savedRevision: 1,
+          sourceContentId: 'a'.repeat(64),
+          checkpointId: 'checkpoint-4',
+          dirty: true,
+          recoveryState: 'ready' as const,
+          contentUrl: '/old-source',
+        },
+      }
+      const next = {
+        ...current,
+        workingCopy: {
+          ...current.workingCopy,
+          workingRevision: 5,
+          sourceContentId: 'b'.repeat(64),
+          contentUrl: '/new-source',
+        },
+      }
+      let entered!: () => void
+      let release!: () => void
+      const started = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const editor = new Editor({
+        element: document.createElement('div'),
+        extensions: editorExtensions,
+        content: {
+          type: 'doc',
+          content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'Local body.' }] }],
+        },
+      })
+      const context = {
+        editor,
+        doc: { parsed: {}, hash: 'source' },
+        dirtyRef: { current: true },
+        header: { text: 'Recovered header' },
+        comments: [{ id: '0', text: 'Recovered comment' }],
+      }
+      const live = new Proxy(context, {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && (key.startsWith('set') || key.startsWith('on')))
+            return (value: unknown) => {
+              ;(target as any)[key[3]!.toLowerCase() + key.slice(4)] = value
+            }
+          return Reflect.get(target, key, receiver)
+        },
+      }) as unknown as FileActionContext
+      const fontSpy =
+        boundary === 'fonts'
+          ? vi.spyOn(embeddedFonts, 'adoptEmbeddedFonts').mockImplementation(async () => {
+              entered()
+              await gate
+              return true
+            })
+          : undefined
+      const parseDocx = docxEngine.parseDocx
+      const parseSpy =
+        boundary === 'parse'
+          ? vi.spyOn(docxEngine, 'parseDocx').mockImplementation(async (...args) => {
+              entered()
+              await gate
+              return parseDocx(...args)
+            })
+          : undefined
+      const fetcher = vi.fn(async (url: any) => {
+        if (String(url).endsWith('/bootstrap')) return Response.json(next)
+        if (boundary === 'download') {
+          entered()
+          await gate
+        }
+        return new Response(new Uint8Array(replacement))
+      })
+      const client = new FakeClient()
+      const handle = installDocsBrowserHostApi(current, {
+        client,
+        target: {},
+        transport: transport(),
+        fetch: fetcher as typeof fetch,
+      })
+      const errors: string[] = []
+      const loads: Promise<unknown>[] = []
+      handle.onReadinessChanged((_ready, error) => {
+        if (error) errors.push(error)
+      })
+      handle.onOpenDocx((result) => {
+        loads.push(loadFile(live, result))
+      })
+      handle.attachEditor({} as never, { context: () => live })
+      handle.setHydrated()
+      const conflict = {
+        type: 'recovery:required',
+        protocolVersion: 1,
+        id: client.sent[0]!.id,
+        documentId: 'docx-1234',
+        code: 'REVISION_CONFLICT',
+        message: 'Head changed',
+      } as never
+      try {
+        client.emit(conflict)
+        await started
+        context.header = { text: 'New manual header' }
+        context.comments = [{ id: '0', text: 'New manual comment' }]
+        release()
+        await vi.waitFor(() => expect(loads.length > 0 || errors.length > 1).toBe(true))
+        await Promise.all(loads)
+        expect(editor.getText()).toBe('Local body.')
+        expect(context.header.text).toBe('New manual header')
+        expect(context.comments[0]!.text).toBe('New manual comment')
+        expect(context.dirtyRef.current).toBe(true)
+        expect(errors.some((error) => /changed.*recovery/i.test(error))).toBe(true)
+        expect(handle.workingCopy?.workingRevision).toBe(4)
+        if (boundary === 'download') expect(loads).toHaveLength(0)
+        const count = fetcher.mock.calls.length
+        client.emit(conflict)
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        expect(fetcher).toHaveBeenCalledTimes(count)
+      } finally {
+        release()
+        handle.dispose()
+        editor.destroy()
+        fontSpy?.mockRestore()
+        parseSpy?.mockRestore()
+      }
+    },
+  )
+
   it('hydrates the version-bound working copy, restores dirty, and waits before registering', async () => {
     const current = {
       ...bootstrap(),
@@ -196,6 +341,9 @@ describe('Docs browser host lifecycle', () => {
   })
 
   it('rebootstraps a stale initial hydration and registers only after the newer source is loaded', async () => {
+    const replacement = await buildDocx({
+      bodyXml: '<w:p><w:r><w:t>Recovered head.</w:t></w:r></w:p>',
+    })
     const first = {
       ...bootstrap(),
       workingCopy: {
@@ -223,7 +371,9 @@ describe('Docs browser host lifecycle', () => {
     const requested: string[] = []
     const fetcher = async (url: any) => {
       requested.push(String(url))
-      return String(url).endsWith('/bootstrap') ? Response.json(next) : new Response(nextBytes)
+      return String(url).endsWith('/bootstrap')
+        ? Response.json(next)
+        : new Response(new Uint8Array(replacement))
     }
     const client = new FakeClient()
     const handle = installDocsBrowserHostApi(first, {
@@ -250,6 +400,25 @@ describe('Docs browser host lifecycle', () => {
     expect(opened[0]).toMatchObject({ recovered: true })
     expect(client.sent.filter((frame) => frame.type === 'editor:register')).toHaveLength(1)
     expect(handle.bridge.client().attached).toBe(false)
+    const editor = new Editor({
+      element: document.createElement('div'),
+      extensions: editorExtensions,
+    })
+    const live = new Proxy(
+      { editor, dirtyRef: { current: false } },
+      {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && (key.startsWith('set') || key.startsWith('on')))
+            return () => undefined
+          return Reflect.get(target, key, receiver)
+        },
+      },
+    ) as unknown as FileActionContext
+    window.desktop = handle.desktopApi
+    ;(globalThis as { CSS?: unknown }).CSS ??= { escape: (value: string) => value }
+    expect(handle.workingCopy?.workingRevision).toBe(4)
+    expect(await loadFile(live, opened[0])).toBe('ok')
+    expect(editor.getText()).toBe('Recovered head.')
     handle.setHydrated()
     expect(client.sent.at(-1)).toMatchObject({
       type: 'editor:register',
@@ -257,6 +426,7 @@ describe('Docs browser host lifecycle', () => {
       sourceContentId: 'b'.repeat(64),
     })
     handle.dispose()
+    editor.destroy()
   })
 
   it('preserves a sidebar edit made before the first registration is confirmed', async () => {
@@ -279,7 +449,7 @@ describe('Docs browser host lifecycle', () => {
       return Response.json(current)
     }
     const context = {
-      editor: { getJSON: () => ({ type: 'doc' }) },
+      editor: { state: { doc: {} }, getJSON: () => ({ type: 'doc' }) },
       doc: { parsed: {}, hash: 'source' },
       header: { text: 'Recovered header' },
     }
@@ -332,7 +502,7 @@ describe('Docs browser host lifecycle', () => {
     handle.attachEditor({} as never, {
       context: () =>
         ({
-          editor: { getJSON: () => ({ text: 'x'.repeat(5 * 1024 * 1024) }) },
+          editor: { state: { doc: {} }, getJSON: () => ({ text: 'x'.repeat(5 * 1024 * 1024) }) },
           doc: { parsed: {}, hash: 'large-source' },
         }) as never,
     })

@@ -302,7 +302,7 @@ const WORD_COUNT_THROTTLE_MS = 400
 const MAX_FOLLOW_UP_PASSES = 6
 import { runHeadlessDocumentExport } from './headless-export'
 import { installMcpBridge } from './mcp-bridge'
-import { createDocsSaveAdapter, docsSaveSnapshot } from './agent/docs-save-adapter'
+import { createDocsSaveAdapter, docsContentSnapshot } from './agent/docs-save-adapter'
 import { captureDocsWorkingCopy } from './agent/docs-working-copy'
 import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
 import {
@@ -1711,7 +1711,7 @@ export function App() {
             })
             return new Uint8Array(await payload.parts.get('document')!.arrayBuffer())
           },
-          saveContentSnapshot: () => docsSaveSnapshot(fileCtxRef.current),
+          saveContentSnapshot: () => docsContentSnapshot(fileCtxRef.current),
         }
       : {}),
     editor,

@@ -65,20 +65,23 @@ function identity(value: object): number {
   return id
 }
 
-function boundedSnapshot(value: unknown): string {
+function serializeSnapshot(value: unknown, bounded: boolean): string {
   let nodes = 0
   let characters = 0
   const visit = (input: unknown, depth: number): unknown => {
-    if (++nodes > 100_000 || depth > 64) throw new Error('Save snapshot complexity limit exceeded')
+    if (bounded && (++nodes > 100_000 || depth > 64))
+      throw new Error('Save snapshot complexity limit exceeded')
     if (typeof input === 'string') {
       characters += input.length
-      if (characters > 4 * 1024 * 1024) throw new Error('Save snapshot size limit exceeded')
+      if (bounded && characters > 4 * 1024 * 1024)
+        throw new Error('Save snapshot size limit exceeded')
       return input
     }
     if (input === null || typeof input !== 'object') return input
     if (ArrayBuffer.isView(input) || input instanceof ArrayBuffer) {
       characters += input.byteLength
-      if (characters > 4 * 1024 * 1024) throw new Error('Save snapshot size limit exceeded')
+      if (bounded && characters > 4 * 1024 * 1024)
+        throw new Error('Save snapshot size limit exceeded')
       // Mutable added assets belong to the approval too. Original package
       // bytes are never visited (the parsed source uses revision/identity).
       const bytes = ArrayBuffer.isView(input)
@@ -96,14 +99,28 @@ function boundedSnapshot(value: unknown): string {
   return JSON.stringify(visit(value, 0))
 }
 
-/** Includes the full body and every serializable save setting, including non-body edits. */
-export function docsSaveSnapshot(ctx: FileActionContext): string {
+function snapshotState(ctx: FileActionContext, body: unknown) {
   if (!ctx.editor || !ctx.doc) throw new Error('the document is not ready to save')
-  return boundedSnapshot({
+  return {
     source: { identity: identity(ctx.doc.parsed), hash: ctx.doc.hash, filePath: ctx.doc.filePath },
     state: Object.fromEntries(SAVE_FIELDS.map((key) => [key, ctx[key]])),
-    body: ctx.editor.getJSON(),
-  })
+    body,
+  }
+}
+
+/** Bounded exact-content snapshot used only for Agent Save approval. */
+export function docsSaveSnapshot(ctx: FileActionContext): string {
+  return serializeSnapshot(snapshotState(ctx, ctx.editor?.getJSON()), true)
+}
+
+/**
+ * Local save/checkpoint/recovery freshness is not an approval payload. ProseMirror
+ * documents are immutable, so their identity guards the entire body in O(1).
+ * Mutable serializer side state is copied in full without approval size/node caps.
+ */
+export function docsContentSnapshot(ctx: FileActionContext): string {
+  if (!ctx.editor || !ctx.doc) throw new Error('the document is not ready to save')
+  return serializeSnapshot(snapshotState(ctx, { identity: identity(ctx.editor.state.doc) }), false)
 }
 
 export function createDocsSaveAdapter(options: DocsEditorAdapterOptions) {

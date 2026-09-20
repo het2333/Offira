@@ -1,7 +1,7 @@
 import type { BrowserWorkingCopyPayload } from '@nexusdesk/web-client'
 import { buildDocBytes, type FileActionContext } from '../file-actions'
 import { waitForFullContent } from '../phased-content'
-import { docsSaveSnapshot } from './docs-save-adapter'
+import { docsContentSnapshot } from './docs-save-adapter'
 
 export interface DocsWorkingCopyCaptureOptions {
   /** Flushes the renderer's pending React updates before reading its current context. */
@@ -18,10 +18,10 @@ export async function captureDocsWorkingCopy(
   window.dispatchEvent(new Event('ai-docs-commit-tables'))
   await options.settle?.()
   const current = context()
-  const before = docsSaveSnapshot(current)
+  const before = docsContentSnapshot(current)
   const bytes = await (options.serialize ?? buildDocBytes)(current)
   await options.settle?.()
-  if (docsSaveSnapshot(context()) !== before) {
+  if (docsContentSnapshot(context()) !== before) {
     throw Object.assign(
       new Error('The complete document changed while its checkpoint was captured.'),
       { code: 'STALE_CONTENT' },

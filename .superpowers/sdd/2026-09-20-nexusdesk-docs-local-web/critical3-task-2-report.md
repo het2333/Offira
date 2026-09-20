@@ -67,3 +67,32 @@ Durable-journal, empty-storage historical replay, Agent Save reservation, and co
 Self-review checked all five brief review focuses, exact-save/approval behavior, source identity, in-flight duplicate ownership, no-result-before-receipt, no success journal on failure, binary transport, no original write from ordinary apply/timers, dirty preservation, and recovery-before-register. Shared protocol/client/coordinator/registry/router and Sheets/PDF source files were not modified or staged by this task. No subagents were spawned.
 
 Ruling: use the controller-provided standalone brief/report as this task's ledger and leave the shared workspace intact; task/plan lifecycle scripts and branch-wide review are controller responsibilities. Ruling: limit automatic stale-source replacement to unchanged initial hydration; discarding new manual content would violate the brief's dirty-preservation requirement.
+
+## Review fix round 1 — recovery installation race and large-document guards
+
+This round addresses both Important findings. It supersedes the earlier statement that ordinary capture reuses the bounded approval snapshot. No shared protocol/client/coordinator/registry/router, Sheets, PDF, or Host driver source was changed in this round.
+
+### Finding 1: revalidate automatic recovery at the final installation boundary
+
+- RED: two real-editor tests suspended recovery at the source download and embedded-font await, changed the local header and comment, then resumed. Both failed with `editor.getText()` equal to `Remote replacement.` instead of `Local body.`. Thus the tests demonstrated content loss, not only a missing error message.
+- GREEN: the same baseline now guards recovery through its delay, bootstrap/download/hash, parsing, font loading, and final renderer-state flush. A renderer-local WeakMap carries the guard on the exact open result; no IPC/protocol contract changed. `loadFile` checks it synchronously after its final await and before document/body/sidebar installation. Lazy-media state installation was moved after that check too.
+- Host working revision/source metadata is adopted only by the accepted final installation guard. Recovery remains in flight until `loadFile` completes; a local edit sets dirty, reports that edits were preserved, and permanently stops this automatic recovery attempt chain. Hydration cannot register a pending or rejected recovery.
+- Additional GREEN coverage suspends the real DOCX parser itself, then calls the original parser on resumption. Download, parse, and font cases all retain the exact local body/header/comment, dirty state, and old Host revision; another conflict issues no new recovery requests. The unchanged-source case loads an actual DOCX and only then registers the new revision.
+
+### Finding 2: ordinary save/checkpoint must not inherit approval payload caps
+
+- RED: a real 5 MiB body (with document XML below the Driver's 16 MiB limit) returned `false` from manual `save`. A separate approved Agent apply did mutate the real editor but returned `EDITOR_REQUEST_FAILED: Save snapshot size limit exceeded` before its checkpoint boundary.
+- GREEN: `docsContentSnapshot` now guards local capture/manual Save/recovery using the immutable ProseMirror document identity (complete body version, O(1) comparison input), immutable parsed-source identity/hash/path, and a full copy of all mutable serializer side state. It imposes neither the 4 MiB nor 100,000-node approval caps. `docsSaveSnapshot` remains the bounded exact Agent Save approval snapshot, with its existing size/depth/node restrictions unchanged.
+- The real large manual-save test uses production Driver materialization, Store checkpoint preparation and original-file promotion. It proves the original is unchanged before Save and inspects the written ZIP: all 5 MiB of body text remain, Agent/manual/extra-manual markers occur once, the manual header remains, Store savedRevision becomes 2 and both Store/renderer dirty clear.
+- The large apply test uses the real adapter/editor/serializer and suspends the persistence acknowledgement: duplicate requests perform one mutation, no apply success arrives before release, and both results carry the checkpoint receipt after release. Its complete ZIP retains the large body and manual header. Persistence acknowledgement is the deliberately controlled boundary in this test, not a claim of additional crash/restart E2E.
+- Large capture still rejects a sidebar edit during serialization. Guard coverage additionally checks a 5 MiB mutable header, more than 100,000 traversed comment nodes including an in-place edit, and a changed body version. Exact Agent approval still rejects both oversized and overly complex mutable input.
+
+### Final verification for this round
+
+- Six targeted Docs files (`docs-working-copy`, `browser-agent-api`, `browser-host-api`, `browser-save-replay`, `docs-save-adapter`, `approved-save-guard`) with `--maxWorkers=1`: **55/55 passed**, exit 0, 16.99 seconds. The original 48-case gate is retained and expanded.
+- Docs Driver tests with `--maxWorkers=1`: **6/6 passed**, exit 0.
+- Additional `open-file`, `embedded-fonts`, `phased-content`, `save-until-persisted` tests with `--maxWorkers=1`: **26/26 passed**, exit 0.
+- Final Docs typecheck and Local Host typecheck: **passed**, exit 0.
+- ESLint on the seven changed source/test files: **0 errors**, exit 0; the existing untouched App.tsx hook dependency warning (`colMode`, `hasVertical`, `watermarkDirty`, line 4373) remains.
+- Existing JSDOM canvas warning was observed in browser-host tests; no test failed on it. Full Docs/Host suites and browser crash/restart acceptance were not rerun here; the controller owns those aggregate gates.
+- Prettier on the seven changed source/test files and this report, plus `git diff --check`, were verified before the scoped commit. Self-review confirmed the last guard has no asynchronous content-install gap, ordinary guards no longer consume the bounded approval snapshot, and only the seven Docs files plus this report are staged.

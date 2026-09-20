@@ -17,8 +17,8 @@ import {
   type NexusClient,
 } from '@nexusdesk/web-client'
 import { captureDocsWorkingCopy } from './agent/docs-working-copy'
-import { docsSaveSnapshot } from './agent/docs-save-adapter'
-import type { FileActionContext } from './file-actions'
+import { docsContentSnapshot } from './agent/docs-save-adapter'
+import { guardFileOpen, type FileActionContext } from './file-actions'
 
 import type { DesktopApi, OpenFileResult, UiTheme } from '../shared/ipc'
 import {
@@ -376,6 +376,7 @@ export function installDocsBrowserHostApi(
   let everRegistered = false
   let recoveryAttempts = 0
   let recoveryInFlight = false
+  let recoveryBlocked = false
   let initialHydrationSnapshot: string | undefined
   const openListeners = new Set<Parameters<DesktopApi['onOpenDocx']>[0]>()
   const readinessListeners = new Set<(ready: boolean, error?: string) => void>()
@@ -469,23 +470,41 @@ export function installDocsBrowserHostApi(
       frame.code !== 'REVISION_CONFLICT' ||
       everRegistered ||
       recoveryInFlight ||
+      recoveryBlocked ||
       recoveryAttempts >= 3
     )
       return
     if (capture) {
       if (initialHydrationSnapshot === undefined) return
       try {
-        if (docsSaveSnapshot(capture.context()) !== initialHydrationSnapshot) return
+        if (docsContentSnapshot(capture.context()) !== initialHydrationSnapshot) return
       } catch {
         return
       }
     }
     recoveryInFlight = true
+    const recoverySnapshot = initialHydrationSnapshot
+    const recoveryUnchanged = () => {
+      if (disposed || recoveryBlocked) return false
+      try {
+        if (!capture || docsContentSnapshot(capture.context()) === recoverySnapshot) return true
+      } catch {
+        // Failure to establish an unchanged complete state is not permission to replace it.
+      }
+      recoveryBlocked = true
+      if (capture) capture.context().dirtyRef.current = true
+      notifyReadiness(
+        'The document changed during recovery. Local edits were preserved; automatic recovery stopped.',
+      )
+      return false
+    }
     recoveryAttempts++
     hydrated = false
     bridge.setHydrated(null)
+    let handedOff = false
     void (async () => {
       await new Promise((resolve) => setTimeout(resolve, recoveryAttempts * 100))
+      if (!recoveryUnchanged()) return
       const next = await loadDocsBrowserBootstrap(
         bootstrap.documentId,
         options.fetch ?? globalThis.fetch,
@@ -497,20 +516,33 @@ export function installDocsBrowserHostApi(
       ).readContent()
       if (disposed) return
       const hash = await sha256(bytes)
-      state = { ...next.workingCopy }
-      document.revision = state.workingRevision
-      for (const listener of openListeners)
-        listener({
-          path: virtualPath(document.documentId),
-          name: document.title,
-          data: toArrayBuffer(bytes),
-          hash,
-          ...(state.dirty ? { recovered: true } : {}),
-        })
+      await capture?.settle?.()
+      if (!recoveryUnchanged()) return
+      const result: OpenFileResult = {
+        path: virtualPath(document.documentId),
+        name: document.title,
+        data: toArrayBuffer(bytes),
+        hash,
+        ...(next.workingCopy.dirty ? { recovered: true } : {}),
+      }
+      guardFileOpen(result, {
+        settle: capture?.settle,
+        beforeInstall() {
+          if (!recoveryUnchanged()) return false
+          state = { ...next.workingCopy! }
+          document.revision = state.workingRevision
+          return true
+        },
+        complete() {
+          recoveryInFlight = false
+        },
+      })
+      handedOff = openListeners.size > 0
+      for (const listener of openListeners) listener(result)
     })()
       .catch((error) => notifyReadiness(errorMessage(error)))
       .finally(() => {
-        recoveryInFlight = false
+        if (!handedOff) recoveryInFlight = false
       })
   })
   const handle: DocsBrowserHostHandle = {
@@ -522,10 +554,10 @@ export function installDocsBrowserHostApi(
       return state
     },
     setHydrated() {
-      if (!state || hydrated) return
+      if (!state || hydrated || recoveryInFlight || recoveryBlocked) return
       if (!everRegistered && capture) {
         try {
-          initialHydrationSnapshot = docsSaveSnapshot(capture.context())
+          initialHydrationSnapshot = docsContentSnapshot(capture.context())
         } catch {
           initialHydrationSnapshot = undefined
         }
