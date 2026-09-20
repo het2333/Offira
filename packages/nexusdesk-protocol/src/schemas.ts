@@ -120,6 +120,7 @@ const clientFrameSchema = z.discriminatedUnion('type', [
       documentId: nonEmptyString,
       editorType: nonEmptyString,
       revision: revisionSchema,
+      editorSessionId: z.string().min(1).max(256).optional(),
       documentEpoch: nonEmptyString.optional(),
       sourceContentId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       restoredCheckpointId: nonEmptyString.nullable().optional(),

@@ -50,6 +50,43 @@ describe('parseClientFrame', () => {
       .toThrow(/rendererInstanceId/)
   })
 
+  it('accepts an optional editor session id up to 256 characters', () => {
+    const frame = {
+      type: 'editor:register' as const,
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-1',
+      clientId: 'client-1',
+      rendererInstanceId: 'renderer-1',
+      documentId: 'document-1',
+      editorType: 'sheets',
+      revision: 1,
+    }
+
+    expect(parseClientFrame(frame)).toEqual(frame)
+    expect(parseClientFrame({ ...frame, editorSessionId: 's'.repeat(256) })).toEqual({
+      ...frame,
+      editorSessionId: 's'.repeat(256),
+    })
+  })
+
+  it('rejects an empty or overlong editor session id', () => {
+    const frame = {
+      type: 'editor:register' as const,
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-1',
+      clientId: 'client-1',
+      rendererInstanceId: 'renderer-1',
+      documentId: 'document-1',
+      editorType: 'sheets',
+      revision: 1,
+    }
+
+    expect(() => parseClientFrame({ ...frame, editorSessionId: '' })).toThrow(/editorSessionId/)
+    expect(() => parseClientFrame({ ...frame, editorSessionId: 's'.repeat(257) })).toThrow(
+      /editorSessionId/,
+    )
+  })
+
   it('round-trips bounded read_sheet data in an editor result', () => {
     const frame = {
       type: 'editor:result' as const,

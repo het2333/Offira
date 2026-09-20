@@ -109,6 +109,134 @@ describe('NexusClient', () => {
     registration.dispose()
   })
 
+  it('includes an editor session id set before hydration in the first registration', () => {
+    const { client, sockets } = createHarness()
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+    const registration = registerEditor(client, {
+      documentId,
+      editorType: 'sheets',
+      revision,
+      workingCopy: true,
+    })
+
+    registration.setEditorSessionId('editor-session-1')
+    expect(sockets[0]!.sent).toEqual([])
+    registration.setHydrated({
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      workingRevision: 4,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    })
+
+    expect(JSON.parse(sockets[0]!.sent[0]!)).toMatchObject({
+      type: 'editor:register',
+      editorSessionId: 'editor-session-1',
+    })
+    registration.dispose()
+  })
+
+  it('re-registers with a new request id when the editor session changes after hydration', () => {
+    const { client, sockets } = createHarness()
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+    const registration = registerEditor(client, {
+      documentId,
+      editorType: 'sheets',
+      revision,
+      workingCopy: true,
+    })
+    registration.setHydrated({
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      workingRevision: 4,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    })
+    const first = JSON.parse(sockets[0]!.sent[0]!) as { id: string }
+    sockets[0]!.emit('message', {
+      data: JSON.stringify({
+        type: 'editor:registered',
+        protocolVersion: PROTOCOL_VERSION,
+        id: first.id,
+        documentId,
+        revision: 4,
+        documentEpoch: 'epoch',
+        sourceContentId: 'a'.repeat(64),
+      }),
+    })
+    expect(registration.attached).toBe(true)
+
+    registration.setEditorSessionId('editor-session-2')
+
+    const second = JSON.parse(sockets[0]!.sent[1]!) as {
+      id: string
+      editorSessionId?: string
+    }
+    expect(second).toMatchObject({
+      type: 'editor:register',
+      editorSessionId: 'editor-session-2',
+    })
+    expect(second.id).not.toBe(first.id)
+    expect(registration.attached).toBe(false)
+    registration.dispose()
+  })
+
+  it('omits a cleared editor session id from the replacement registration', () => {
+    const { client, sockets } = createHarness()
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+    const registration = registerEditor(client, {
+      documentId,
+      editorType: 'sheets',
+      revision,
+      workingCopy: true,
+    })
+    registration.setEditorSessionId('editor-session-1')
+    registration.setHydrated({
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      workingRevision: 4,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    })
+
+    registration.setEditorSessionId(null)
+
+    const replacement = JSON.parse(sockets[0]!.sent[1]!) as Record<string, unknown>
+    expect(replacement.type).toBe('editor:register')
+    expect('editorSessionId' in replacement).toBe(false)
+    registration.dispose()
+  })
+
+  it('reuses the current editor session id after reconnect', () => {
+    const { client, sockets, timers } = createHarness()
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+    const registration = registerEditor(client, { documentId, editorType: 'sheets', revision })
+    registration.setEditorSessionId('editor-session-1')
+
+    sockets[0]!.emit('close', { code: 1006 })
+    timers[0]!.callback()
+    sockets[1]!.serverReady('client-2' as ClientId)
+
+    expect(JSON.parse(sockets[1]!.sent[0]!)).toMatchObject({
+      type: 'editor:register',
+      editorSessionId: 'editor-session-1',
+    })
+    registration.dispose()
+  })
+
   it('installs one listener per connection and correlates replies by request id', async () => {
     const { client, sockets } = createHarness()
     client.connect()

@@ -49,6 +49,7 @@ export interface EditorRegisterFrame extends FrameBase {
   documentId: DocumentId
   editorType: string
   revision: Revision
+  editorSessionId?: string
   documentEpoch?: string
   sourceContentId?: string
   restoredCheckpointId?: string | null

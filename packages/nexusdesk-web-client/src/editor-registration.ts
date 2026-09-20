@@ -18,6 +18,7 @@ export interface EditorRegistrationInput {
 
 export interface EditorRegistrationHandle {
   readonly attached: boolean
+  setEditorSessionId(id: string | null): void
   setHydrated(state: WorkingCopyBootstrap | null): void
   updateRevision(revision: Revision): void
   dispose(): void
@@ -38,6 +39,7 @@ export function registerEditor(
   let hydrated: WorkingCopyBootstrap | null = null
   let registered = false
   let registrationId: RequestId | undefined
+  let editorSessionId: string | null = null
 
   const sendRegistration = (): void => {
     if (disposed || client.state !== 'ready' || client.clientId === undefined) return
@@ -53,6 +55,7 @@ export function registerEditor(
       documentId: input.documentId,
       editorType: input.editorType,
       revision,
+      ...(editorSessionId !== null ? { editorSessionId } : {}),
       ...(gated && hydrated ? { documentEpoch: hydrated.documentEpoch, sourceContentId: hydrated.sourceContentId,
         restoredCheckpointId: hydrated.checkpointId } : {}),
     })
@@ -73,6 +76,12 @@ export function registerEditor(
 
   return {
     get attached() { return !disposed && registered && client.state === 'ready' && (!gated || hydrated !== null) },
+    setEditorSessionId(id) {
+      if (disposed || editorSessionId === id) return
+      editorSessionId = id
+      registered = false
+      sendRegistration()
+    },
     setHydrated(state) {
       if (disposed) return
       gated = true
