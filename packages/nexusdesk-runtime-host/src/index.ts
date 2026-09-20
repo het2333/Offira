@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -291,7 +291,12 @@ function createEditorToolBridge(
           `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`,
         )
       }
-      const operationId = (authorization?.operationId ?? `operation-${String(execution.callId)}`) as OperationId
+      // Provider call ids are not globally unique. Bind them to the durable
+      // document/tool scope, excluding session, client and revision so an
+      // invocation retried after reconnect still reaches its journal entry.
+      const operationId = (authorization?.operationId ?? `operation-${createHash('sha256')
+        .update(JSON.stringify([target.documentId, editorType, execution.name, String(execution.callId)]))
+        .digest('hex')}`) as OperationId
       const reply = await requestParent({
         type: 'editor:request',
         target: { ...target, operationId },

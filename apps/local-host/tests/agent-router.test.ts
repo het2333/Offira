@@ -33,6 +33,53 @@ afterEach(async () => {
 })
 
 describe('AgentRouter', () => {
+  it.each([
+    { label: 'document', target: { documentId: 'document-2' as DocumentId } },
+    { label: 'editor type', target: { editorType: 'docs' } },
+    { label: 'command', command: 'read_document' },
+    { label: 'arguments', arguments: { scope: 'selection' } },
+  ])('rejects operation replay with a different $label', async (change) => {
+    const documents = new DocumentRegistry()
+    const operations = new OperationStore()
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    documents.register({ documentId: 'document-2' as DocumentId, clientId, editorType: 'sheets', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({ supervisor, documents, operations, sendToClient: (_client, frame) => sent.push(frame) })
+    await supervisor.ready()
+    for (const id of [documentId, 'document-2' as DocumentId]) {
+      router.handleClientFrame({
+        type: 'agent:start', protocolVersion: PROTOCOL_VERSION, id: startRequestId,
+        sessionId: `session-${id}` as SessionId, documentId: id, prompt: 'hello',
+      }, clientId)
+    }
+    const request: EditorRequestFrame = {
+      type: 'editor:request', protocolVersion: PROTOCOL_VERSION, id: 'read-1' as RequestId,
+      target: {
+        documentId, clientId, sessionId: `session-${documentId}` as SessionId,
+        editorType: 'sheets', revision, operationId: 'shared-operation' as OperationId,
+      },
+      command: 'read_sheet', arguments: { scope: 'workbook' },
+    }
+    router.routeRuntimeFrame(request)
+    router.handleClientFrame({
+      type: 'editor:result', protocolVersion: PROTOCOL_VERSION, id: request.id,
+      target: request.target, result: { ok: true, summary: 'Read first document.', warnings: [] },
+    }, clientId)
+
+    const changedDocument = change.target?.documentId ?? documentId
+    expect(() => router.routeRuntimeFrame({
+      ...request,
+      id: 'read-retry' as RequestId,
+      target: { ...request.target, ...change.target, sessionId: `session-${changedDocument}` as SessionId },
+      command: change.command ?? request.command,
+      arguments: change.arguments ?? request.arguments,
+    })).toThrow(/different payload/)
+    expect(sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    expect(operations.lookup(request.target.operationId)).toMatchObject({ state: 'committed' })
+    router.dispose()
+  })
+
   it('targets the Harness session with the registered editor type', async () => {
     const documents = new DocumentRegistry()
     documents.register({ documentId, clientId, editorType: 'docs', revision })
