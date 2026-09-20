@@ -88,11 +88,20 @@ describe('Docs editor adapter', () => {
     const plan = await adapter.propose(editRequest())
 
     expect(plan.planHash).toMatch(/^[a-f0-9]{64}$/)
-    expect(plan.operations).toEqual([
-      { op: 'findReplace', find: 'Original', replace: 'Approved' },
-    ])
+    expect(plan.operations).toEqual([{ op: 'findReplace', find: 'Original', replace: 'Approved' }])
     expect(plan.summary).toContain('1')
     expect(ctx.editor?.state.doc.textContent).toBe(before)
+  })
+
+  it('binds the plan hash to the exact unsaved editor content', async () => {
+    const { adapter, ctx } = setup()
+    const beforeEdit = await adapter.propose(editRequest())
+
+    const editor = ctx.editor!
+    editor.view.dispatch(editor.state.tr.insertText(' Typed.', editor.state.doc.content.size - 1))
+    const afterEdit = await adapter.propose(editRequest())
+
+    expect(afterEdit.planHash).not.toBe(beforeEdit.planHash)
   })
 
   it('binds apply to an exact one-time approval and replays by operation id', async () => {
@@ -153,6 +162,97 @@ describe('Docs editor adapter', () => {
     expect(ctx.editor?.state.doc.textContent).toBe('Original text.')
   })
 
+  it.each([
+    {
+      change: 'typing',
+      prepare: (_editor: Editor) => undefined,
+      mutate(editor: Editor) {
+        editor.view.dispatch(
+          editor.state.tr.insertText(' Typed.', editor.state.doc.content.size - 1),
+        )
+      },
+      expected: 'Original text. Typed.',
+    },
+    {
+      change: 'pasting',
+      prepare: (_editor: Editor) => undefined,
+      mutate(editor: Editor) {
+        const transaction = editor.state.tr
+          .insertText(' Pasted.', editor.state.doc.content.size - 1)
+          .setMeta('paste', true)
+          .setMeta('uiEvent', 'paste')
+        editor.view.dispatch(transaction)
+      },
+      expected: 'Original text. Pasted.',
+    },
+    {
+      change: 'undoing',
+      prepare(editor: Editor) {
+        editor.view.dispatch(
+          editor.state.tr.insertText(' Draft.', editor.state.doc.content.size - 1),
+        )
+      },
+      mutate(editor: Editor) {
+        expect(editor.commands.undo()).toBe(true)
+      },
+      expected: 'Original text.',
+    },
+  ])(
+    'rejects an approved plan after $change changes the unsaved editor content',
+    async ({ prepare, mutate, expected }) => {
+      const { adapter, approvals, ctx } = setup()
+      const editor = ctx.editor!
+      prepare(editor)
+      const plan = await adapter.propose(editRequest())
+      approvals.set('approval-1', plan.planHash)
+
+      mutate(editor)
+      const result = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+      expect(result).toMatchObject({
+        ok: false,
+        warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+      })
+      expect(approvals.has('approval-1')).toBe(true)
+      expect(editor.state.doc.textContent).toBe(expected)
+    },
+  )
+
+  it('rechecks unsaved editor content after asynchronous approval consumption', async () => {
+    const ctx = createContext()
+    let approvalStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      approvalStarted = resolve
+    })
+    let releaseApproval!: () => void
+    const pendingApproval = new Promise<void>((resolve) => {
+      releaseApproval = resolve
+    })
+    const adapter = createDocsEditorAdapter({
+      context: () => ctx,
+      document: () => ({ documentId, clientId, revision, title: 'Example.docx', attached: true }),
+      async consumeApproval() {
+        approvalStarted()
+        await pendingApproval
+        return true
+      },
+    })
+    const plan = await adapter.propose(editRequest())
+
+    const resultPending = adapter.apply({ ...plan, approvalId: 'approval-1' })
+    await started
+    const editor = ctx.editor!
+    editor.view.dispatch(editor.state.tr.insertText(' Typed.', editor.state.doc.content.size - 1))
+    releaseApproval()
+    const result = await resultPending
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+    })
+    expect(editor.state.doc.textContent).toBe('Original text. Typed.')
+  })
+
   it('does not claim success when an approved operation changes nothing', async () => {
     const { adapter, approvals } = setup()
     const plan = await adapter.propose(
@@ -181,9 +281,9 @@ describe('Docs editor adapter', () => {
       replace: `b-${index}`,
     }))
 
-    await expect(
-      adapter.propose(editRequest({ arguments: { ops: operations } })),
-    ).rejects.toThrow(/200 operations/i)
+    await expect(adapter.propose(editRequest({ arguments: { ops: operations } }))).rejects.toThrow(
+      /200 operations/i,
+    )
     await expect(
       adapter.propose(
         editRequest({
@@ -221,6 +321,8 @@ describe('Docs editor adapter', () => {
 
     expect(result).toMatchObject({ ok: true, data: { blocks: expect.any(Array) } })
     expect(() => parseAgentToolResult(result)).not.toThrow()
-    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(256 * 1024)
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
+      256 * 1024,
+    )
   })
 })

@@ -17,6 +17,7 @@ import type {
   TransactionId,
   VerificationResult,
 } from '@nexusdesk/protocol'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 
 import {
   executeDocsCommand,
@@ -54,6 +55,11 @@ interface RecordedOperation {
   result: Promise<AgentEditResult>
 }
 
+interface ProposedContentSnapshot {
+  planHash: string
+  contentHash: string
+}
+
 function failure(code: string, message: string): AgentEditResult {
   return { ok: false, summary: message, warnings: [{ code, message }] }
 }
@@ -80,8 +86,11 @@ async function sha256(value: unknown): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function hashPlan(plan: Pick<EditPlan, 'target' | 'operations'>): Promise<string> {
-  return sha256({ target: plan.target, operations: plan.operations })
+async function hashPlan(
+  plan: Pick<EditPlan, 'target' | 'operations'>,
+  contentHash: string,
+): Promise<string> {
+  return sha256({ target: plan.target, operations: plan.operations, contentHash })
 }
 
 function transactionId(): TransactionId {
@@ -163,6 +172,7 @@ function boundedReadData(result: Record<string, unknown>): {
 class DocsEditorAdapter implements EditorAdapter {
   readonly editorType = 'docs'
   private readonly operations = new Map<OperationId, RecordedOperation>()
+  private readonly proposedContent = new Map<OperationId, ProposedContentSnapshot>()
   private readonly execute: NonNullable<DocsEditorAdapterOptions['execute']>
 
   constructor(private readonly options: DocsEditorAdapterOptions) {
@@ -236,7 +246,12 @@ class DocsEditorAdapter implements EditorAdapter {
     if (byteLength({ target, operations }) > MAX_PAYLOAD_BYTES) {
       throw new Error('A Docs plan may not exceed 256 KiB')
     }
-    const planHash = await hashPlan({ target, operations })
+    const editor = this.options.context().editor
+    if (!editor) throw new Error('the document editor is not ready')
+    const contentDocument = editor.state.doc
+    const contentHash = await sha256(contentDocument.toJSON())
+    const planHash = await hashPlan({ target, operations }, contentHash)
+    this.proposedContent.set(target.operationId, { planHash, contentHash })
     return {
       target,
       planId: `docs-plan-${globalThis.crypto.randomUUID()}`,
@@ -265,15 +280,57 @@ class DocsEditorAdapter implements EditorAdapter {
     if (document.revision !== plan.target.revision) {
       return failure('STALE_REVISION', 'the document changed after this plan was prepared')
     }
+    const proposedContent = this.proposedContent.get(plan.target.operationId)
+    if (proposedContent === undefined || proposedContent.planHash !== plan.planHash) {
+      return failure('APPROVAL_INVALID', 'approval does not authorize this exact document plan')
+    }
+    if ((await this.matchingProposedContent(proposedContent)) === undefined) {
+      this.proposedContent.delete(plan.target.operationId)
+      return failure('STALE_CONTENT', 'the Docs editor changed after this plan was prepared')
+    }
     if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash))) {
       return failure('APPROVAL_INVALID', 'approval does not authorize this exact document plan')
     }
-    if ((await hashPlan(plan)) !== plan.planHash) {
+    if ((await hashPlan(plan, proposedContent.contentHash)) !== plan.planHash) {
       return failure('PLAN_TAMPERED', 'the approved document plan no longer matches its hash')
+    }
+    const current = this.options.document()
+    if (!current.attached) return failure('DOCUMENT_DETACHED', 'the Docs browser is disconnected')
+    if (current.documentId !== plan.target.documentId) {
+      return failure('DOCUMENT_NOT_FOUND', `document ${plan.target.documentId} is not open`)
+    }
+    if (current.clientId !== plan.target.clientId) {
+      return failure('WRONG_CLIENT', 'the document is open in another browser client')
+    }
+    if (current.revision !== plan.target.revision) {
+      return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+    }
+    const approvedContent = await this.matchingProposedContent(proposedContent)
+    if (approvedContent === undefined || !this.hasCurrentDocument(approvedContent)) {
+      this.proposedContent.delete(plan.target.operationId)
+      return failure('STALE_CONTENT', 'the Docs editor changed after this plan was prepared')
     }
     const result = this.applyOnce(plan)
     this.operations.set(plan.target.operationId, { planHash: plan.planHash, result })
+    this.proposedContent.delete(plan.target.operationId)
     return result
+  }
+
+  private hasCurrentDocument(document: ProseMirrorNode): boolean {
+    const editor = this.options.context().editor
+    return editor !== null && editor !== undefined && editor.state.doc === document
+  }
+
+  private async matchingProposedContent(
+    proposed: ProposedContentSnapshot,
+  ): Promise<ProseMirrorNode | undefined> {
+    const editor = this.options.context().editor
+    if (!editor) return undefined
+    const document = editor.state.doc
+    const contentHash = await sha256(document.toJSON())
+    return contentHash === proposed.contentHash && this.hasCurrentDocument(document)
+      ? document
+      : undefined
   }
 
   async verify(documentId: DocumentId): Promise<VerificationResult> {
