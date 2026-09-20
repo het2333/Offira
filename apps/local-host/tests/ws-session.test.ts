@@ -126,6 +126,7 @@ describe('authenticated WebSocket session', () => {
         protocolVersion: PROTOCOL_VERSION,
         id: 'register-1',
         clientId,
+        rendererInstanceId: 'renderer-1',
         documentId,
         editorType: 'sheets',
         revision,
@@ -160,6 +161,7 @@ describe('authenticated WebSocket session', () => {
         protocolVersion: PROTOCOL_VERSION,
         id: 'register-1',
         clientId: 'spoofed-client',
+        rendererInstanceId: 'renderer-spoofed',
         documentId: 'document-1',
         editorType: 'sheets',
         revision: 1,
@@ -185,6 +187,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-owner',
       clientId: owner.clientId,
+      rendererInstanceId: 'renderer-owner',
       documentId,
       editorType: 'sheets',
       revision,
@@ -203,6 +206,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-attacker',
       clientId: attacker.clientId,
+      rendererInstanceId: 'renderer-attacker',
       documentId,
       editorType: 'sheets',
       revision,
@@ -229,6 +233,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-former',
       clientId: former.clientId,
+      rendererInstanceId: 'renderer-former',
       documentId,
       editorType: 'docs',
       revision,
@@ -262,6 +267,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-current',
       clientId: current.clientId,
+      rendererInstanceId: 'renderer-current',
       documentId,
       editorType: 'docs',
       revision,
@@ -281,7 +287,7 @@ describe('authenticated WebSocket session', () => {
     current.socket.close()
   })
 
-  it('refreshes a detached Sheets document from its durable driver revision before reconnect', async () => {
+  it('distinguishes a Sheets transport reconnect from a new renderer reload', async () => {
     const documents = new DocumentRegistry()
     const driver: LocalDocumentDriver = {
       document: {
@@ -305,6 +311,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-live',
       clientId: live.clientId,
+      rendererInstanceId: 'renderer-live',
       documentId: 'sheet-1',
       editorType: 'sheets',
       revision: 1,
@@ -341,12 +348,50 @@ describe('authenticated WebSocket session', () => {
       }
     })
 
+    const transportReconnect = await openSession(running, cookie)
+    transportReconnect.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-transport-reconnect',
+      clientId: transportReconnect.clientId,
+      rendererInstanceId: 'renderer-live',
+      documentId: 'sheet-1',
+      editorType: 'sheets',
+      revision: 2,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient(
+          'sheet-1' as DocumentId,
+          transportReconnect.clientId,
+        ).revision === 2
+      } catch {
+        return false
+      }
+    })
+    transportReconnect.socket.send(JSON.stringify({
+      type: 'editor:detach',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'detach-transport-reconnect',
+      clientId: transportReconnect.clientId,
+      documentId: 'sheet-1',
+    }))
+    await until(() => {
+      try {
+        documents.assertClient('sheet-1' as DocumentId, transportReconnect.clientId)
+        return false
+      } catch (error) {
+        return error instanceof DocumentRegistryError && error.code === 'DOCUMENT_DETACHED'
+      }
+    })
+
     const reloaded = await openSession(running, cookie)
     reloaded.socket.send(JSON.stringify({
       type: 'editor:register',
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-reloaded',
       clientId: reloaded.clientId,
+      rendererInstanceId: 'renderer-reloaded',
       documentId: 'sheet-1',
       editorType: 'sheets',
       revision: 1,
@@ -360,6 +405,7 @@ describe('authenticated WebSocket session', () => {
       }
     })
     live.socket.close()
+    transportReconnect.socket.close()
     reloaded.socket.close()
   })
 
@@ -392,6 +438,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-before-save',
       clientId: beforeSave.clientId,
+      rendererInstanceId: 'renderer-before-save',
       documentId: 'doc-1',
       editorType: 'docs',
       revision: 1,
@@ -435,6 +482,7 @@ describe('authenticated WebSocket session', () => {
       protocolVersion: PROTOCOL_VERSION,
       id: 'register-after-save',
       clientId: afterSave.clientId,
+      rendererInstanceId: 'renderer-after-save',
       documentId: 'doc-1',
       editorType: 'docs',
       revision: 2,

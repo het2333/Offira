@@ -1,10 +1,16 @@
-import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
+import type {
+  ClientId,
+  DocumentId,
+  RendererInstanceId,
+  Revision,
+} from '@nexusdesk/protocol'
 
 export type DocumentRegistryErrorCode =
   | 'DOCUMENT_NOT_FOUND'
   | 'DOCUMENT_DETACHED'
   | 'WRONG_CLIENT'
   | 'WRONG_EDITOR'
+  | 'WRONG_RENDERER'
   | 'STALE_REVISION'
   | 'NON_MONOTONIC_REVISION'
 
@@ -18,6 +24,7 @@ export class DocumentRegistryError extends Error {
 export interface DocumentRegistration {
   documentId: DocumentId
   clientId: ClientId
+  rendererInstanceId?: RendererInstanceId
   editorType: string
   revision: Revision
 }
@@ -36,6 +43,7 @@ interface DetachedDocument {
   documentId: DocumentId
   editorType: string
   revision: Revision
+  rendererInstanceId?: RendererInstanceId
   attached: false
 }
 
@@ -72,7 +80,10 @@ export class DocumentRegistry {
     this.documents = initialized
   }
 
-  refreshFromHost(document: AuthorizedDocument): void {
+  refreshFromHost(
+    document: AuthorizedDocument,
+    rendererInstanceId?: RendererInstanceId,
+  ): void {
     const documentId = document.documentId as DocumentId
     const current = this.documents.get(documentId)
     if (current === undefined) {
@@ -96,6 +107,10 @@ export class DocumentRegistry {
       this.documents.set(documentId, refreshed)
       return
     }
+    if (
+      rendererInstanceId !== undefined &&
+      current.rendererInstanceId === rendererInstanceId
+    ) return
     const refreshed: DetachedDocument = {
       documentId,
       editorType: document.editorType,
@@ -130,6 +145,12 @@ export class DocumentRegistry {
         throw new DocumentRegistryError(
           'WRONG_CLIENT',
           `document ${registration.documentId} belongs to another browser client`,
+        )
+      }
+      if (current.rendererInstanceId !== registration.rendererInstanceId) {
+        throw new DocumentRegistryError(
+          'WRONG_RENDERER',
+          `document ${registration.documentId} belongs to another renderer instance`,
         )
       }
       return current
@@ -206,6 +227,9 @@ export class DocumentRegistry {
       documentId: check.documentId,
       editorType: record.editorType,
       revision: record.revision,
+      ...(record.rendererInstanceId === undefined
+        ? {}
+        : { rendererInstanceId: record.rendererInstanceId }),
       attached: false,
     })
     return true
@@ -219,6 +243,9 @@ export class DocumentRegistry {
         documentId,
         editorType: record.editorType,
         revision: record.revision,
+        ...(record.rendererInstanceId === undefined
+          ? {}
+          : { rendererInstanceId: record.rendererInstanceId }),
         attached: false,
       })
       detached += 1

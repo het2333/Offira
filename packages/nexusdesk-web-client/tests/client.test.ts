@@ -201,10 +201,33 @@ describe('NexusClient', () => {
       type: string
       clientId: string
       revision: number
+      rendererInstanceId: string
     }
     expect(first).toMatchObject({ type: 'editor:register', clientId: 'client-1' })
     expect(second).toMatchObject({ type: 'editor:register', clientId: 'client-2', revision: 2 })
+    expect(second.rendererInstanceId).toBe(
+      (first as typeof first & { rendererInstanceId: string }).rendererInstanceId,
+    )
     registration.dispose()
+  })
+
+  it('creates a different renderer identity for a new editor handle', () => {
+    const { client, sockets } = createHarness()
+    client.connect()
+    sockets[0]!.serverReady('client-1' as ClientId)
+
+    const first = registerEditor(client, { documentId, editorType: 'sheets', revision })
+    const second = registerEditor(client, { documentId, editorType: 'sheets', revision })
+    const registrations = sockets[0]!.sent.map((value) => JSON.parse(value) as {
+      type: string
+      rendererInstanceId?: string
+    }).filter((frame) => frame.type === 'editor:register')
+
+    expect(registrations).toHaveLength(2)
+    expect(registrations[0]!.rendererInstanceId).toEqual(expect.any(String))
+    expect(registrations[1]!.rendererInstanceId).not.toBe(registrations[0]!.rendererInstanceId)
+    first.dispose()
+    second.dispose()
   })
 
   it('ignores versioned Shell broadcasts without closing the Agent connection', () => {

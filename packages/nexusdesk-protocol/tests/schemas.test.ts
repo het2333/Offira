@@ -12,6 +12,25 @@ const mutationTarget = {
 }
 
 describe('parseClientFrame', () => {
+  it('requires a non-empty renderer instance on editor registration', () => {
+    const frame = {
+      type: 'editor:register' as const,
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-1',
+      clientId: 'client-1',
+      rendererInstanceId: 'renderer-1',
+      documentId: 'document-1',
+      editorType: 'sheets',
+      revision: 1,
+    }
+
+    expect(parseClientFrame(frame)).toEqual(frame)
+    const { rendererInstanceId: _missing, ...withoutRenderer } = frame
+    expect(() => parseClientFrame(withoutRenderer)).toThrow(/rendererInstanceId/)
+    expect(() => parseClientFrame({ ...frame, rendererInstanceId: '' }))
+      .toThrow(/rendererInstanceId/)
+  })
+
   it('round-trips bounded read_sheet data in an editor result', () => {
     const frame = {
       type: 'editor:result' as const,

@@ -97,7 +97,9 @@ export function installWsSessionServer(
           case 'editor:register': {
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
             const authorized = options.authorizedDocument(frame.documentId)
-            if (authorized !== undefined) options.documents.refreshFromHost(authorized)
+            if (authorized !== undefined) {
+              options.documents.refreshFromHost(authorized, frame.rendererInstanceId)
+            }
             options.documents.register(frame)
             break
           }

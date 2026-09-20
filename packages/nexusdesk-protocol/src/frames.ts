@@ -4,6 +4,7 @@ import type {
   DocumentId,
   MutationTarget,
   OperationId,
+  RendererInstanceId,
   RequestId,
   Revision,
   SessionId,
@@ -43,6 +44,7 @@ export interface EditorRegisterFrame extends FrameBase {
   type: 'editor:register'
   id: RequestId
   clientId: ClientId
+  rendererInstanceId: RendererInstanceId
   documentId: DocumentId
   editorType: string
   revision: Revision

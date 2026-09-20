@@ -9,6 +9,7 @@ import {
   type DocumentId,
   type EditorRequestFrame,
   type OperationId,
+  type RendererInstanceId,
   type RequestId,
   type Revision,
   type SessionId,
@@ -23,6 +24,7 @@ const clientId = 'client-1' as ClientId
 const documentId = 'document-1' as DocumentId
 const sessionId = 'session-1' as SessionId
 const revision = 1 as Revision
+const rendererInstanceId = 'renderer-pending' as RendererInstanceId
 const startRequestId = 'start-1' as RequestId
 const approvalRequestId = 'approval-1' as RequestId
 let supervisor: HarnessSupervisor | undefined
@@ -1004,7 +1006,13 @@ describe('AgentRouter', () => {
 
   it('reissues an uncertain reserved editor request when its document reconnects', async () => {
     const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
-    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    documents.register({
+      documentId,
+      clientId,
+      rendererInstanceId,
+      editorType: 'sheets',
+      revision,
+    })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: Array<{ clientId: ClientId; frame: AgentServerFrame }> = []
     const router = new AgentRouter({
@@ -1038,14 +1046,20 @@ describe('AgentRouter', () => {
     await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
     const original = sent.find(({ frame }) => frame.type === 'editor:request')!.frame
 
+    documents.commitRevision({ documentId, clientId, revision: 2 as Revision })
     router.disconnectClient(clientId)
     documents.detachClient(clientId)
+    documents.refreshFromHost(
+      { documentId, editorType: 'sheets', revision },
+      rendererInstanceId,
+    )
     const reconnectedClientId = 'client-recovered' as ClientId
     documents.register({
       documentId,
       clientId: reconnectedClientId,
+      rendererInstanceId,
       editorType: 'sheets',
-      revision,
+      revision: 2 as Revision,
     })
     router.handleClientFrame(
       {
@@ -1053,9 +1067,10 @@ describe('AgentRouter', () => {
         protocolVersion: PROTOCOL_VERSION,
         id: 'register-recovered' as RequestId,
         clientId: reconnectedClientId,
+        rendererInstanceId,
         documentId,
         editorType: 'sheets',
-        revision,
+        revision: 2 as Revision,
       },
       reconnectedClientId,
     )

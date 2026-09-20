@@ -71,6 +71,7 @@ describe('startLocalHost HTTP bootstrap', () => {
         protocolVersion: 1,
         id: 'register-1',
         clientId,
+        rendererInstanceId: 'renderer-1',
         documentId: 'document-1',
         editorType: 'sheets',
         revision: 1,

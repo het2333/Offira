@@ -5,6 +5,7 @@ export type ClientId = Brand<string, 'ClientId'>
 export type DocumentId = Brand<string, 'DocumentId'>
 export type OperationId = Brand<string, 'OperationId'>
 export type RequestId = Brand<string, 'RequestId'>
+export type RendererInstanceId = Brand<string, 'RendererInstanceId'>
 export type SessionId = Brand<string, 'SessionId'>
 export type TransactionId = Brand<string, 'TransactionId'>
 export type Revision = Brand<number, 'Revision'>

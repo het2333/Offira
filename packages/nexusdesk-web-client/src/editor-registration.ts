@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type DocumentId,
+  type RendererInstanceId,
   type RequestId,
   type Revision,
 } from '@nexusdesk/protocol'
@@ -26,6 +27,7 @@ export function registerEditor(
   client: NexusClient,
   input: EditorRegistrationInput,
 ): EditorRegistrationHandle {
+  const rendererInstanceId = globalThis.crypto.randomUUID() as RendererInstanceId
   let revision = input.revision
   let disposed = false
 
@@ -36,6 +38,7 @@ export function registerEditor(
       protocolVersion: PROTOCOL_VERSION,
       id: requestId('register'),
       clientId: client.clientId,
+      rendererInstanceId,
       documentId: input.documentId,
       editorType: input.editorType,
       revision,

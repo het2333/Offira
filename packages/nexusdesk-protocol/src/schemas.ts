@@ -115,6 +115,7 @@ const clientFrameSchema = z.discriminatedUnion('type', [
       type: z.literal('editor:register'),
       id: nonEmptyString,
       clientId: nonEmptyString,
+      rendererInstanceId: nonEmptyString,
       documentId: nonEmptyString,
       editorType: nonEmptyString,
       revision: revisionSchema,
