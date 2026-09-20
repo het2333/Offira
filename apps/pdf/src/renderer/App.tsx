@@ -198,7 +198,7 @@ import {
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
 import { planEditOps, reduceBucket, reduceEditOps } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
-import type { AgentToolResult, JsonValue } from '@nexusdesk/protocol'
+import type { AgentToolResult, JsonValue, WorkingCopyBootstrap } from '@nexusdesk/protocol'
 import { assertPdfWebPayload } from '@nexusdesk/protocol'
 import type { PdfEditPlan } from './agent/browser-agent-api'
 import { annotationOperations, imageOperations } from './agent/semantic-operations'
@@ -316,7 +316,11 @@ export default function App() {
       window.nexusdeskPdfHost?.onWorkingCopyState(() => {
         setRecoveryDirty(window.nexusdeskPdfHost?.recoveryDirty ?? false)
         setWorkingCopyBusy(window.nexusdeskPdfHost?.busy ?? false)
-        if (window.nexusdeskPdfHost?.reloadError) setStatus('error')
+        if (window.nexusdeskPdfHost?.reloadError) {
+          if (window.nexusdeskPdfHost.recoveryConflict)
+            setRecoveryError(window.nexusdeskPdfHost.reloadError)
+          else setStatus('error')
+        }
       }),
     [],
   )
@@ -324,6 +328,7 @@ export default function App() {
   const collapse = useRibbonCollapse('genoffice-pdf-ribbon-collapsed')
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const loadedSourceRef = useRef<string | undefined>(undefined)
+  const durablePendingRef = useRef<{ sourceContentId: string; stateKey: string } | null>(null)
   const [filePath, setFilePath] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'password' | 'ready'>(
     'loading',
@@ -1732,6 +1737,71 @@ export default function App() {
     metadata: metadataRef.current,
   })
 
+  // These are deliberately not cleared on recovery. They have no durable representation
+  // until a capture commits them (and unplaced inserts must never masquerade as saved).
+  const localDraftsRef = useRef({
+    noteEditDraft,
+    pendingTextInsert,
+    noteDraft,
+    pendingSign,
+    imagePick,
+    redactions,
+  })
+  localDraftsRef.current = {
+    noteEditDraft,
+    pendingTextInsert,
+    noteDraft,
+    pendingSign,
+    imagePick,
+    redactions,
+  }
+  const localStateKey = () =>
+    JSON.stringify(
+      { ...snapshot(), ...localDraftsRef.current, textDraft: textDraftRef.current },
+      (_key, value: unknown) =>
+        value instanceof Map ? [...value] : value instanceof Set ? [...value] : value,
+    )
+  const contentVersionRef = useRef({ key: '', generation: 0 })
+  const contentGeneration = () => {
+    const key = localStateKey()
+    if (key !== contentVersionRef.current.key)
+      contentVersionRef.current = { key, generation: contentVersionRef.current.generation + 1 }
+    return contentVersionRef.current.generation
+  }
+  const runManualMutation = (task: () => void): Promise<void> => {
+    const host = window.nexusdeskPdfHost
+    return host?.document.workingCopy
+      ? host.runMutation(async () => task())
+      : Promise.resolve(task())
+  }
+  const prepareRecovery = (next: WorkingCopyBootstrap) => {
+    if (next.sourceContentId === loadedSourceRef.current) return
+    const drafts = localDraftsRef.current
+    const hasDrafts =
+      !!textDraftRef.current ||
+      Object.values(drafts).some((value) => (Array.isArray(value) ? value.length > 0 : !!value))
+    const hasPending = Object.values(snapshot()).some((value) =>
+      value instanceof Map || value instanceof Set
+        ? value.size > 0
+        : Array.isArray(value)
+          ? value.length > 0
+          : value !== null,
+    )
+    const durable = durablePendingRef.current
+    if (
+      hasDrafts ||
+      (hasPending &&
+        !(
+          durable?.sourceContentId === next.sourceContentId && durable.stateKey === localStateKey()
+        ))
+    ) {
+      const message =
+        'PDF recovery paused: the source changed. Unsaved edits and drafts are preserved in this tab; do not refresh or close it.'
+      setRecoveryError(message)
+      throw Object.assign(new Error(message), { code: 'PDF_RECOVERY_LOCAL_CHANGES' })
+    }
+  }
+
   const pushUndo = (coalesceKey?: string) => {
     if (coalesceKey && coalesceKeyRef.current === coalesceKey) return
     coalesceKeyRef.current = coalesceKey ?? null
@@ -1894,6 +1964,7 @@ export default function App() {
     commitTextInserts(s.textInserts)
     updateImageEdits(() => s.imageEdits)
     setTextDraft(null)
+    textDraftRef.current = null
     // The comment being rewritten may not exist in the restored snapshot; confirming a
     // stale edit box would reapply text that undo just reverted
     setNoteEditDraft(null)
@@ -3158,7 +3229,7 @@ export default function App() {
   /** Close the floating editor and commit its content. Returns the effective edit list
       so save paths can include a just-folded draft that React state hasn't flushed yet. */
   const commitTextDraft = (): LocalTextEdit[] => {
-    const d = textDraft
+    const d = textDraftRef.current
     const current = textEditsRef.current
     if (!d) return current
     const merged = mergeTextDraft(current, d)
@@ -3168,6 +3239,7 @@ export default function App() {
       return current
     }
     setTextDraft(null)
+    textDraftRef.current = null
     if (!merged) return current
     applyEditOps(textEditListOps(current, merged))
     // New edits append; re-opened ones keep their id
@@ -3378,12 +3450,12 @@ export default function App() {
       `noteFlush` carries the drawings/noteEdits returned by commitNoteEdit — the
       state values in this closure predate that flush. */
   const editsPayload = (
-    edits: LocalTextEdit[] = textEdits,
+    edits?: LocalTextEdit[],
     noteFlush?: { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] },
     state: EditSnapshot = snapshot(),
   ) => {
     const { path: _path, ...payload } = buildPdfSaveRequest(
-      { ...state, textEdits: edits, ...(noteFlush ?? {}) },
+      { ...state, textEdits: edits ?? state.textEdits, ...(noteFlush ?? {}) },
       {
         path: filePath,
         pageCount: sizes.length,
@@ -4003,7 +4075,9 @@ export default function App() {
     const target = replaceTargetRef.current
     if (target) {
       replaceTargetRef.current = null
-      commitBaked(target, base64)
+      await runManualMutation(() => {
+        commitBaked(target, base64)
+      })
       return
     }
     setImagePick({ kind: 'image', image: base64, width: canvas.width, height: canvas.height })
@@ -4237,25 +4311,27 @@ export default function App() {
     setSelected(null)
     if (edit.input.kind === 'insertImage') {
       const { image } = edit.input
-      void rotatePngTurns(image, turn).then((rotated) => {
-        if (!rotated) return
-        // The canvas turn is async: apply via the ref (the closed-over entry would
-        // snapshot click-time state for undo) and rotate the element's CURRENT rect —
-        // a concurrent move/resize must not be overwritten. The bytes guard drops
-        // a rotation that lost a race (edit removed, or another turn landed first)
-        // BEFORE applying, so ⌘Z never records a no-op step.
-        const target = imageEditsRef.current.find((e) => e.id === sel.id)
-        if (!target || target.input.kind !== 'insertImage' || target.input.image !== image) return
-        applyEditOpsRef.current([
-          {
-            op: 'patchImageEdit',
-            id: sel.id,
-            input: { image: rotated, rect: rotatedRect(target.input.rect) },
-            // rotating the bytes invalidates a recorded pre-transparency base
-            opacityBase: null,
-          },
-        ])
-      })
+      void rotatePngTurns(image, turn).then((rotated) =>
+        runManualMutation(() => {
+          if (!rotated) return
+          // The canvas turn is async: apply via the ref (the closed-over entry would
+          // snapshot click-time state for undo) and rotate the element's CURRENT rect —
+          // a concurrent move/resize must not be overwritten. The bytes guard drops
+          // a rotation that lost a race (edit removed, or another turn landed first)
+          // BEFORE applying, so ⌘Z never records a no-op step.
+          const target = imageEditsRef.current.find((e) => e.id === sel.id)
+          if (!target || target.input.kind !== 'insertImage' || target.input.image !== image) return
+          applyEditOpsRef.current([
+            {
+              op: 'patchImageEdit',
+              id: sel.id,
+              input: { image: rotated, rect: rotatedRect(target.input.rect) },
+              // rotating the bytes invalidates a recorded pre-transparency base
+              opacityBase: null,
+            },
+          ])
+        }),
+      )
       return
     }
     applyEditOps([
@@ -4473,7 +4549,10 @@ export default function App() {
     void (async () => {
       const src = await bakeSourcePng(target)
       const out = src ? await transformPngPixels(src, fn) : null
-      if (out) commitBaked(target, out)
+      if (out)
+        await runManualMutation(() => {
+          commitBaked(target, out)
+        })
     })()
   }
 
@@ -4498,22 +4577,26 @@ export default function App() {
         if (!out) return
         // Reject a lost race BEFORE pushing undo (same as commitBaked), or ⌘Z
         // would record a phantom step for the no-op map below
-        const cur = imageEditsRef.current.find((x) => x.id === target.id)
-        if (
-          !cur ||
-          cur.input !== target.before ||
-          (cur.input.kind !== 'insertImage' && cur.input.kind !== 'replaceImage')
-        ) {
-          return
-        }
-        applyEditOpsRef.current([
-          { op: 'patchImageEdit', id: target.id, input: { image: out }, opacityBase: prior },
-        ])
+        await runManualMutation(() => {
+          const cur = imageEditsRef.current.find((x) => x.id === target.id)
+          if (
+            !cur ||
+            cur.input !== target.before ||
+            (cur.input.kind !== 'insertImage' && cur.input.kind !== 'replaceImage')
+          )
+            return
+          applyEditOpsRef.current([
+            { op: 'patchImageEdit', id: target.id, input: { image: out }, opacityBase: prior },
+          ])
+        })
         return
       }
       const src = await bakeSourcePng(target)
       const out = src ? await transformPngPixels(src, alpha) : null
-      if (out) commitBaked(target, out, undefined, src ?? undefined)
+      if (out)
+        await runManualMutation(() => {
+          commitBaked(target, out, undefined, src ?? undefined)
+        })
     })()
   }
 
@@ -4852,9 +4935,10 @@ export default function App() {
       won't be visible to the caller's closure. */
   const commitNoteEdit = (): { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] } => {
     const unchanged = { drawings: drawingsRef.current, noteEdits: noteEditsRef.current }
-    const draft = noteEditDraft
+    const draft = localDraftsRef.current.noteEditDraft
     if (!draft) return unchanged
     setNoteEditDraft(null)
+    localDraftsRef.current = { ...localDraftsRef.current, noteEditDraft: null }
     const item = noteThreadsOn(draft.origIdx)
       .flatMap((root) => flattenThread(root))
       .map(({ item: it }) => it)
@@ -5508,10 +5592,7 @@ export default function App() {
       hash({
         hostRevision: browserHost.document.revision,
         filePath,
-        edits: editsPayload(),
-        textDraft,
-        noteEditDraft,
-        pendingTextInsert,
+        state: localStateKey(),
       })
     const targetsFor = (operations: Op[]): string[] => [
       ...new Set(
@@ -5827,6 +5908,7 @@ export default function App() {
       }))
     }
     let savedWorkingCopySnapshot: SavedSnapshot | undefined
+    let capturedStateKey: string | undefined
     const detach = browserHost.attachEditor({
       async read(arguments_): Promise<AgentToolResult> {
         if (arguments_.include === 'annotations') {
@@ -5940,7 +6022,8 @@ export default function App() {
         }
       },
       async apply(plan: PdfEditPlan & { approvalId: string }) {
-        if ((await pendingSnapshot()) !== plan.snapshotHash)
+        const generation = contentGeneration()
+        if ((await pendingSnapshot()) !== plan.snapshotHash || contentGeneration() !== generation)
           return failure('STALE_PLAN', 'The PDF changed after proposal.')
         if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
           return failure('APPROVAL_INVALID', 'The PDF operation is not bound to a live approval.')
@@ -5989,6 +6072,7 @@ export default function App() {
         if (applied.failures.length > 0) {
           return failure('PDF_OPERATION_FAILED', applied.failures[0]!.error)
         }
+        capturedStateKey = localStateKey()
         return {
           ok: true,
           summary: `Applied ${String(applied.ops.length)} PDF operation${applied.ops.length === 1 ? '' : 's'}.`,
@@ -6001,7 +6085,8 @@ export default function App() {
         }
       },
       async save(plan: PdfEditPlan & { approvalId: string }) {
-        if ((await pendingSnapshot()) !== plan.snapshotHash) {
+        const generation = contentGeneration()
+        if ((await pendingSnapshot()) !== plan.snapshotHash || contentGeneration() !== generation) {
           return failure(
             'STALE_PLAN',
             'The PDF changed after this save was proposed; propose it again.',
@@ -6035,7 +6120,14 @@ export default function App() {
           : failure('PDF_SAVE_FAILED', 'The Local Host rejected the PDF save.')
       },
       async persisted(receipt) {
-        if (receipt.dirty) return
+        if (receipt.dirty) {
+          if (capturedStateKey !== undefined)
+            durablePendingRef.current = {
+              sourceContentId: receipt.blobHash,
+              stateKey: capturedStateKey,
+            }
+          return
+        }
         try {
           await browserHost.rebase()
           await loadDoc(filePath, doc, savedWorkingCopySnapshot)
@@ -6045,8 +6137,15 @@ export default function App() {
           throw error
         }
       },
+      prepareRecovery,
       async restoreWorkingCopy() {
-        await loadDoc(filePath, doc)
+        const next = browserHost.document.workingCopy
+        if (next) prepareRecovery(next)
+        if (next?.sourceContentId !== loadedSourceRef.current) {
+          await loadDoc(filePath, doc)
+          durablePendingRef.current = null
+        }
+        browserHost.setHydrated(loadedSourceRef.current)
         setRecoveryError(null)
         setStatus('ready')
       },
@@ -6649,6 +6748,7 @@ export default function App() {
 
   return (
     <div className="app" inert={workingCopyBusy}>
+      {recoveryError && <div role="alert">{recoveryError}</div>}
       <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
         <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
           <button
@@ -9103,7 +9203,9 @@ export default function App() {
                 onCancel={() => setImageDialog(null)}
                 onApply={(png, crop) => {
                   setImageDialog(null)
-                  commitBaked(imageDialog.target, png, crop)
+                  void runManualMutation(() => {
+                    commitBaked(imageDialog.target, png, crop)
+                  })
                 }}
               />
             )}
@@ -9114,7 +9216,9 @@ export default function App() {
                 onCancel={() => setImageDialog(null)}
                 onApply={(png) => {
                   setImageDialog(null)
-                  commitBaked(imageDialog.target, png)
+                  void runManualMutation(() => {
+                    commitBaked(imageDialog.target, png)
+                  })
                 }}
               />
             )}

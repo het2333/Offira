@@ -401,8 +401,9 @@ export interface PdfBrowserHostHandle {
   readonly hydrated: boolean
   readonly busy: boolean
   readonly reloadError: string | undefined
+  readonly recoveryConflict: boolean
   setHydrated(sourceContentId?: string): void
-  rebase(): Promise<void>
+  rebase(beforeAdopt?: (next: WorkingCopyBootstrap) => void): Promise<void>
   onWorkingCopyState(listener: () => void): () => void
   runMutation<T>(task: () => Promise<T>): Promise<T>
   dispose(): void
@@ -433,6 +434,7 @@ export function installPdfBrowserHostApi(
   let rebasing = false
   let busy = false
   let reloadError: string | undefined
+  let recoveryConflict = false
   const listeners = new Set<() => void>()
   const publish = () => {
     for (const listener of listeners) listener()
@@ -494,16 +496,24 @@ export function installPdfBrowserHostApi(
   const recover = () => {
     if (disposed || recovering || !recoveryRequested || !currentAdapter?.restoreWorkingCopy) return
     const restore = currentAdapter.restoreWorkingCopy
+    const prepare = currentAdapter.prepareRecovery
     recovering = true
     void runMutation(async () => {
       while (!disposed && recoveryRequested && recoveryAttempts < 3) {
         recoveryAttempts++
         try {
-          await handle.rebase()
+          await handle.rebase(prepare)
           await restore()
           recoveryRequested = false
           return
-        } catch {
+        } catch (error) {
+          if ((error as { code?: string })?.code === 'PDF_RECOVERY_LOCAL_CHANGES') {
+            recoveryRequested = false
+            recoveryConflict = true
+            reloadError = (error as Error).message
+            publish()
+            return
+          }
           /* A bounded bootstrap/load retry leaves its source gated. */
         }
       }
@@ -555,6 +565,9 @@ export function installPdfBrowserHostApi(
     get reloadError() {
       return reloadError
     },
+    get recoveryConflict() {
+      return recoveryConflict
+    },
     runMutation,
     onWorkingCopyState(listener) {
       listeners.add(listener)
@@ -575,7 +588,7 @@ export function installPdfBrowserHostApi(
       bridge.setHydrated(bootstrap.workingCopy ?? null)
       publish()
     },
-    async rebase() {
+    async rebase(beforeAdopt) {
       if (!bootstrap.workingCopy) return
       hydrated = false
       rebasing = true
@@ -583,8 +596,10 @@ export function installPdfBrowserHostApi(
       publish()
       try {
         const next = await loadPdfBrowserBootstrap(bootstrap.documentId, options.fetch)
+        if (next.workingCopy) beforeAdopt?.(next.workingCopy)
         Object.assign(bootstrap, next)
         reloadError = undefined
+        recoveryConflict = false
       } catch (error) {
         reloadError = error instanceof Error ? error.message : 'PDF saved; reload failed'
         throw error

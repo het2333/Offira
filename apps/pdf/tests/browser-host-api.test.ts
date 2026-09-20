@@ -21,6 +21,76 @@ const bootstrap = {
 }
 
 describe('PDF Local Web browser adapter', () => {
+  it('keeps the leased source and dirty editor when recovery would overwrite local drafts', async () => {
+    const frames = new Set<(frame: any) => void>()
+    const client = {
+      state: 'ready',
+      clientId: 'client',
+      connect() {},
+      close() {},
+      send() {},
+      onFrame(listener: (frame: any) => void) {
+        frames.add(listener)
+        return () => frames.delete(listener)
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 4,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      dirty: false,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    let loads = 0
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, workingCopy },
+      {
+        client: client as never,
+        target: {},
+        fetch: async () =>
+          Response.json({
+            ...bootstrap,
+            workingCopy: { ...workingCopy, sourceContentId: 'b'.repeat(64) },
+          }),
+      },
+    )
+    handle.attachEditor({
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi.fn(),
+      proposeSave: vi.fn(),
+      apply: vi.fn(),
+      save: vi.fn(),
+      prepareRecovery: () => {
+        throw Object.assign(Error('Unsaved drafts are preserved'), {
+          code: 'PDF_RECOVERY_LOCAL_CHANGES',
+        })
+      },
+      restoreWorkingCopy: async () => {
+        loads++
+      },
+    })
+    handle.setHydrated(workingCopy.sourceContentId)
+    for (const listener of frames)
+      listener({
+        type: 'recovery:required',
+        documentId: 'pdf-1',
+        code: 'STALE_PLAN',
+        message: 'stale',
+      })
+    await vi.waitFor(() => expect(handle.reloadError).toContain('preserved'))
+    expect(handle.document.workingCopy!.sourceContentId).toBe('a'.repeat(64))
+    expect(loads).toBe(0)
+    expect(handle.hydrated).toBe(false)
+    handle.dispose()
+  })
+
   it('retains the recovery loader across a transient bootstrap error and renderer detachment', async () => {
     const frames = new Set<(frame: any) => void>()
     const client = {

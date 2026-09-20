@@ -43,6 +43,7 @@ export interface PdfEditorAdapter {
   apply(plan: PdfEditPlan & { approvalId: string }): Promise<PdfMutationResult>
   save(plan: PdfEditPlan & { approvalId: string }): Promise<PdfMutationResult>
   persisted?(receipt: PersistenceReference): Promise<void>
+  prepareRecovery?(next: WorkingCopyBootstrap): void
   restoreWorkingCopy?(): Promise<void>
 }
 
