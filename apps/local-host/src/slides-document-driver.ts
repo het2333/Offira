@@ -131,6 +131,7 @@ export async function createSlidesDocumentDriver(path: string): Promise<LocalDoc
       if (
         action === 'slides:open' ||
         action === 'slides:edit-text' ||
+        action === 'slides:apply-edit-script' ||
         action === 'slides:apply-txn' ||
         action === 'slides:read-presentation' ||
         action === 'slides:content-state' ||

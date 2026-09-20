@@ -39,6 +39,8 @@ describe('AgentApi', () => {
       prompt: 'Add a total row',
       documentId: 'document-1',
       sessionId: 'session-1',
+      provider: 'smoke',
+      model: 'smoke-model',
     })
     api.cancelTurn('session-1')
     api.respondApproval('approval-1', 'allowed-once')
@@ -58,6 +60,8 @@ describe('AgentApi', () => {
       documentId: 'document-1' as DocumentId,
       sessionId: 'session-1' as SessionId,
       prompt: 'Add a total row',
+      provider: 'smoke',
+      model: 'smoke-model',
     })
     expect(received).toHaveLength(1)
   })

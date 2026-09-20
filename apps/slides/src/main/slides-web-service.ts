@@ -39,6 +39,7 @@ async function execute(request: Request): Promise<unknown> {
   if (service === undefined) throw new Error('Slides service is not initialized.')
   if (request.action === 'open') return service.setFitWidth(fitWidth(request.payload))
   if (request.action === 'edit-text') return service.editText(request.payload as never)
+  if (request.action === 'apply-edit-script') return service.applyEditScript(request.payload as never)
   if (request.action === 'apply-txn') return service.applyTransaction(request.payload as never)
   if (request.action === 'read-presentation') return service.readPresentation()
   if (request.action === 'content-state') return service.contentState()

@@ -10,7 +10,7 @@ import { DocumentDriverRegistry } from '../../apps/local-host/src/document-drive
 import { createSlidesDocumentDriver } from '../../apps/local-host/src/slides-document-driver'
 import { startLocalHost } from '../../apps/local-host/src/server'
 
-export async function launchSlidesLocalWebHost() {
+export async function launchSlidesLocalWebHost(options: { runtimeCommand?: { entry: string; args?: string[] } } = {}) {
   const repositoryRoot = process.cwd()
   if (!existsSync(resolve(repositoryRoot, 'apps/web/dist/index.html')) || !existsSync(resolve(repositoryRoot, 'apps/slides/out/web/index.html'))) {
     execFileSync('npm', ['run', 'build:web'], { cwd: repositoryRoot, stdio: 'inherit' })
@@ -33,7 +33,7 @@ export async function launchSlidesLocalWebHost() {
       editorRoots: { slides: resolve(repositoryRoot, 'apps/slides/out/web') },
     },
     documentDrivers: new DocumentDriverRegistry([countedDriver]),
-    runtimeCommand: { entry: resolve(repositoryRoot, 'e2e/fixtures/fake-slides-harness.mjs') },
+    runtimeCommand: options.runtimeCommand ?? { entry: resolve(repositoryRoot, 'e2e/fixtures/fake-slides-harness.mjs') },
   })
   return {
     ...running,

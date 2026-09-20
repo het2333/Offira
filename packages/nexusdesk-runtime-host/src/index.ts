@@ -65,6 +65,9 @@ interface RuntimeContext {
       signal?: AbortSignal
     }): Promise<ApprovalOutcome>
   }
+  agentDefaultModel: {
+    currentSelection(): { provider: string; model: string; reasoningEffort?: string }
+  }
   on(
     event: 'approval/request',
     listener: (request: {
@@ -204,14 +207,15 @@ async function openAgent(
   const existing = agents.get(frame.sessionId)
   if (existing !== undefined) return existing
   const ctx = asRuntimeContext((await boot).ctx)
+  const agentOptions = frame.provider !== undefined && frame.model !== undefined
+    ? { provider: frame.provider, model: frame.model }
+    : ctx.agentDefaultModel.currentSelection()
   const created = (await ctx.agents.create({
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
-    ...(frame.provider === undefined || frame.model === undefined
-      ? {}
-      : { agentOptions: { provider: frame.provider, model: frame.model } }),
-    setup(agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] }) {
-      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType)
+    agentOptions,
+    setup(agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] }, agent: unknown) {
+      configureOfficeToolScope({ tools: agentContext.tools, scope: agent }, frame.editorType)
     },
   })) as AgentHandle
   agents.set(frame.sessionId, created)
@@ -282,7 +286,7 @@ function createEditorToolBridge(
           `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`,
         )
       }
-      const operationId = (authorization?.operationId ?? `operation-${randomUUID()}`) as OperationId
+      const operationId = (authorization?.operationId ?? `operation-${String(execution.callId)}`) as OperationId
       const reply = await requestParent({
         type: 'editor:request',
         target: { ...target, operationId },

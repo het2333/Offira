@@ -14804,7 +14804,7 @@ function configureOfficeToolScope(agentContext, editorType) {
   agentContext.tools.guard(
     (execution) => allowed.has(execution.name) ? void 0 : `NexusDesk Agents may execute only official Office tools; ${execution.name} is denied.`
   );
-  const effective = agentContext.tools.schemas().map(({ name }) => name).sort();
+  const effective = agentContext.tools.schemas(agentContext.scope).map(({ name }) => name).sort();
   const expected = [...toolNames].sort();
   if (effective.length !== expected.length || effective.some((name, index) => name !== expected[index])) {
     throw new Error(`unsafe Agent tool catalog: ${effective.join(", ")}`);
@@ -15241,12 +15241,13 @@ async function openAgent(frame) {
   const existing = agents.get(frame.sessionId);
   if (existing !== void 0) return existing;
   const ctx2 = asRuntimeContext((await boot).ctx);
+  const agentOptions = frame.provider !== void 0 && frame.model !== void 0 ? { provider: frame.provider, model: frame.model } : ctx2.agentDefaultModel.currentSelection();
   const created = await ctx2.agents.create({
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
-    ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } },
-    setup(agentContext) {
-      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType);
+    agentOptions,
+    setup(agentContext, agent) {
+      configureOfficeToolScope({ tools: agentContext.tools, scope: agent }, frame.editorType);
     }
   });
   agents.set(frame.sessionId, created);
@@ -15309,7 +15310,7 @@ function createEditorToolBridge(editorType) {
           `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`
         );
       }
-      const operationId = authorization?.operationId ?? `operation-${randomUUID()}`;
+      const operationId = authorization?.operationId ?? `operation-${String(execution.callId)}`;
       const reply = await requestParent({
         type: "editor:request",
         target: { ...target, operationId },

@@ -6,10 +6,10 @@ import {
   type ElementClipboardItem,
   type OpenedPptx,
 } from '@genoffice/pptx-engine'
-import { runTxn, type Op, type TxnRequest, type TxnResult } from '@genoffice/pptx-ops'
+import { mapScriptOps, runTxn, type Op, type TxnRequest, type TxnResult } from '@genoffice/pptx-ops'
 import { buildRenderSlide, type RenderSlide } from '@genoffice/pptx-render'
 
-import type { ApplyTxnOp, ApplyTxnResult, EditTextOp, OpenResult } from '../shared/ipc'
+import type { ApplyEditScriptOp, ApplyTxnOp, ApplyTxnResult, EditTextOp, OpenResult } from '../shared/ipc'
 
 const EMU_PER_PX_96 = 9_525
 const EMU_PER_PT = 12_700
@@ -149,6 +149,16 @@ export class SlidesDocumentService {
       ...(compact(result) === undefined ? {} : { failures: compact(result) }),
       slides: this.renderSlides(),
     }
+  }
+
+  applyEditScript(request: ApplyEditScriptOp): { slide: RenderSlide; contentVersion: number } | { error: string } | null {
+    const ops = mapScriptOps(this.opened, request)
+    if (ops.length === 0) return null
+    const result = this.applyTransaction({ ops })
+    if (!result.applied) return { error: result.failures?.[0]?.error ?? 'the transaction could not be applied' }
+    const slide = this.renderSlides()[request.slideIndex]
+    if (slide === undefined) return { error: 'the transaction did not produce the requested slide' }
+    return { slide, contentVersion: result.contentVersion! }
   }
 
   async serializeBytes(): Promise<Uint8Array> {

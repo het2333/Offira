@@ -63,6 +63,31 @@ describe('SlidesDocumentService', () => {
     expect((service.readPresentation() as { contentVersion?: number }).contentVersion).toBe(2)
   })
 
+  it('translates an AI edit script into one history-aware transaction', async () => {
+    const sourceDeck = await openPptx(await createBlankPptx())
+    addElement(sourceDeck.deck.slides[0]!, {
+      kind: 'textbox',
+      offset: { x: 0, y: 0, cx: 1828800, cy: 914400 },
+      paragraphs: [{ runs: [{ text: 'Original title' }] }],
+    })
+    const service = await SlidesDocumentService.open(await savePptx(sourceDeck), 'Deck.pptx', 960)
+    const title = service.openResult().slides[0]!.nodes.find((node) => node.type === 'text' || node.type === 'shape')!
+
+    const result = service.applyEditScript({
+      slideIndex: 0,
+      fitWidthPx: 960,
+      boxes: [],
+      edits: [{ kind: 'text', id: title.sourceId, paragraphs: [{ runs: [{ text: 'Edited by script' }] }] }],
+    })
+
+    expect(result).toMatchObject({ contentVersion: 2 })
+    if (result === null || 'error' in result) throw new Error(result?.error ?? 'Edit script was not applied.')
+    expect(result.slide).toBeDefined()
+    expect(renderedText(service)).toContain('Edited by script')
+    await service.undo()
+    expect(renderedText(service)).toContain('Original title')
+  })
+
   it('records manual text edits and Agent transactions in the same undo and redo history', async () => {
     const sourceDeck = await openPptx(await createBlankPptx())
     addElement(sourceDeck.deck.slides[0]!, {

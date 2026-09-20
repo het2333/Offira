@@ -32,6 +32,8 @@ function transport(): SlidesBrowserTransport & { calls: Array<{ action: string; 
       if (action === 'slides:edit-text') return { nodes: [] }
       if (action === 'slides:content-state') return { contentVersion: 2 }
       if (action === 'slides:ui') return { slides: [], index: 1, contentVersion: 3 }
+      if (action === 'slides:apply-edit-script') return { slide: { index: 0, nodes: [] }, contentVersion: 4 }
+      if (action === 'slides:apply-txn') return { applied: true, contentVersion: 5, records: [{ op: 'setText' }], slides: [] }
       throw new Error(`unexpected action: ${action}`)
     },
   }
@@ -76,5 +78,22 @@ describe('Slides browser host API', () => {
     expect(host.calls.filter((call) => call.action === 'slides:ui').map((call) => (call.payload as any).action)).toEqual([
       'add-table', 'add-chart', 'add-image-bytes', 'copy-elements', 'paste-elements', 'duplicate-elements',
     ])
+  })
+
+  it('runs legacy AI edit scripts and transactions through the Local Host transaction service', async () => {
+    const host = transport()
+    const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host })
+    const api = createSlidesBrowserApi(handle, host)
+    const editScript = { slideIndex: 0, fitWidthPx: 960, boxes: [], edits: [] }
+    const transaction = { ops: [{ op: 'setText', target: { slide: 0, el: 'title' }, paragraphs: [] }] }
+
+    await expect(api.applyEditScript(editScript)).resolves.toEqual({ slide: { index: 0, nodes: [] } })
+    await expect(api.applyTxn(transaction)).resolves.toMatchObject({ applied: true, contentVersion: 5 })
+
+    expect(host.calls).toEqual([
+      { action: 'slides:apply-edit-script', payload: editScript },
+      { action: 'slides:apply-txn', payload: transaction },
+    ])
+    expect(handle.document.contentVersion).toBe(5)
   })
 })

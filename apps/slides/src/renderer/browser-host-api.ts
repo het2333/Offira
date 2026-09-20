@@ -4,7 +4,7 @@ import type { AgentApi, NexusClient } from '@nexusdesk/web-client'
 import { createNexusClient } from '@nexusdesk/web-client'
 import type { ClientId, DocumentId, JsonValue, Revision } from '@nexusdesk/protocol'
 
-import type { EditTextOp, OpenResult, SlidesApi, UiTheme } from '../shared/ipc'
+import type { ApplyEditScriptOp, ApplyTxnOp, ApplyTxnResult, EditTextOp, OpenResult, SlidesApi, UiTheme } from '../shared/ipc'
 import { createSlidesBrowserAgentBridge, type SlidesBrowserAgentBridge } from './agent/browser-agent-api'
 import { createSlidesEditorAdapter } from './agent/slides-editor-adapter'
 
@@ -150,6 +150,18 @@ export function createSlidesBrowserApi(
     async editText(request: EditTextOp) {
       const result = await transport.execute('slides:edit-text', request) as Awaited<ReturnType<SlidesApi['editText']>>
       if (result !== null) await syncContentVersion()
+      return result
+    },
+    async applyEditScript(request: ApplyEditScriptOp) {
+      const result = await transport.execute('slides:apply-edit-script', request) as ({ slide: unknown; contentVersion?: number } | { error: string; contentVersion?: number } | null)
+      if (result?.contentVersion !== undefined) handle.updateContentVersion(result.contentVersion)
+      if (result === null) return null
+      if ('slide' in result) return { slide: result.slide } as Awaited<ReturnType<SlidesApi['applyEditScript']>>
+      return { error: result.error }
+    },
+    async applyTxn(request: ApplyTxnOp): Promise<ApplyTxnResult | null> {
+      const result = await transport.execute('slides:apply-txn', request) as ApplyTxnResult | null
+      if (result?.contentVersion !== undefined) handle.updateContentVersion(result.contentVersion)
       return result
     },
     addElement: (request) => ui<Awaited<ReturnType<SlidesApi['addElement']>>>('add-element', request),

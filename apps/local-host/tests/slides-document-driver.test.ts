@@ -118,4 +118,21 @@ describe('Slides Local Host driver', () => {
     })
     await expect(driver.execute('slides:save', { expectedRevision: 1 })).resolves.toMatchObject({ ok: true, revision: 2 })
   })
+
+  it('translates an AI edit script through the isolated transaction service', async () => {
+    const { path } = await editableFixture()
+    const driver = await createSlidesDocumentDriver(path)
+    const read = await driver.execute('slides:read-presentation', {}) as { slides: Array<{ nodes: Array<{ sourceId?: string; type: string }> }> }
+    const title = read.slides[0]!.nodes.find((node) => node.type === 'text' && node.sourceId)
+
+    const result = await driver.execute('slides:apply-edit-script', {
+      slideIndex: 0,
+      fitWidthPx: 960,
+      boxes: [],
+      edits: [{ kind: 'text', id: title!.sourceId, paragraphs: [{ runs: [{ text: 'Saved by script' }] }] }],
+    }) as { contentVersion: number; slide: { nodes: unknown[] } }
+    expect(result).toMatchObject({ contentVersion: 2 })
+    expect(result.slide.nodes).not.toHaveLength(0)
+    await expect(driver.execute('slides:save', { expectedRevision: 1 })).resolves.toMatchObject({ ok: true, revision: 2 })
+  })
 })

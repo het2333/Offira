@@ -10,7 +10,7 @@ import {
 import type { NexusClient } from './client'
 
 export interface AgentApi {
-  startTurn(input: { prompt: string; documentId: string; sessionId: string }): void
+  startTurn(input: { prompt: string; documentId: string; sessionId: string; provider?: string; model?: string }): void
   cancelTurn(sessionId: string): void
   respondApproval(id: string, outcome: ApprovalOutcome): void
   onFrame(callback: (frame: AgentServerFrame) => void): () => void
@@ -30,6 +30,8 @@ export function createAgentApi(client: NexusClient): AgentApi {
         sessionId: input.sessionId as SessionId,
         documentId: input.documentId as DocumentId,
         prompt: input.prompt,
+        ...(input.provider === undefined ? {} : { provider: input.provider }),
+        ...(input.model === undefined ? {} : { model: input.model }),
       })
     },
     cancelTurn(sessionId) {

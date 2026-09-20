@@ -30,7 +30,7 @@ export type OfficeEditorType = 'docs' | 'sheets' | 'slides' | 'markdown' | 'html
 interface ToolScope {
   restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): () => void
   guard(callback: (execution: { name: string }) => string | undefined): () => void
-  schemas(): Array<{ name: string }>
+  schemas(scope?: unknown): Array<{ name: string }>
 }
 
 /** Apply and validate the non-bypassable capability boundary for one Agent. */
@@ -45,7 +45,7 @@ export function officeToolNames(editorType: string): readonly string[] {
 
 /** Apply and validate the editor-specific, non-bypassable capability boundary. */
 export function configureOfficeToolScope(
-  agentContext: { tools: ToolScope },
+  agentContext: { tools: ToolScope; scope?: unknown },
   editorType: string,
 ): void {
   const toolNames = officeToolNames(editorType)
@@ -58,7 +58,7 @@ export function configureOfficeToolScope(
   )
 
   const effective = agentContext.tools
-    .schemas()
+    .schemas(agentContext.scope)
     .map(({ name }) => name)
     .sort()
   const expected = [...toolNames].sort()
