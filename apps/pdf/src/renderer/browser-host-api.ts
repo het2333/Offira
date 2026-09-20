@@ -1,6 +1,7 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
 import type { DocumentId, Revision } from '@nexusdesk/protocol'
+import { assertPdfWebPayload } from '@nexusdesk/protocol'
 import type { PdfCapabilities, PdfPageModification } from '../shared/web-capabilities'
 import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/web-client'
 
@@ -181,6 +182,7 @@ export function createHttpPdfBrowserTransport(
       return value.images as PageImageRef[]
     },
     async save(request, expectedRevision) {
+      assertPdfWebPayload({ request, expectedRevision })
       const response = await fetchImpl(
         `/api/documents/${encodeURIComponent(bootstrap.documentId)}/save`,
         {

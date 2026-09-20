@@ -191,9 +191,10 @@ import {
   seedDraftColors,
 } from './text-edit-preview'
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
-import { planEditOps, reduceBucket } from './edit-ops'
+import { planEditOps, reduceBucket, reduceEditOps } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
 import type { AgentToolResult, JsonValue } from '@nexusdesk/protocol'
+import { assertPdfWebPayload } from '@nexusdesk/protocol'
 import type { PdfEditPlan } from './agent/browser-agent-api'
 import { annotationOperations, imageOperations } from './agent/semantic-operations'
 import {
@@ -1755,6 +1756,18 @@ export default function App() {
     }
     const plan = planEditOps(ops, editOpContext(), newId)
     if (plan.failures.length > 0 || plan.ops.length === 0) return plan
+    try {
+      assertWebSaveForOps(plan.ops)
+    } catch (error) {
+      return {
+        ops: [],
+        records: [],
+        touched: new Set(),
+        failures: [
+          { index: 0, op: ops[0]!, error: error instanceof Error ? error.message : String(error) },
+        ],
+      }
+    }
     pushUndo(opts?.coalesceKey)
     const base = snapshot()
     const { ops: planned, touched } = plan
@@ -3343,35 +3356,70 @@ export default function App() {
   const editsPayload = (
     edits: LocalTextEdit[] = textEdits,
     noteFlush?: { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] },
-  ) => ({
-    markups: markups.map(({ id: _id, ...rest }) => rest),
-    annotDeletes: annotDeletes.map((d): AnnotDeleteInput => ({
-      pageIndex: d.annot.pageIndex,
-      objNum: d.annot.objNum,
-      subtype: d.annot.type,
-      rect: d.annot.rect,
-      // A note thread's comments all share the root's rect; contents disambiguates
-      ...(d.annot.type === 'note' ? { contents: d.annot.contents } : {}),
-    })),
-    noteEdits: (noteFlush?.noteEdits ?? noteEdits).map((e): NoteEditInput => ({
-      pageIndex: e.annot.pageIndex,
-      objNum: e.annot.objNum,
-      rect: e.annot.rect,
-      oldContents: e.annot.contents,
-      contents: e.contents,
-    })),
-    drawings: (noteFlush?.drawings ?? drawings).map((d) => d.input),
-    textEdits: edits.map((e) => e.input),
-    textInserts: textInserts.map((insert) => insert.input),
-    imageEdits: imageEdits.map((e) => e.input),
-    staticFormFills,
-    stamps: stampCfg ? renderStamps(stampCfg, visList) : [],
-    formValues: [...formEdits.values()],
-    rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
-    deletedPages: [...deleted],
-    ...(order ? { pageOrder: visList } : {}),
-    ...(metadata ? { metadata } : {}),
-  })
+    state: EditSnapshot = snapshot(),
+  ) => {
+    const {
+      markups,
+      annotDeletes,
+      noteEdits,
+      drawings,
+      textInserts,
+      imageEdits,
+      stampCfg,
+      formEdits,
+      rotations,
+      deleted,
+      order,
+      metadata,
+    } = state
+    return {
+      markups: markups.map(({ id: _id, ...rest }) => rest),
+      annotDeletes: annotDeletes.map((d): AnnotDeleteInput => ({
+        pageIndex: d.annot.pageIndex,
+        objNum: d.annot.objNum,
+        subtype: d.annot.type,
+        rect: d.annot.rect,
+        // A note thread's comments all share the root's rect; contents disambiguates
+        ...(d.annot.type === 'note' ? { contents: d.annot.contents } : {}),
+      })),
+      noteEdits: (noteFlush?.noteEdits ?? noteEdits).map((e): NoteEditInput => ({
+        pageIndex: e.annot.pageIndex,
+        objNum: e.annot.objNum,
+        rect: e.annot.rect,
+        oldContents: e.annot.contents,
+        contents: e.contents,
+      })),
+      drawings: (noteFlush?.drawings ?? drawings).map((d) => d.input),
+      textEdits: edits.map((e) => e.input),
+      textInserts: textInserts.map((insert) => insert.input),
+      imageEdits: imageEdits.map((e) => e.input),
+      staticFormFills,
+      stamps: stampCfg ? renderStamps(stampCfg, visList) : [],
+      formValues: [...formEdits.values()],
+      rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
+      deletedPages: [...deleted],
+      ...(order ? { pageOrder: visList } : {}),
+      ...(metadata ? { metadata } : {}),
+    }
+  }
+
+  // Check the exact future save envelope both before approval and before changing
+  // renderer state. Multiple individually-small images must fit together too.
+  const assertWebSaveForOps = (ops: Op[]) => {
+    if (!window.nexusdeskPdfHost) return
+    const next = reduceEditOps(snapshot(), ops)
+    assertPdfWebPayload({
+      expectedRevision: window.nexusdeskPdfHost.document.revision,
+      request: {
+        path: filePath,
+        ...editsPayload(
+          next.textEdits,
+          { drawings: next.drawings, noteEdits: next.noteEdits },
+          next,
+        ),
+      },
+    })
+  }
 
   /** Resolved when the running save() lands; queued saves and Save As serialize behind it */
   const saveInFlightRef = useRef<Promise<boolean> | null>(null)
@@ -5582,6 +5630,7 @@ export default function App() {
         ]
       }
       if (input?.op === 'insert_pdf_image') {
+        assertPdfWebPayload(input)
         const page = Number(input.page)
         const image = typeof input.image === 'string' ? input.image : ''
         const rect = input.rect
@@ -5830,6 +5879,7 @@ export default function App() {
       async propose(operations, snapshotHash) {
         const pageInput = operations[0] as Record<string, unknown> | undefined
         if (operations.length === 1 && pageInput?.op === 'modify_pdf_pages') {
+          assertWebSaveForOps([])
           if (!browserHost.capabilities.pageRewriting || readOnly)
             throw new Error('Page rewriting is unavailable')
           const modification = parsePdfPageModification(
@@ -5861,6 +5911,7 @@ export default function App() {
         const parsed = await resolveHarnessOperations(operations)
         const plan = planEditOps(parsed, editOpContext(), newId)
         if (plan.failures.length > 0) throw new Error(plan.failures[0]!.error)
+        assertWebSaveForOps(plan.ops)
         const semantic =
           operations.length === 1 ? (operations[0] as Record<string, unknown>) : undefined
         const summary =
@@ -5877,6 +5928,7 @@ export default function App() {
         }
       },
       async proposeSave() {
+        assertWebSaveForOps([])
         const snapshotHash = await pendingSnapshot()
         return {
           planHash: await hash({ command: 'save_pdf', snapshotHash }),

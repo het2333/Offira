@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PDF_WEB_CAPABILITIES } from '../src/shared/web-capabilities'
+import { PDF_WEB_IMAGE_BASE64_LIMIT } from '@nexusdesk/protocol'
 
 import {
   createHttpPdfBrowserTransport,
@@ -19,6 +20,32 @@ const bootstrap = {
 }
 
 describe('PDF Local Web browser adapter', () => {
+  it('rejects oversized save envelopes before HTTP dispatch', async () => {
+    const fetcher = vi.fn()
+    const transport = createHttpPdfBrowserTransport(bootstrap, fetcher)
+    await expect(
+      transport.save(
+        {
+          path: 'nexusdesk://pdf-1',
+          markups: [],
+          drawings: [],
+          formValues: [],
+          stamps: [],
+          imageEdits: [
+            {
+              kind: 'insertImage',
+              pageIndex: 0,
+              image: 'A'.repeat(PDF_WEB_IMAGE_BASE64_LIMIT + 4),
+              rect: [0, 0, 20, 20],
+              layer: 'aboveText',
+            },
+          ],
+        },
+        4,
+      ),
+    ).rejects.toMatchObject({ code: 'PDF_PAYLOAD_TOO_LARGE' })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
   it('routes page rewrites and image pixels without renderer paths, advancing Host revisions', async () => {
     let revision = 4
     const fetcher = vi.fn(

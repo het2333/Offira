@@ -14652,6 +14652,38 @@ function parseAgentToolResult(value) {
   return agentToolResultSchema.parse(value);
 }
 
+// ../nexusdesk-protocol/src/pdf-limits.ts
+var PDF_WEB_IMAGE_BASE64_LIMIT = 512 * 1024;
+var PDF_WEB_SAVE_JSON_LIMIT = 15e5;
+var PdfPayloadTooLargeError = class extends Error {
+  code = "PDF_PAYLOAD_TOO_LARGE";
+  constructor(message) {
+    super(message);
+    this.name = "PdfPayloadTooLargeError";
+  }
+};
+function assertPdfWebPayload(value) {
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    for (const [key, item] of Object.entries(node)) {
+      if (key === "image" && typeof item === "string" && item.length > PDF_WEB_IMAGE_BASE64_LIMIT)
+        throw new PdfPayloadTooLargeError(
+          "Local Web PDF images must be at most 512 KiB of base64 (384 KiB decoded). Resize or compress the image before editing."
+        );
+      visit(item);
+    }
+  };
+  visit(value);
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > PDF_WEB_SAVE_JSON_LIMIT)
+    throw new PdfPayloadTooLargeError(
+      "The pending PDF save exceeds the 1,500,000-byte inline limit. Save existing edits before adding more content."
+    );
+}
+
 // src/projection.ts
 var STREAM_FORWARD = /* @__PURE__ */ new Set(["block-start", "block-end", "text-delta", "tool-call-delta"]);
 var MAX_EVENT_TEXT = 16384;
@@ -14815,14 +14847,14 @@ function officeToolNames(editorType) {
   if (editorType === "pdf") return PDF_TOOL_NAMES;
   throw new Error(`unsupported Office editor: ${editorType}`);
 }
-function configureOfficeToolScope(agentContext, editorType) {
+function configureOfficeToolScope(agentContext, editorType, agentScope) {
   const toolNames = officeToolNames(editorType);
   const allowed = new Set(toolNames);
   agentContext.tools.restrict({ allow: toolNames });
   agentContext.tools.guard(
     (execution) => allowed.has(execution.name) ? void 0 : `NexusDesk Agents may execute only official Office tools; ${execution.name} is denied.`
   );
-  const effective = agentContext.tools.schemas().map(({ name }) => name).sort();
+  const effective = agentContext.tools.schemas(agentScope).map(({ name }) => name).sort();
   const expected = [...toolNames].sort();
   if (effective.length !== expected.length || effective.some((name, index) => name !== expected[index])) {
     throw new Error(`unsafe Agent tool catalog: ${effective.join(", ")}`);
@@ -15084,6 +15116,16 @@ function createPdfTools(bridge) {
     parameters,
     output: agentOutput2,
     async execute(args, exec) {
+      try {
+        assertPdfWebPayload(args);
+      } catch (error51) {
+        if (!(error51 instanceof PdfPayloadTooLargeError)) throw error51;
+        return agentResult2({
+          ok: false,
+          summary: error51.message,
+          warnings: [{ code: error51.code, message: error51.message }]
+        });
+      }
       const proposalResult = agentResult2(
         await bridge.request(
           "propose_ops",
@@ -15198,7 +15240,7 @@ function createPdfTools(bridge) {
       image: {
         type: "string",
         required: true,
-        description: "PNG base64 without a data URL prefix."
+        description: "PNG base64 without a data URL prefix; at most 512 KiB base64 (384 KiB decoded)."
       },
       rect: {
         type: "array",
@@ -15241,7 +15283,10 @@ function createPdfTools(bridge) {
         items: { type: "number" },
         description: "New [x1,y1,x2,y2] in PDF points."
       },
-      image: { type: "string", description: "Replacement PNG base64, without a data URL prefix." },
+      image: {
+        type: "string",
+        description: "Replacement PNG base64, without a data URL prefix; at most 512 KiB base64 (384 KiB decoded)."
+      },
       quarterTurns: {
         type: "integer",
         enum: [0, 1, 2, 3],
@@ -15683,9 +15728,9 @@ async function openAgent(frame) {
   const created = await ctx2.agents.create({
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
-    ...frame.provider === void 0 || frame.model === void 0 ? {} : { agentOptions: { provider: frame.provider, model: frame.model } },
-    setup(agentContext) {
-      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType);
+    agentOptions: frame.provider === void 0 || frame.model === void 0 ? ctx2.agentDefaultModel.currentSelection() : { provider: frame.provider, model: frame.model },
+    setup(agentContext, agent) {
+      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType, agent);
     }
   });
   agents.set(frame.sessionId, created);

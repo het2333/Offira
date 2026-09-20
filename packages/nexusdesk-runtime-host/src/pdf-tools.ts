@@ -1,6 +1,8 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import {
   parseAgentToolResult,
+  assertPdfWebPayload,
+  PdfPayloadTooLargeError,
   type AgentApprovalProposal,
   type AgentToolResult,
   type JsonValue,
@@ -176,6 +178,16 @@ export function createPdfTools(bridge: PdfToolBridge): ToolDefinition[] {
       parameters: parameters as never,
       output: agentOutput,
       async execute(args, exec) {
+        try {
+          assertPdfWebPayload(args)
+        } catch (error) {
+          if (!(error instanceof PdfPayloadTooLargeError)) throw error
+          return agentResult({
+            ok: false,
+            summary: error.message,
+            warnings: [{ code: error.code, message: error.message }],
+          }) as unknown as JsonValue
+        }
         const proposalResult = agentResult(
           await bridge.request(
             'propose_ops',
@@ -291,7 +303,8 @@ export function createPdfTools(bridge: PdfToolBridge): ToolDefinition[] {
       image: {
         type: 'string',
         required: true,
-        description: 'PNG base64 without a data URL prefix.',
+        description:
+          'PNG base64 without a data URL prefix; at most 512 KiB base64 (384 KiB decoded).',
       },
       rect: {
         type: 'array',
@@ -334,7 +347,11 @@ export function createPdfTools(bridge: PdfToolBridge): ToolDefinition[] {
         items: { type: 'number' },
         description: 'New [x1,y1,x2,y2] in PDF points.',
       },
-      image: { type: 'string', description: 'Replacement PNG base64, without a data URL prefix.' },
+      image: {
+        type: 'string',
+        description:
+          'Replacement PNG base64, without a data URL prefix; at most 512 KiB base64 (384 KiB decoded).',
+      },
       quarterTurns: {
         type: 'integer',
         enum: [0, 1, 2, 3],

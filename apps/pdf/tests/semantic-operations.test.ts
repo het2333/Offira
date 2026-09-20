@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { annotationOperations, imageOperations } from '../src/renderer/agent/semantic-operations'
 import { buildNoteThreads } from '../src/renderer/note-threads'
 import { planEditOps } from '../src/renderer/edit-ops'
+import { PDF_WEB_IMAGE_BASE64_LIMIT } from '@nexusdesk/protocol'
 import {
   PDF_WEB_CAPABILITIES,
   pdfCapabilities,
@@ -36,6 +37,20 @@ const context = {
 }
 
 describe('PDF semantic operation resolution', () => {
+  it.each(['replace', 'bake'])(
+    'rejects oversized %s pixels before a plan can be approved',
+    async (action) => {
+      const pixels = 'A'.repeat(PDF_WEB_IMAGE_BASE64_LIMIT + 4)
+      await expect(
+        imageOperations(
+          { action, oldRect: image.rect, image: pixels, bake: 'opacity', alpha: 0.5 },
+          0,
+          [image],
+          vi.fn().mockResolvedValue(pixels),
+        ),
+      ).rejects.toMatchObject({ code: 'PDF_PAYLOAD_TOO_LARGE' })
+    },
+  )
   it.each(['reply', 'edit', 'delete'])(
     'resolves saved note %s into valid canonical operations',
     (action) => {

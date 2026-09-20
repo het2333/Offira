@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION,
+  PdfPayloadTooLargeError,
   type AgentToolResult,
   type ClientId,
   type DocumentId,
@@ -282,7 +283,10 @@ export function createPdfBrowserAgentBridge(
       try {
         result = await execute(frame)
       } catch (error: unknown) {
-        result = failure('EDITOR_REQUEST_FAILED', errorMessage(error))
+        result = failure(
+          error instanceof PdfPayloadTooLargeError ? error.code : 'EDITOR_REQUEST_FAILED',
+          errorMessage(error),
+        )
       }
       remember(frame, result)
       return result

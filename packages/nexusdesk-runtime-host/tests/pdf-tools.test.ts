@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { AgentToolResult } from '@nexusdesk/protocol'
 import { createPdfTools } from '../src/pdf-tools'
+import { PDF_WEB_IMAGE_BASE64_LIMIT } from '@nexusdesk/protocol'
 
 const success: AgentToolResult = {
   ok: true,
@@ -16,6 +17,28 @@ function execution() {
 }
 
 describe('official Harness PDF tools', () => {
+  it.each(['insert_pdf_image', 'transform_pdf_image'])(
+    'rejects oversized %s before proposing or requesting approval',
+    async (name) => {
+      const request = vi.fn()
+      const approve = vi.fn()
+      const tool = createPdfTools({ request, approve }).find((tool) => tool.name === name)!
+      await expect(
+        tool.execute(
+          {
+            page: 1,
+            action: 'replace',
+            rect: [0, 0, 20, 20],
+            oldRect: [0, 0, 20, 20],
+            image: 'A'.repeat(PDF_WEB_IMAGE_BASE64_LIMIT + 4),
+          },
+          execution(),
+        ),
+      ).resolves.toMatchObject({ ok: false, warnings: [{ code: 'PDF_PAYLOAD_TOO_LARGE' }] })
+      expect(request).not.toHaveBeenCalled()
+      expect(approve).not.toHaveBeenCalled()
+    },
+  )
   it.each([
     ['update_pdf_annotation', { action: 'reply', page: 1, key: 'S10', text: 'Reply' }],
     ['update_pdf_annotation', { action: 'edit', page: 1, key: 'S10', text: 'Edit' }],

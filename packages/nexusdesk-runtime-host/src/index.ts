@@ -49,6 +49,9 @@ interface AgentHandle {
 }
 
 interface RuntimeContext {
+  agentDefaultModel: {
+    currentSelection(): { provider: string; model: string; reasoningEffort?: string }
+  }
   agents: {
     create(options: unknown): Promise<unknown>
   }
@@ -66,9 +69,6 @@ interface RuntimeContext {
       reason?: string
       signal?: AbortSignal
     }): Promise<ApprovalOutcome>
-  }
-  agentDefaultModel: {
-    currentSelection(): { provider: string; model: string; reasoningEffort?: string }
   }
   on(
     event: 'approval/request',
@@ -216,8 +216,11 @@ async function openAgent(
     sessionId: brandString(frame.sessionId),
     meta: { cwd: frame.cwd },
     agentOptions,
-    setup(agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] }, agent: unknown) {
-      configureOfficeToolScope({ tools: agentContext.tools, scope: agent }, frame.editorType)
+    setup(
+      agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] },
+      agent: object,
+    ) {
+      configureOfficeToolScope({ tools: agentContext.tools }, frame.editorType, agent)
     },
   })) as AgentHandle
   agents.set(frame.sessionId, created)

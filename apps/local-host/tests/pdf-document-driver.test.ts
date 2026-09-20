@@ -7,6 +7,7 @@ import { encode as encodeJpeg } from 'jpeg-js'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createPdfDocumentDriver } from '../src/pdf-document-driver'
+import { PDF_WEB_IMAGE_BASE64_LIMIT } from '@nexusdesk/protocol'
 import { listPageImages, renderImagePng } from '../../pdf/src/main/image-edit'
 
 const temporaryPaths: string[] = []
@@ -35,6 +36,36 @@ afterEach(async () => {
 })
 
 describe('PDF Local Document Driver', () => {
+  it.each([1, 3])(
+    'rejects oversized image payloads (%i images) without disk or revision changes',
+    async (count) => {
+      const path = await temporaryPdf('size boundary')
+      const original = await readFile(path)
+      const driver = await createPdfDocumentDriver(path)
+      const image = 'A'.repeat(PDF_WEB_IMAGE_BASE64_LIMIT + (count === 1 ? 4 : 0))
+      await expect(
+        driver.execute('save', {
+          expectedRevision: 1,
+          request: {
+            path: 'nexusdesk://pdf',
+            markups: [],
+            drawings: [],
+            formValues: [],
+            stamps: [],
+            imageEdits: Array.from({ length: count }, () => ({
+              kind: 'insertImage',
+              pageIndex: 0,
+              image,
+              rect: [0, 0, 20, 20],
+              layer: 'aboveText',
+            })),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'PDF_PAYLOAD_TOO_LARGE' })
+      expect(driver.document.revision).toBe(1)
+      expect(await readFile(path)).toEqual(original)
+    },
+  )
   it('serves only the authorized PDF and persists a revision-checked working copy', async () => {
     const path = await temporaryPdf('before')
     const driver = await createPdfDocumentDriver(path)

@@ -1,4 +1,5 @@
 import type { PageImageRef } from '../../shared/ipc'
+import { assertPdfWebPayload } from '@nexusdesk/protocol'
 import type { Op } from '../edit-ops'
 import { flattenThread, threadSubtree, type NoteThreadItem } from '../note-threads'
 import { cropRect, type ImageBakeOp } from '../image-bake'
@@ -116,12 +117,8 @@ export async function imageOperations(
   if (action === 'replace' || action === 'bake') {
     const op = action === 'bake' ? parseImageBake(input) : undefined
     const image = op ? await bake(ref, op) : input.image
-    if (
-      typeof image !== 'string' ||
-      !image ||
-      image.length > 24 * 1024 * 1024 ||
-      !/^[A-Za-z0-9+/=]+$/.test(image)
-    )
+    assertPdfWebPayload({ image })
+    if (typeof image !== 'string' || !image || !/^[A-Za-z0-9+/=]+$/.test(image))
       throw new Error('Image pixels are unavailable or invalid; provide PNG base64')
     return [
       {

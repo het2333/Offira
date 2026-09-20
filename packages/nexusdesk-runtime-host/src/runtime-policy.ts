@@ -53,7 +53,7 @@ export type OfficeEditorType = 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown'
 interface ToolScope {
   restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): () => void
   guard(callback: (execution: { name: string }) => string | undefined): () => void
-  schemas(scope?: unknown): Array<{ name: string }>
+  schemas(scope: object): Array<{ name: string }>
 }
 
 /** Apply and validate the non-bypassable capability boundary for one Agent. */
@@ -69,8 +69,9 @@ export function officeToolNames(editorType: string): readonly string[] {
 
 /** Apply and validate the editor-specific, non-bypassable capability boundary. */
 export function configureOfficeToolScope(
-  agentContext: { tools: ToolScope; scope?: unknown },
+  agentContext: { tools: ToolScope },
   editorType: string,
+  agentScope: object,
 ): void {
   const toolNames = officeToolNames(editorType)
   const allowed = new Set<string>(toolNames)
@@ -82,7 +83,9 @@ export function configureOfficeToolScope(
   )
 
   const effective = agentContext.tools
-    .schemas(agentContext.scope)
+    // Harness reads are explicitly scope-keyed even on agent.ctx.tools.
+    // Omitting the Agent returns the unrestricted global registry.
+    .schemas(agentScope)
     .map(({ name }) => name)
     .sort()
   const expected = [...toolNames].sort()

@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 
 import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import { PDFDocument } from 'pdf-lib'
+import { assertPdfWebPayload, PdfPayloadTooLargeError } from '@nexusdesk/protocol'
 
 import {
   applySaveRequest,
@@ -75,6 +76,16 @@ async function atomicReplace(path: string, bytes: Uint8Array): Promise<void> {
   } catch (error: unknown) {
     await handle?.close().catch(() => undefined)
     await unlink(temporaryPath).catch(() => undefined)
+    throw error
+  }
+}
+
+function assertInlineSave(value: unknown): void {
+  try {
+    assertPdfWebPayload(value)
+  } catch (error) {
+    if (error instanceof PdfPayloadTooLargeError)
+      throw new HostError(error.code, error.message, false)
     throw error
   }
 }
@@ -247,6 +258,7 @@ export async function createPdfDocumentDriver(
         throw new HostError('INVALID_REQUEST', 'The PDF save request is invalid.', false)
       }
       const body = payload as { expectedRevision?: unknown; request?: unknown }
+      assertInlineSave(body)
       if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 0) {
         throw new HostError('INVALID_REQUEST', 'The PDF save revision is invalid.', false)
       }

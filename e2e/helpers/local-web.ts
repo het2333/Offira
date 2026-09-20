@@ -25,6 +25,7 @@ import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-pac
 import { PDFDocument, PDFName, PDFArray } from 'pdf-lib'
 import { createPdfDocumentDriver } from '../../apps/local-host/src/pdf-document-driver'
 import { DocumentDriverRegistry } from '../../apps/local-host/src/document-driver'
+import { startLocalPdfProvider } from './local-pdf-provider'
 
 interface OpenWorkbook {
   file: WorkbookFile
@@ -275,7 +276,7 @@ export async function launchLocalWebHost() {
 }
 
 /** Real PDF Local Web fixture: the disk file is owned only by the Local Host driver. */
-export async function launchPdfLocalWebHost() {
+export async function launchPdfLocalWebHost(options: { realRuntime?: boolean } = {}) {
   const repositoryRoot = process.cwd()
   if (!existsSync(resolve(repositoryRoot, 'apps/web/dist/index.html'))) {
     execFileSync('npm', ['run', 'build:web'], { cwd: repositoryRoot, stdio: 'inherit' })
@@ -288,12 +289,13 @@ export async function launchPdfLocalWebHost() {
   await writeFile(path, await pdf.save())
   const driver = await createPdfDocumentDriver(path)
   const original = await readFile(path)
+  const provider = options.realRuntime ? await startLocalPdfProvider(directory) : undefined
   const running = await startLocalHost({
     staticAssets: {
       webRoot: resolve(repositoryRoot, 'apps/web/dist'),
       editorRoots: { pdf: resolve(repositoryRoot, 'apps/pdf/out/web') },
     },
-    runtimeCommand: {
+    runtimeCommand: provider?.runtimeCommand ?? {
       entry: resolve(repositoryRoot, 'e2e/fixtures/fake-pdf-harness-runtime.mjs'),
       args: [applyCountPath],
     },
@@ -302,6 +304,7 @@ export async function launchPdfLocalWebHost() {
 
   return {
     ...running,
+    providerRequests: provider?.requests,
     async readApplyCount() {
       const state = JSON.parse(await readFile(applyCountPath, 'utf8')) as { applyCount: number }
       return state.applyCount
@@ -330,6 +333,7 @@ export async function launchPdfLocalWebHost() {
     },
     async close() {
       await running.close()
+      await provider?.close()
       await rm(directory, { recursive: true, force: true })
     },
   }

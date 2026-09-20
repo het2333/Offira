@@ -67,7 +67,7 @@ function sendHostError(response: ServerResponse, error: unknown): void {
           ? 404
           : error.code === 'REVISION_CONFLICT'
             ? 409
-            : error.code === 'CONTENT_TOO_LARGE'
+            : error.code === 'CONTENT_TOO_LARGE' || error.code === 'PDF_PAYLOAD_TOO_LARGE'
               ? 413
               : 400
     sendJson(response, status, {
