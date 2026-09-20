@@ -7,8 +7,16 @@ import JSZip from 'jszip'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { applyCellEditsToXlsx } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
 import { handleSave, type SaveContext } from '../src/renderer/save-actions'
-import { createEditJournal, recordSetRangeValues } from '../src/renderer/edit-journal'
+import {
+  createEditJournal,
+  recordSetRangeValues,
+  recordStructuralOp,
+  recordTableAdd,
+} from '../src/renderer/edit-journal'
 import { buildEditFixture } from './fixture-builder'
+import { isApprovedSaveLocked } from '../src/renderer/approved-save-lock'
+import type { UniverRuntime } from '../src/renderer/univer-state'
+import { aiBulkUndoGate } from '../src/renderer/univer-state'
 
 const saveWorkbookEdits = vi.fn()
 const writeWorkbookRecovery = vi.fn()
@@ -62,6 +70,90 @@ function ctxWith(opts: { dirty: boolean; needsSaveAs?: boolean; restoredFromReco
 }
 
 describe('handleSave recovery mode', () => {
+  it('refuses an approved save while an asynchronous edit batch is in flight', async () => {
+    const { ctx } = ctxWith({ dirty: true })
+    ctx.approvedSaveGuard = () => true
+    aiBulkUndoGate.active = true
+    try {
+      await expect(handleSave(ctx, 'save-as', true)).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining('still applying edits'),
+      })
+      expect(saveWorkbookEdits).not.toHaveBeenCalled()
+    } finally {
+      aiBulkUndoGate.active = false
+    }
+  })
+  it.each([false, true])(
+    'finishes the approved two-phase transaction and adopts the written session (second failure: %s)',
+    async (failSecond) => {
+      const { ctx, journal } = ctxWith({ dirty: true })
+      recordStructuralOp(journal, 'sheet-1', { kind: 'insert-rows', index: 0, count: 1 })
+      recordTableAdd(journal, {
+        sheetId: 'sheet-1',
+        name: 'ApprovedTable',
+        area: { startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 },
+        columnNames: ['Approved'],
+        bandedRows: true,
+      })
+      let current = true
+      let beforeCommand: ((command: { id: string }) => void) | undefined
+      const dispose = vi.fn(() => {
+        beforeCommand = undefined
+      })
+      const runtime = {
+        univer: {
+          __getInjector: () => ({
+            get: () => ({
+              beforeCommandExecuted: (fn: typeof beforeCommand) => {
+                beforeCommand = fn
+                return { dispose }
+              },
+            }),
+          }),
+        },
+        univerAPI: { getActiveWorkbook: () => null },
+      } as unknown as UniverRuntime
+      ctx.univerRef = { current: runtime }
+      const firstFile = { sessionId: 'first-written', path: '/tmp/approved.xlsx' }
+      const secondFile = { sessionId: 'second-written', path: '/tmp/approved.xlsx' }
+      ctx.openLazyWorkbook = vi.fn(() => {
+        expect(isApprovedSaveLocked(runtime)).toBe(false)
+      })
+      ctx.approvedSaveGuard = () => current
+      saveWorkbookEdits
+        .mockImplementationOnce(async () => {
+          // Host bookkeeping changes on the first write; it cannot cancel the
+          // already-started transaction or leave the editor on the obsolete session.
+          current = false
+          expect(isApprovedSaveLocked(runtime)).toBe(true)
+          expect(() => beforeCommand!({ id: 'sheet.mutation.set-range-values' })).toThrow(
+            /approved save/i,
+          )
+          journal.tableAdds[0]!.columnNames[0] = 'late mutable reference'
+          return { canceled: false, file: firstFile }
+        })
+        .mockImplementationOnce(async () => {
+          expect(isApprovedSaveLocked(runtime)).toBe(true)
+          if (failSecond) throw Error('second write failed')
+          return { canceled: false, file: secondFile }
+        })
+      const result = await handleSave(ctx, 'save-as', true, {
+        path: '/tmp/approved.xlsx',
+        overwrite: true,
+      })
+      expect(saveWorkbookEdits).toHaveBeenCalledTimes(2)
+      expect(saveWorkbookEdits.mock.calls[1]![0]).toMatchObject({
+        sessionId: 'first-written',
+        tableAdditions: [{ columnNames: ['Approved'] }],
+      })
+      expect(ctx.openLazyWorkbook).toHaveBeenCalledWith(failSecond ? firstFile : secondFile)
+      expect(result.ok).toBe(!failSecond)
+      expect(dispose).toHaveBeenCalledTimes(1)
+      expect(isApprovedSaveLocked(runtime)).toBe(false)
+    },
+  )
+
   it('refuses the write when approved content changes during async edit staging', async () => {
     const { ctx, journal } = ctxWith({ dirty: true })
     const snapshot = () =>

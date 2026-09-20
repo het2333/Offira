@@ -22,6 +22,7 @@ export interface HtmlEditorAdapterOptions {
   }
   read(): AgentReadResult
   apply(operations: JsonValue[]): Promise<AgentEditResult>
+  saveContent?(): string
   save(approvedSaveGuard?: () => boolean): Promise<AgentSaveResult>
   consumeApproval(id: string, hash: string): boolean | Promise<boolean>
 }
@@ -169,21 +170,19 @@ class HtmlEditorAdapter implements EditorAdapter {
       return fail('STALE_REVISION', 'the document changed after this plan was prepared')
     if (current.contentVersion !== proposedContentVersion)
       return fail('STALE_CONTENT', 'the HTML editor changed after this plan was prepared')
-    const result = this.options
-      .apply(plan.operations)
-      .then((value) =>
-        value.ok
-          ? {
-              ...value,
-              changes: value.changes ?? {
-                targets: targets(plan.operations),
-                count: plan.operations.length,
-              },
-              verification: value.verification ?? { passed: true, issues: [] },
-              transactionId: value.transactionId ?? (`html-${crypto.randomUUID()}` as never),
-            }
-          : value,
-      )
+    const result = this.options.apply(plan.operations).then((value) =>
+      value.ok
+        ? {
+            ...value,
+            changes: value.changes ?? {
+              targets: targets(plan.operations),
+              count: plan.operations.length,
+            },
+            verification: value.verification ?? { passed: true, issues: [] },
+            transactionId: value.transactionId ?? (`html-${crypto.randomUUID()}` as never),
+          }
+        : value,
+    )
     this.applied.set(plan.target.operationId, { hash: plan.planHash, result })
     this.proposedContentVersions.delete(plan.target.operationId)
     return result
@@ -200,7 +199,8 @@ class HtmlEditorAdapter implements EditorAdapter {
     return fail('UNAVAILABLE_IN_WEB', 'undoing Agent operations is unavailable in Web HTML')
   }
   saveSnapshot(): string {
-    return canonical(this.options.document())
+    if (!this.options.saveContent) throw new Error('full save content is unavailable')
+    return canonical({ document: this.options.document(), content: this.options.saveContent() })
   }
 
   async save(documentId: import('@nexusdesk/protocol').DocumentId): Promise<AgentSaveResult> {

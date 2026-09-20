@@ -46,3 +46,26 @@ it.each([
     { approvalId: 'approval-1', planHash: 'hash-1', operationId: 'save-1' },
   )
 })
+
+it.each([
+  [createDocsTools, 'save_document'],
+  [createSheetsTools, 'save_sheet'],
+  [createDocsTools, 'apply_document_operations'],
+  [createSheetsTools, 'apply_sheet_operations'],
+] as const)('returns the Agent approval-denied envelope', async (create, command) => {
+  const request = vi
+    .fn()
+    .mockResolvedValue({
+      ok: true,
+      summary: 'proposal',
+      warnings: [],
+      data: { operationId: 'op-1', planHash: 'hash', snapshotHash: 'snapshot', targets: [] },
+    })
+  const tool = create({ request, approve: async () => ({ approved: false }) }).find(
+    (item) => item.name === command,
+  )!
+  await expect(
+    tool.execute(command.startsWith('apply') ? { operations: [{}] } : {}, {} as never),
+  ).resolves.toMatchObject({ ok: false, warnings: [{ code: 'APPROVAL_DENIED' }] })
+  expect(request).toHaveBeenCalledTimes(1)
+})

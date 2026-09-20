@@ -37,6 +37,8 @@ import {
   collectNoteStates,
 } from './univer-sync'
 import type { LazyWorkbookState, UniverRuntime } from './univer-state'
+import { aiBulkUndoGate } from './univer-state'
+import { isApprovedSaveLocked, lockApprovedSave } from './approved-save-lock'
 
 /** The App refs/state the save flow needs; built fresh per call. */
 export interface SaveContext {
@@ -113,6 +115,41 @@ export async function handleSave(
   ctx: SaveContext,
   mode: 'save' | 'save-as' | 'recovery',
   quiet = false,
+  explicitTarget?: { path: string; overwrite: boolean },
+): Promise<SaveOutcome> {
+  if (ctx.approvedSaveGuard && aiBulkUndoGate.active) {
+    return {
+      ok: false,
+      error: 'The workbook is still applying edits; propose the save again when they finish',
+    }
+  }
+  if (isApprovedSaveLocked(ctx.univerRef.current)) {
+    return { ok: false, error: 'An approved save is already in progress' }
+  }
+  const release = ctx.approvedSaveGuard ? lockApprovedSave(ctx.univerRef.current) : () => {}
+  try {
+    return await saveOnce(
+      {
+        ...ctx,
+        openLazyWorkbook: (file) => {
+          // Installation runs Univer commands; both disk phases are complete now.
+          release()
+          ctx.openLazyWorkbook(file)
+        },
+      },
+      mode,
+      quiet,
+      explicitTarget,
+    )
+  } finally {
+    release()
+  }
+}
+
+async function saveOnce(
+  ctx: SaveContext,
+  mode: 'save' | 'save-as' | 'recovery',
+  quiet: boolean,
   explicitTarget?: { path: string; overwrite: boolean },
 ): Promise<SaveOutcome> {
   const state = ctx.lazyWorkbookRef.current
@@ -244,9 +281,9 @@ export async function handleSave(
   // held ops stay addressable — ops on sheets created this session are
   // the exception and keep the explicit error.
   const hasShifts = structuralOps.length > 0 || sheetOps.length > 0
-  const heldPivots = hasShifts ? pivotAdditions : []
-  const heldTables = structuralOps.length > 0 ? tableAdditions : []
-  const heldNames = hasShifts ? definedNamesState : null
+  const heldPivots = structuredClone(hasShifts ? pivotAdditions : [])
+  const heldTables = structuredClone(structuralOps.length > 0 ? tableAdditions : [])
+  const heldNames = structuredClone(hasShifts ? definedNamesState : null)
   const splitSave = heldPivots.length > 0 || heldTables.length > 0 || heldNames !== null
   if (splitSave) {
     const addedSheetIds = state.editJournal.sheets.added
@@ -311,7 +348,7 @@ export async function handleSave(
         return { ok: false }
       }
       if (choice === 'xlsx') {
-        return await handleSave(ctx, 'save-as', quiet, explicitTarget)
+        return await saveOnce(ctx, 'save-as', quiet, explicitTarget)
       }
       if (state.flags.preloadComplete) confirmedCsvSaves.add(csvPath)
     }
@@ -500,13 +537,9 @@ export async function handleSave(
     // carry undo history across them (and clears any stale stash).
     stashUndoCarry(null)
     try {
-      if (ctx.approvedSaveGuard?.() === false) {
-        return {
-          ok: false,
-          error:
-            'STALE_CONTENT: the workbook changed between save phases; the first phase was already written',
-        }
-      }
+      // Approval was checked before the first write. Editing is locked and
+      // held inputs are immutable; host revision changes must not strand an
+      // already-written transaction on its obsolete original session.
       const second = await window.desktopApi.saveWorkbookEdits({
         sessionId: result.file.sessionId,
         mode: 'save',

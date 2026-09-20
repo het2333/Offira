@@ -461,6 +461,20 @@ export default function App() {
     if (!browserHost) return
     return browserHost.bridge.attachEditor(
       createMarkdownEditorAdapter({
+        saveContent: () => {
+          const current = editorRef.current
+          if (!current || statusRef.current !== 'ready')
+            throw new Error('the Markdown document is not ready')
+          return JSON.stringify({
+            text: serializeMarkdown(
+              envelopeRef.current,
+              current.state.doc,
+              () => bodyMarkdown(current),
+              originalSourceRef.current,
+            ),
+            imageSources: imageSourcesFromEditor(current),
+          })
+        },
         document: () => {
           const client = browserHost.bridge.client()
           return {

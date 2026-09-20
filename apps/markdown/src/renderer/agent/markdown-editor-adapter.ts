@@ -27,6 +27,7 @@ export interface MarkdownEditorAdapterOptions {
   document(): MarkdownDocumentState
   read(): AgentReadResult
   apply(operations: JsonValue[]): Promise<AgentEditResult>
+  saveContent?(): string
   save(approvedSaveGuard?: () => boolean): Promise<AgentSaveResult>
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
 }
@@ -213,7 +214,8 @@ class MarkdownEditorAdapter implements EditorAdapter {
   }
 
   saveSnapshot(): string {
-    return canonical(this.options.document())
+    if (!this.options.saveContent) throw new Error('full save content is unavailable')
+    return canonical({ document: this.options.document(), content: this.options.saveContent() })
   }
 
   async save(documentId: import('@nexusdesk/protocol').DocumentId): Promise<AgentSaveResult> {

@@ -1395,6 +1395,7 @@ export default function App() {
     }, 'Native Harness HTML adapter')
     return host.bridge.attachEditor(
       createHtmlEditorAdapter({
+        saveContent: () => serializeDocText({ text: textRef.current, envelope: envelopeRef.current }),
         document: () => {
           const client = host.bridge.client()
           return { documentId: host.document.documentId as never, clientId: (client.clientId ?? '') as never, revision: host.document.revision as never, contentVersion: versionRef.current, title: host.document.title, attached: client.attached && client.clientId !== undefined }

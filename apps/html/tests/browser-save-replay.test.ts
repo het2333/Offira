@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import { createHtmlBrowserAgentBridge } from '../src/renderer/agent/browser-agent-api'
 
-function setup() {
+function setup(storageOverride?: any) {
   let receive: (frame: any) => void = () => {}
   const sent: any[] = []
   const values = new Map<string, string>()
@@ -28,7 +28,7 @@ function setup() {
     client: client as never,
     documentId: 'html-1' as never,
     revision: 1 as never,
-    storage: {
+    storage: storageOverride ?? {
       getItem: (key) => values.get(key) ?? null,
       setItem: (key, value) => {
         values.set(key, value)
@@ -56,6 +56,7 @@ function setup() {
   })
   return {
     bridge,
+    values,
     sent,
     emit: (value: any) => receive(value),
     frame,
@@ -94,6 +95,32 @@ it('shares concurrent terminal requests and preserves success after a conflictin
       .every((value) => value.result.ok),
   ).toBe(true)
   expect(executions).toBe(1)
+  s.bridge.dispose()
+})
+
+it('evicts old save proposals after the fixed proposal-cache limit', async () => {
+  const s = setup()
+  const save = vi.fn()
+  s.bridge.attachEditor({ saveSnapshot: () => 'content', save } as never)
+  s.emit(s.frame('propose_save'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  const original = s.results()[0].result.data
+  for (let index = 0; index < 128; index++) {
+    const proposal = s.frame('propose_save')
+    proposal.target.operationId = 'proposal-' + index
+    s.emit(proposal)
+  }
+  await vi.waitFor(() => expect(s.results()).toHaveLength(129))
+  s.emit(
+    s.frame(
+      'save_html',
+      { inPlace: true, snapshotHash: original.snapshotHash },
+      { id: 'approval-1', planHash: original.planHash },
+    ),
+  )
+  await vi.waitFor(() => expect(s.results()).toHaveLength(130))
+  expect(s.results()[129].result.ok).toBe(false)
+  expect(save).not.toHaveBeenCalled()
   s.bridge.dispose()
 })
 
@@ -184,5 +211,76 @@ it('saves the approved snapshot once when approval delivery is duplicated', asyn
       .slice(1)
       .every((value) => value.result.ok),
   ).toBe(true)
+  s.bridge.dispose()
+})
+
+it.each(['getItem', 'setItem', 'removeItem'])(
+  'continues terminal requests when storage.%s throws',
+  async (method) => {
+    const s = setup({
+      getItem: () => {
+        if (method === 'getItem') throw Error('denied')
+        return method === 'removeItem' ? '{invalid' : null
+      },
+      setItem: () => {
+        if (method === 'setItem') throw Error('quota')
+      },
+      removeItem: () => {
+        throw Error('denied')
+      },
+    })
+    let reads = 0
+    s.bridge.attachEditor({
+      read: async () => {
+        reads++
+        return { ok: true, summary: 'read', warnings: [] }
+      },
+    } as never)
+    expect(() => s.emit(s.frame('read_html'))).not.toThrow()
+    await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+    expect(s.results()[0].result.ok).toBe(true)
+    expect(reads).toBe(1)
+    s.bridge.dispose()
+  },
+)
+
+it('evicts completed promises and journals beyond the per-document limit', async () => {
+  const s = setup()
+  let reads = 0
+  s.bridge.attachEditor({
+    read: async () => {
+      reads++
+      return { ok: true, summary: 'read', warnings: [] }
+    },
+  } as never)
+  for (let index = 0; index < 130; index++) {
+    const frame = s.frame('read_html')
+    frame.target.operationId = 'read-' + index
+    s.emit(frame)
+    for (let turn = 0; turn < 8; turn++) await Promise.resolve()
+  }
+  await vi.waitFor(() => expect(s.results()).toHaveLength(130))
+  expect(s.values.size).toBeLessThanOrEqual(129)
+  const first = s.frame('read_html')
+  first.target.operationId = 'read-0'
+  s.emit(first)
+  await vi.waitFor(() => expect(s.results()).toHaveLength(131))
+  expect(reads).toBe(131)
+  s.bridge.dispose()
+})
+
+it('does not retain oversized result records in session storage', async () => {
+  const s = setup()
+  s.bridge.attachEditor({
+    read: async () => ({
+      ok: true,
+      summary: 'large',
+      warnings: [],
+      data: { text: 'x'.repeat(300 * 1024) },
+    }),
+  } as never)
+  s.emit(s.frame('read_html'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  expect([...s.values.values()].every((value) => value.length <= 64 * 1024)).toBe(true)
   s.bridge.dispose()
 })

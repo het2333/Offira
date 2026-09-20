@@ -59,3 +59,52 @@ it('covers non-body save settings and revalidates them after serialization yield
   await expect(saving).resolves.toMatchObject({ ok: false, warnings: [{ code: 'STALE_CONTENT' }] })
   expect(writes).toBe(0)
 })
+
+it('does not traverse immutable parsed data or expand large original byte arrays', () => {
+  let parsedReads = 0
+  const originalBytes = new Uint8Array(64 * 1024 * 1024)
+  const parsed = {
+    get internal() {
+      parsedReads++
+      return { originalBytes }
+    },
+    blocks: [],
+  }
+  const ctx = {
+    editor: { getJSON: () => ({ type: 'doc', content: [] }) },
+    doc: { parsed, filePath: '/tmp/large.docx', fileName: 'large.docx', hash: 'original-sha256' },
+  } as unknown as FileActionContext
+  const adapter = createDocsSaveAdapter({
+    context: () => ctx,
+    document: () => ({
+      documentId: 'document-1' as never,
+      clientId: 'client-1' as never,
+      revision: 1 as never,
+      title: 'large.docx',
+      attached: true,
+    }),
+    consumeApproval: () => true,
+  })
+  const snapshot = adapter.saveSnapshot()
+  expect(snapshot.length).toBeLessThan(4096)
+  expect(parsedReads).toBe(0)
+})
+
+it('rejects unbounded mutable save input before retaining a proposal', () => {
+  const ctx = {
+    editor: { getJSON: () => ({ type: 'doc', text: 'x'.repeat(5 * 1024 * 1024) }) },
+    doc: { parsed: {}, hash: 'original' },
+  } as unknown as FileActionContext
+  const adapter = createDocsSaveAdapter({
+    context: () => ctx,
+    document: () => ({
+      documentId: 'document-1' as never,
+      clientId: 'client-1' as never,
+      revision: 1 as never,
+      title: 'huge.docx',
+      attached: true,
+    }),
+    consumeApproval: () => true,
+  })
+  expect(() => adapter.saveSnapshot()).toThrow(/snapshot.*limit/i)
+})

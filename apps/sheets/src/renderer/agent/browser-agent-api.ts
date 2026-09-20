@@ -1,3 +1,4 @@
+import { BoundedEditorCache, createEditorResultJournal } from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
   type AgentToolResult,
@@ -38,11 +39,6 @@ function failure(code: string, message: string): AgentToolResult {
   return { ok: false, summary: message, warnings: [{ code, message }] }
 }
 
-interface JournalRecord {
-  fingerprint: string
-  result: AgentToolResult
-}
-
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -79,12 +75,13 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     { fingerprint: string; result: Promise<AgentToolResult> }
   >()
   const approvals = new Map<string, string>()
-  const saveProposals = new Map<
+  const saveProposals = new BoundedEditorCache<
     string,
     { planHash: string; snapshotHash: string; snapshot: string; adapter: EditorAdapter }
   >()
-  const proposals = new Map<string, EditPlan>()
+  const proposals = new BoundedEditorCache<string, EditPlan>()
   const storage = options.storage ?? sessionStorageOrUndefined()
+  const journal = createEditorResultJournal(storage, options.documentId)
   const registration: EditorRegistrationHandle = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'sheets',
@@ -236,39 +233,18 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     )
   }
 
-  const journalKey = (operationId: string): string =>
-    `nexusdesk:editor-result:${options.documentId}:${operationId}`
-
   const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (storage === undefined || frame.command.startsWith('propose_')) return undefined
-    const raw = storage.getItem(journalKey(frame.target.operationId))
-    if (raw === null) return undefined
-    try {
-      const record = JSON.parse(raw) as JournalRecord
-      if (record.fingerprint !== requestFingerprint(frame)) {
-        return failure(
-          'OPERATION_ID_COLLISION',
-          'operation id is bound to different editor arguments',
-        )
-      }
-      return record.result
-    } catch {
-      storage.removeItem(journalKey(frame.target.operationId))
-      return undefined
-    }
+    if (frame.command.startsWith('propose_')) return undefined
+    const record = journal.read(frame.target.operationId)
+    if (!record) return undefined
+    return record.fingerprint === requestFingerprint(frame)
+      ? record.result
+      : failure('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments')
   }
-
   const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (storage === undefined || frame.command.startsWith('propose_')) return
-    storage.setItem(
-      journalKey(frame.target.operationId),
-      JSON.stringify({
-        fingerprint: requestFingerprint(frame),
-        result,
-      } satisfies JournalRecord),
-    )
+    if (!frame.command.startsWith('propose_'))
+      journal.write(frame.target.operationId, { fingerprint: requestFingerprint(frame), result })
   }
-
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
     const terminal = !frame.command.startsWith('propose_')
@@ -312,7 +288,11 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
         fingerprint: requestFingerprint(frame),
         result: resultPromise,
       })
-    void resultPromise.then((result) => deliverResult(frame, result))
+    void resultPromise.then((result) => {
+      if (terminalResults.get(frame.target.operationId)?.result === resultPromise)
+        terminalResults.delete(frame.target.operationId)
+      deliverResult(frame, result)
+    })
   })
 
   return {
@@ -335,6 +315,8 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
       registration.updateRevision(revision)
     },
     dispose() {
+      terminalResults.clear()
+      journal.clearMemory()
       approvals.clear()
       proposals.clear()
       saveProposals.clear()

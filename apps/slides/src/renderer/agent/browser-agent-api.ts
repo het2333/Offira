@@ -1,3 +1,4 @@
+import { BoundedEditorCache, createEditorResultJournal } from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
   type AgentToolResult,
@@ -31,11 +32,6 @@ export interface SlidesBrowserAgentBridgeOptions {
   documentId: DocumentId
   revision: Revision
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
-}
-
-interface JournalRecord {
-  fingerprint: string
-  result: AgentToolResult
 }
 
 interface SaveProposal {
@@ -118,10 +114,11 @@ export function createSlidesBrowserAgentBridge(
     { fingerprint: string; result: Promise<AgentToolResult> }
   >()
   const approvals = new Map<string, string>()
-  const proposals = new Map<string, EditPlan>()
-  const saveProposals = new Map<string, SaveProposal>()
-  const historyProposals = new Map<string, HistoryProposal>()
+  const proposals = new BoundedEditorCache<string, EditPlan>()
+  const saveProposals = new BoundedEditorCache<string, SaveProposal>()
+  const historyProposals = new BoundedEditorCache<string, HistoryProposal>()
   const storage = options.storage ?? defaultStorage()
+  const journal = createEditorResultJournal(storage, options.documentId)
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'slides',
@@ -307,31 +304,17 @@ export function createSlidesBrowserAgentBridge(
       `the command ${frame.command} is unavailable in Web Slides`,
     )
   }
-  const journalKey = (operationId: string): string =>
-    `nexusdesk:editor-result:${options.documentId}:${operationId}`
   const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (storage === undefined || frame.command.startsWith('propose_')) return undefined
-    const raw = storage.getItem(journalKey(frame.target.operationId))
-    if (raw === null) return undefined
-    try {
-      const record = JSON.parse(raw) as JournalRecord
-      if (record.fingerprint !== requestFingerprint(frame))
-        return failure(
-          'OPERATION_ID_COLLISION',
-          'operation id is bound to different editor arguments',
-        )
-      return record.result
-    } catch {
-      storage.removeItem(journalKey(frame.target.operationId))
-      return undefined
-    }
+    if (frame.command.startsWith('propose_')) return undefined
+    const record = journal.read(frame.target.operationId)
+    if (!record) return undefined
+    return record.fingerprint === requestFingerprint(frame)
+      ? record.result
+      : failure('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments')
   }
   const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (storage === undefined || frame.command.startsWith('propose_')) return
-    storage.setItem(
-      journalKey(frame.target.operationId),
-      JSON.stringify({ fingerprint: requestFingerprint(frame), result } satisfies JournalRecord),
-    )
+    if (!frame.command.startsWith('propose_'))
+      journal.write(frame.target.operationId, { fingerprint: requestFingerprint(frame), result })
   }
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
@@ -376,7 +359,11 @@ export function createSlidesBrowserAgentBridge(
         fingerprint: requestFingerprint(frame),
         result: resultPromise,
       })
-    void resultPromise.then((result) => deliverResult(frame, result))
+    void resultPromise.then((result) => {
+      if (terminalResults.get(frame.target.operationId)?.result === resultPromise)
+        terminalResults.delete(frame.target.operationId)
+      deliverResult(frame, result)
+    })
   })
 
   return {
@@ -399,6 +386,8 @@ export function createSlidesBrowserAgentBridge(
       registration.updateRevision(revision)
     },
     dispose() {
+      terminalResults.clear()
+      journal.clearMemory()
       approvals.clear()
       proposals.clear()
       saveProposals.clear()

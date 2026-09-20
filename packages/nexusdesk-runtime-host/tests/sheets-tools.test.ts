@@ -97,7 +97,7 @@ describe('official Harness Sheets tools', () => {
       apply.execute({ operations: [{ op: 'set_cell' }] }, {
         signal: new AbortController().signal,
       } as never),
-    ).rejects.toThrow(/not approved/)
+    ).resolves.toMatchObject({ ok: false, warnings: [{ code: 'APPROVAL_DENIED' }] })
     expect(request).toHaveBeenCalledTimes(1)
     expect(request).toHaveBeenCalledWith('propose_ops', expect.anything(), expect.anything())
   })

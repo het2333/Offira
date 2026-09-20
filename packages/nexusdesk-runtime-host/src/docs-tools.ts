@@ -114,7 +114,11 @@ export function createDocsTools(bridge: DocsToolBridge): ToolDefinition[] {
       const { operationId, proposal } = proposalFrom(proposalResult)
       const approval = await bridge.approve('apply_document_operations', proposal, exec)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('document mutation was not approved')
+        return {
+          ok: false,
+          summary: 'The operation was not approved.',
+          warnings: [{ code: 'APPROVAL_DENIED', message: 'The operation was not approved.' }],
+        } as unknown as JsonValue
       }
       return agentResult(
         await bridge.request('apply_ops', { ops: args.operations }, exec, {
@@ -154,7 +158,11 @@ export function createDocsTools(bridge: DocsToolBridge): ToolDefinition[] {
       }
       const approval = await bridge.approve('save_document', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('document save was not approved')
+        return {
+          ok: false,
+          summary: 'The operation was not approved.',
+          warnings: [{ code: 'APPROVAL_DENIED', message: 'The operation was not approved.' }],
+        } as unknown as JsonValue
       }
       return parseAgentToolResult(
         await bridge.request(

@@ -327,7 +327,37 @@ export class AgentRouter {
       clientId: owner.clientId,
       revision: frame.target.revision,
     })
-    if (frame.command === 'propose_ops') {
+    if (isProposalCommand(frame.command)) {
+      // A complete tool retry must keep the original snapshot, even if saving
+      // advanced the document revision or the user has since edited again.
+      const terminal = this.options.operations.lookup(frame.target.operationId)
+      if (terminal !== undefined && terminal.state !== 'reserved') {
+        const proposal = [...this.deliveredEditorResults.values()].find(
+          (result) =>
+            result.target.operationId === frame.target.operationId &&
+            isProposalCommand(result.command),
+        )
+        if (
+          proposal === undefined ||
+          proposal.command !== frame.command ||
+          proposal.target.documentId !== frame.target.documentId ||
+          proposal.target.editorType !== frame.target.editorType ||
+          !isDeepStrictEqual(proposal.request.arguments, frame.arguments)
+        )
+          throw new Error('operation proposal is unavailable or bound to a different payload')
+        this.options.supervisor.respondEditor({
+          type: 'editor:result',
+          protocolVersion: 1,
+          id: frame.id,
+          target: frame.target,
+          result: proposal.result,
+          currentRevision: this.options.documents.assertClient(
+            frame.target.documentId,
+            owner.clientId,
+          ).revision,
+        })
+        return
+      }
       this.editorOperations.set(frame.target.operationId, {
         clientId: owner.clientId,
         requestId: frame.id,
@@ -403,10 +433,6 @@ export class AgentRouter {
       command: frame.command,
       request: frame,
     })
-    if (isProposalCommand(frame.command)) {
-      this.options.sendToClient(owner.clientId, frame)
-      return
-    }
     const record = this.options.operations.reserve(frame.target.operationId, operationPayload)
     if (record.state !== 'reserved') {
       this.options.supervisor.respondEditor({

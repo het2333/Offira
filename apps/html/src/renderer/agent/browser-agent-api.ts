@@ -1,3 +1,4 @@
+import { BoundedEditorCache, createEditorResultJournal } from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
   type AgentToolResult,
@@ -26,10 +27,6 @@ export interface HtmlBrowserAgentBridgeOptions {
   documentId: import('@nexusdesk/protocol').DocumentId
   revision: Revision
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
-}
-interface JournalRecord {
-  fingerprint: string
-  result: AgentToolResult
 }
 const fail = (code: string, message: string): AgentToolResult => ({
   ok: false,
@@ -72,19 +69,18 @@ export function createHtmlBrowserAgentBridge(
     { fingerprint: string; result: Promise<AgentToolResult> }
   >()
   const approvals = new Map<string, string>()
-  const saveProposals = new Map<
+  const saveProposals = new BoundedEditorCache<
     string,
     { planHash: string; snapshotHash: string; snapshot: string; adapter: EditorAdapter }
   >()
-  const proposals = new Map<string, EditPlan>()
+  const proposals = new BoundedEditorCache<string, EditPlan>()
   const storage = options.storage ?? defaultStorage()
+  const journal = createEditorResultJournal(storage, options.documentId)
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'html',
     revision: options.revision,
   })
-  const key = (operationId: string) =>
-    `nexusdesk:editor-result:${options.documentId}:${operationId}`
   const send = (frame: EditorRequestFrame, result: AgentToolResult) => {
     try {
       options.client.send({
@@ -213,20 +209,15 @@ export function createHtmlBrowserAgentBridge(
       }
       return
     }
-    const raw = terminal ? storage?.getItem(key(frame.target.operationId)) : undefined
-    if (raw) {
-      try {
-        const remembered = JSON.parse(raw) as JournalRecord
-        send(
-          frame,
-          remembered.fingerprint === fingerprint(frame)
-            ? remembered.result
-            : fail('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments'),
-        )
-        return
-      } catch {
-        storage?.removeItem(key(frame.target.operationId))
-      }
+    const remembered = terminal ? journal.read(frame.target.operationId) : undefined
+    if (remembered) {
+      send(
+        frame,
+        remembered.fingerprint === fingerprint(frame)
+          ? remembered.result
+          : fail('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments'),
+      )
+      return
     }
     // Schedule execution after the shared promise is registered, including synchronous failures.
     const resultPromise = Promise.resolve().then(async () => {
@@ -241,10 +232,7 @@ export function createHtmlBrowserAgentBridge(
       }
       try {
         if (terminal)
-          storage?.setItem(
-            key(frame.target.operationId),
-            JSON.stringify({ fingerprint: fingerprint(frame), result } satisfies JournalRecord),
-          )
+          journal.write(frame.target.operationId, { fingerprint: fingerprint(frame), result })
       } catch {
         /* The in-memory result remains authoritative if storage is unavailable. */
       }
@@ -255,7 +243,11 @@ export function createHtmlBrowserAgentBridge(
         fingerprint: fingerprint(frame),
         result: resultPromise,
       })
-    void resultPromise.then((result) => send(frame, result))
+    void resultPromise.then((result) => {
+      if (terminalResults.get(frame.target.operationId)?.result === resultPromise)
+        terminalResults.delete(frame.target.operationId)
+      send(frame, result)
+    })
   })
 
   return {
@@ -279,6 +271,8 @@ export function createHtmlBrowserAgentBridge(
       registration.updateRevision(revision)
     },
     dispose() {
+      terminalResults.clear()
+      journal.clearMemory()
       approvals.clear()
       proposals.clear()
       saveProposals.clear()

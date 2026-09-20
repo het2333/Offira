@@ -94,7 +94,11 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
       }
       const approval = await bridge.approve('apply_sheet_operations', proposal, exec)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('spreadsheet mutation was not approved')
+        return {
+          ok: false,
+          summary: 'The operation was not approved.',
+          warnings: [{ code: 'APPROVAL_DENIED', message: 'The operation was not approved.' }],
+        } as unknown as JsonValue
       }
       const result = await bridge.request('apply_ops', { ops: args.operations }, exec, {
         approvalId: approval.approvalId,
@@ -133,7 +137,11 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
       }
       const approval = await bridge.approve('save_sheet', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('document save was not approved')
+        return {
+          ok: false,
+          summary: 'The operation was not approved.',
+          warnings: [{ code: 'APPROVAL_DENIED', message: 'The operation was not approved.' }],
+        } as unknown as JsonValue
       }
       return parseAgentToolResult(
         await bridge.request(

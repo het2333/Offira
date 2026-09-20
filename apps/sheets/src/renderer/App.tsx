@@ -335,6 +335,7 @@ import {
 } from './page-layout-actions'
 import { handleExportCsv as handleExportCsvImpl, type CsvExportContext } from './csv-export'
 import { effectivePageBreaks, installPageBreakPreview } from './page-break-preview'
+import { isApprovedSaveLocked } from './approved-save-lock'
 import { mapProtectedRanges } from './protected-ranges'
 import {
   handleSave as handleSaveImpl,
@@ -3266,6 +3267,8 @@ export function App(): React.JSX.Element {
       opExecutorContext(runtime, workbook, state),
       {
         verifyBeforeApply: () => {
+          if (isApprovedSaveLocked(runtime))
+            return { ok: false, reason: 'An approved save is in progress' }
           if (lazyPreviewRef.current !== stored || lazyWorkbookRef.current !== state) {
             verified = { ok: false, reason: t('appApplyTxFailed') }
             return verified
@@ -3302,6 +3305,9 @@ export function App(): React.JSX.Element {
     successMessage?: string | null,
   ): Promise<ApplyOutcome> {
     const runtime = univerRef.current
+    if (isApprovedSaveLocked(runtime)) {
+      return Promise.resolve({ ok: false, reason: 'An approved save is in progress' })
+    }
     const state = lazyWorkbookRef.current
     const workbook = runtime?.univerAPI.getActiveWorkbook()
     if (!runtime || !state || !workbook) {
@@ -3322,6 +3328,7 @@ export function App(): React.JSX.Element {
       // replaced meanwhile — drop the click silently rather than mutate the
       // wrong workbook.
       verifyBeforeApply: () =>
+        isApprovedSaveLocked(runtime) ||
         lazyWorkbookRef.current !== state ||
         univerRef.current !== runtime ||
         runtime.univerAPI.getActiveWorkbook()?.getId() !== workbook.getId()

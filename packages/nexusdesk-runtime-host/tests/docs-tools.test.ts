@@ -122,7 +122,10 @@ describe('official Harness Docs tools', () => {
       request: deniedRequest,
       approve: vi.fn().mockResolvedValue({ approved: false }),
     })[1]!
-    await expect(denied.execute({ operations: [{}] }, execution())).rejects.toThrow(/not approved/i)
+    await expect(denied.execute({ operations: [{}] }, execution())).resolves.toMatchObject({
+      ok: false,
+      warnings: [{ code: 'APPROVAL_DENIED' }],
+    })
     expect(deniedRequest).toHaveBeenCalledTimes(1)
   })
 })
