@@ -380,8 +380,8 @@ export class AgentRouter {
     // A lookup failure is uncertainty, not a failed mutation terminal. A renderer may report
     // failure after losing the acknowledgement of an already committed checkpoint.
     const committed = await this.options.workingCopy!.lookupRequest(owner.request).catch(() => undefined)
-    if (committed?.state === 'committed' && (!frame.result.ok || (frame.persistence &&
-        isDeepStrictEqual(frame.persistence, committed.persistence) && isDeepStrictEqual(frame.result, committed.result)))) {
+    // lookupRequest verifies this reservation's identity; renderer data cannot veto its durable terminal.
+    if (committed?.state === 'committed') {
       this.deliverWorkingCopy(owner, committed)
       return
     }

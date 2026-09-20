@@ -138,6 +138,33 @@ it('delivers the verified durable terminal when the renderer reports failure wit
   } finally { s.router.dispose(); await s.supervisor.shutdown() }
 })
 
+it.each(['missing receipt', 'different result'] as const)('delivers the authoritative committed terminal despite renderer %s', async (response) => {
+  const s = await routedFixture()
+  try {
+    const up = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+    const part = await s.coordinator.putPart('doc', 'client', up.uploadId, 'document', [bytes('edited')])
+    const committed = await s.coordinator.commitUpload('doc', 'client', up.uploadId, [part])
+    const manifestPath = join(s.config.rootDirectory, (await fs.readdir(s.config.rootDirectory))[0]!, 'manifest.json')
+    const manifest = await readFile(manifestPath, 'utf8')
+    await s.router.handleClientFrame({ type: 'editor:result', protocolVersion: 1, id: s.frame.id, target: s.frame.target,
+      result: response === 'different result' ? { ok: true, summary: 'Renderer supplied a different summary.', warnings: [] } : result,
+      ...(response === 'different result' ? { persistence: committed.persistence } : {}),
+    }, s.frame.target.clientId)
+    expect(s.results).toHaveLength(1)
+    expect(s.results[0]).toMatchObject({ result, persistence: committed.persistence, currentRevision: 2 })
+    expect(s.operations.lookup('op' as never)).toMatchObject({ state: 'committed', result })
+    expect(s.sent.filter((frame) => frame.type === 'recovery:required')).toHaveLength(0)
+    // The consumed approval is not renewed: retrying this same request replays only its original terminal.
+    await s.router.routeRuntimeFrame(s.frame)
+    expect(s.results).toHaveLength(2)
+    expect(s.results[1]).toMatchObject({ result, persistence: committed.persistence, currentRevision: 2 })
+    expect(s.sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    expect(s.materializations()).toBe(1)
+    expect(await readFile(manifestPath, 'utf8')).toBe(manifest)
+    expect(await readFile(s.authorizedPath, 'utf8')).toBe('original')
+  } finally { s.router.dispose(); await s.supervisor.shutdown() }
+})
+
 it('immediately resolves runtime uncertainty even while durable lookup cannot finish its fsync check', async () => {
   const s = await routedFixture()
   try {

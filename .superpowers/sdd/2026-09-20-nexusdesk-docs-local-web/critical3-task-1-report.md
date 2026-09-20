@@ -201,3 +201,31 @@ apps/local-host/src/working-copy-coordinator.ts
 apps/local-host/tests/working-copy-coordinator.test.ts
 .superpowers/sdd/2026-09-20-nexusdesk-docs-local-web/critical3-task-1-report.md
 ```
+
+## Fix round 2 — authoritative committed lookup cannot be vetoed by renderer data
+
+Base: `1c4f3d07674475157227e60588d617e39b74f593`. The reviewer marked upload cleanup addressed, but identified the remaining Important branch in `handleWorkingCopyResult`: round 1 still required matching renderer receipt/result for an `ok:true` response even after authoritative lookup had verified the original reservation's committed terminal. This round changes only that branch; the Minor journal issue remains untouched.
+
+RED command (13:17):
+
+```sh
+npm run test -w @nexusdesk/local-host -- tests/working-copy-coordinator.test.ts -t "authoritative committed terminal"
+```
+
+Both added cases failed as intended: committed + renderer missing receipt, and committed + renderer different successful result. Each actually received `ok:false / WORKING_COPY_OUTCOME_UNKNOWN` without persistence instead of the real committed result/receipt. Store publication was real, not mocked.
+
+Minimal GREEN: after `lookupRequest(owner.request)` verifies committed, immediately deliver its authoritative terminal, regardless of renderer receipt/result. Client/request/target ownership checks still run before lookup; lookup still derives and verifies the original document/epoch/operation/fingerprint binding. Unknown or missing terminal behavior is unchanged. The renderer can neither create success without durable evidence nor deny success already established by the Host.
+
+The two tests additionally retry the same runtime request and prove original-terminal replay only: one renderer dispatch, one materialization, unchanged manifest bytes (no second terminal or write), unchanged original file, original result in OperationStore, and no recovery notice. No new approval is granted. Self-review confirmed that the only production change is the committed branch condition plus its explanatory comment; `isDeepStrictEqual` remains used by legacy response handling.
+
+Final commands/results (13:18):
+
+- `npm run test -w @nexusdesk/local-host -- tests/working-copy-coordinator.test.ts tests/agent-router.test.ts`: 43/43 passed.
+- All exact brief focused test commands listed in round 1 were rerun: protocol 9/9; Host 121/121 across 8 files; web-client 14/14; runtime-host 61/61.
+- All four protocol/Host/web-client/runtime typechecks listed in round 1 exited 0.
+- `npm exec -- eslint apps/local-host/src/agent-router.ts apps/local-host/tests/working-copy-coordinator.test.ts`: exit 0, no output.
+- `git diff --check`: exit 0.
+- Root `npm test`, logged to `critical3-task-1-fix2-full-suite.log`, again exited 1 only after complete protocol 11/11, Host 189/189, runtime 61/61, web-client 27/27 and i18n 19/19 passed. electron-utils again had 180 passed and the same four `fetchRemoteImage` failures named above; downstream suites were not reached. No unrelated workaround was made.
+- Root `npm run lint`, logged to `critical3-task-1-fix2-lint.log`, exited 1 with the same 10 errors / 29 warnings in unchanged files listed above. `cmp` confirms the round-1 and round-2 lint logs are byte-identical. Diagnostic logs are ignored and unstaged.
+
+This round stages only `apps/local-host/src/agent-router.ts`, `apps/local-host/tests/working-copy-coordinator.test.ts`, and this report. The unrelated untracked analysis file remains untouched.
