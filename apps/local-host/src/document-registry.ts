@@ -4,6 +4,7 @@ export type DocumentRegistryErrorCode =
   | 'DOCUMENT_NOT_FOUND'
   | 'DOCUMENT_DETACHED'
   | 'WRONG_CLIENT'
+  | 'WRONG_EDITOR'
   | 'STALE_REVISION'
   | 'NON_MONOTONIC_REVISION'
 
@@ -19,6 +20,12 @@ export interface DocumentRegistration {
   clientId: ClientId
   editorType: string
   revision: Revision
+}
+
+export interface AuthorizedDocument {
+  documentId: string
+  editorType: string
+  revision: number
 }
 
 interface AttachedDocument extends DocumentRegistration {
@@ -42,9 +49,58 @@ export interface DocumentOwnerCheck {
 
 /** Owns the authoritative browser client and revision for every open document. */
 export class DocumentRegistry {
-  private readonly documents = new Map<DocumentId, DocumentRecord>()
+  private documents = new Map<DocumentId, DocumentRecord>()
+
+  constructor(documents: readonly AuthorizedDocument[] = []) {
+    this.initialize(documents)
+  }
+
+  initialize(documents: readonly AuthorizedDocument[]): void {
+    const initialized = new Map<DocumentId, DocumentRecord>()
+    for (const document of documents) {
+      const documentId = document.documentId as DocumentId
+      if (initialized.has(documentId)) {
+        throw new Error(`duplicate authorized document ${document.documentId}`)
+      }
+      initialized.set(documentId, {
+        documentId,
+        editorType: document.editorType,
+        revision: document.revision as Revision,
+        attached: false,
+      })
+    }
+    this.documents = initialized
+  }
 
   register(registration: DocumentRegistration): AttachedDocument {
+    const current = this.documents.get(registration.documentId)
+    if (current === undefined) {
+      throw new DocumentRegistryError(
+        'DOCUMENT_NOT_FOUND',
+        `document ${registration.documentId} is not authorized`,
+      )
+    }
+    if (current.editorType !== registration.editorType) {
+      throw new DocumentRegistryError(
+        'WRONG_EDITOR',
+        `document ${registration.documentId} requires editor ${current.editorType}`,
+      )
+    }
+    if (current.revision !== registration.revision) {
+      throw new DocumentRegistryError(
+        'STALE_REVISION',
+        `document ${registration.documentId} is revision ${String(current.revision)}, not ${String(registration.revision)}`,
+      )
+    }
+    if (current.attached) {
+      if (current.clientId !== registration.clientId) {
+        throw new DocumentRegistryError(
+          'WRONG_CLIENT',
+          `document ${registration.documentId} belongs to another browser client`,
+        )
+      }
+      return current
+    }
     const record: AttachedDocument = { ...registration, attached: true }
     this.documents.set(registration.documentId, record)
     return record
@@ -86,15 +142,39 @@ export class DocumentRegistry {
     if (record.clientId !== update.clientId) {
       throw new DocumentRegistryError('WRONG_CLIENT', `document ${update.documentId} belongs to another browser client`)
     }
-    if (update.revision <= record.revision) {
+    if (update.revision !== record.revision + 1) {
       throw new DocumentRegistryError(
         'NON_MONOTONIC_REVISION',
-        `document ${update.documentId} revision must increase beyond ${String(record.revision)}`,
+        `document ${update.documentId} revision must advance from ${String(record.revision)} to ${String(record.revision + 1)}`,
       )
     }
     const next: AttachedDocument = { ...record, revision: update.revision }
     this.documents.set(update.documentId, next)
     return next
+  }
+
+  detach(check: Pick<DocumentOwnerCheck, 'documentId' | 'clientId'>): boolean {
+    const record = this.documents.get(check.documentId)
+    if (record === undefined) {
+      throw new DocumentRegistryError(
+        'DOCUMENT_NOT_FOUND',
+        `document ${check.documentId} is not registered`,
+      )
+    }
+    if (!record.attached) return false
+    if (record.clientId !== check.clientId) {
+      throw new DocumentRegistryError(
+        'WRONG_CLIENT',
+        `document ${check.documentId} belongs to another browser client`,
+      )
+    }
+    this.documents.set(check.documentId, {
+      documentId: check.documentId,
+      editorType: record.editorType,
+      revision: record.revision,
+      attached: false,
+    })
+    return true
   }
 
   detachClient(clientId: ClientId): number {

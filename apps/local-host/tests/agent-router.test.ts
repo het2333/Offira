@@ -39,7 +39,10 @@ describe('AgentRouter', () => {
     { label: 'command', command: 'read_document' },
     { label: 'arguments', arguments: { scope: 'selection' } },
   ])('rejects operation replay with a different $label', async (change) => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([
+      { documentId, editorType: 'sheets', revision },
+      { documentId: 'document-2', editorType: 'sheets', revision },
+    ])
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     documents.register({ documentId: 'document-2' as DocumentId, clientId, editorType: 'sheets', revision })
@@ -81,7 +84,7 @@ describe('AgentRouter', () => {
   })
 
   it('targets the Harness session with the registered editor type', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'docs', revision }])
     documents.register({ documentId, clientId, editorType: 'docs', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const startTurn = vi.spyOn(supervisor, 'startTurn')
@@ -110,7 +113,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an unapproved native Docs save before it reaches the editor', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'docs', revision }])
     documents.register({ documentId, clientId, editorType: 'docs', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -158,7 +161,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an unapproved Markdown save before it reaches the editor', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'markdown', revision }])
     documents.register({ documentId, clientId, editorType: 'markdown', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -182,7 +185,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an HTML save whose approval is for a different plan', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'html', revision }])
     documents.register({ documentId, clientId, editorType: 'html', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -199,7 +202,7 @@ describe('AgentRouter', () => {
   })
 
   it('consumes a one-time HTML save approval so a replay cannot reach the editor', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'html', revision }])
     documents.register({ documentId, clientId, editorType: 'html', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -216,7 +219,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an unapproved native Slides save before it reaches the editor', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
     documents.register({ documentId, clientId, editorType: 'slides', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -263,7 +266,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an unapproved Slides history change before it reaches the editor', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
     documents.register({ documentId, clientId, editorType: 'slides', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -290,7 +293,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects a Slides save whose approval hash differs from the granted plan', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
     documents.register({ documentId, clientId, editorType: 'slides', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -334,7 +337,7 @@ describe('AgentRouter', () => {
   })
 
   it('consumes a granted Slides save approval exactly once', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
     documents.register({ documentId, clientId, editorType: 'slides', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -378,7 +381,7 @@ describe('AgentRouter', () => {
   })
 
   it('does not cache a Slides save proposal in place of its approved save', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'slides', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
@@ -448,7 +451,7 @@ describe('AgentRouter', () => {
   })
 
   it('does not reserve a PDF propose_save result in the operation journal', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'pdf', revision }])
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'pdf', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
@@ -516,7 +519,7 @@ describe('AgentRouter', () => {
   })
 
   it('replays a terminal PDF save with the proposal operation id and no second browser approval', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'pdf', revision }])
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'pdf', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
@@ -634,7 +637,7 @@ describe('AgentRouter', () => {
   })
 
   it('expires a pending approval and sends one terminal failure when runtime crashes', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     const operations = new OperationStore()
     const sent: AgentServerFrame[] = []
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
@@ -678,7 +681,7 @@ describe('AgentRouter', () => {
   })
 
   it('rejects an approval response from a different browser client', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -720,7 +723,10 @@ describe('AgentRouter', () => {
   it('rejects an agent start that tries to take over another client session', async () => {
     const otherClientId = 'client-2' as ClientId
     const otherDocumentId = 'document-2' as DocumentId
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([
+      { documentId, editorType: 'sheets', revision },
+      { documentId: otherDocumentId, editorType: 'sheets', revision },
+    ])
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     documents.register({
       documentId: otherDocumentId,
@@ -765,7 +771,7 @@ describe('AgentRouter', () => {
   })
 
   it('expires a pending approval when the document revision changes', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: AgentServerFrame[] = []
@@ -823,7 +829,7 @@ describe('AgentRouter', () => {
   })
 
   it('records one terminal editor result, tolerates its transport duplicate, and serves it after browser reconnect', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
@@ -943,6 +949,7 @@ describe('AgentRouter', () => {
     )
 
     router.disconnectClient(clientId)
+    documents.detachClient(clientId)
     const reconnectedClientId = 'client-reconnected' as ClientId
     documents.register({
       documentId,
@@ -996,7 +1003,7 @@ describe('AgentRouter', () => {
   })
 
   it('reissues an uncertain reserved editor request when its document reconnects', async () => {
-    const documents = new DocumentRegistry()
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const sent: Array<{ clientId: ClientId; frame: AgentServerFrame }> = []
@@ -1031,6 +1038,7 @@ describe('AgentRouter', () => {
     await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
     const original = sent.find(({ frame }) => frame.type === 'editor:request')!.frame
 
+    documents.commitRevision({ documentId, clientId, revision: 2 as Revision })
     router.disconnectClient(clientId)
     documents.detachClient(clientId)
     const reconnectedClientId = 'client-recovered' as ClientId

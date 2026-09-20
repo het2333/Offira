@@ -42,9 +42,11 @@ describe('OperationStore', () => {
 
   it('retains a committed result across document disconnect and retry', () => {
     const store = new OperationStore()
-    const registry = new DocumentRegistry()
     const documentId = 'document-1' as DocumentId
     const clientId = 'client-1' as ClientId
+    const registry = new DocumentRegistry([
+      { documentId, editorType: 'sheets', revision: 1 },
+    ])
     registry.register({ documentId, clientId, editorType: 'sheets', revision: 1 as Revision })
     store.reserve(operationId, { command: 'apply', value: 1 })
     store.commit(operationId, result)

@@ -186,6 +186,7 @@ export async function startLocalHost(
   const sessions = new Set<string>()
   const documents = options.documentRegistry ?? new DocumentRegistry()
   const localDocuments = options.documentDrivers?.list() ?? options.documents ?? []
+  documents.initialize(localDocuments)
   const shellDocuments = localDocuments.map(
     ({ documentId, title, editorType, revision }) =>
       ({ documentId, title, editorType, revision }) as ShellDocumentSummary,

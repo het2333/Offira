@@ -30,8 +30,9 @@ function wsUrl(origin: string): string {
 
 async function openSession(
   host: RunningLocalHost,
+  cookie?: string,
 ): Promise<{ socket: WebSocket; clientId: ClientId }> {
-  const cookie = await sessionCookie(host)
+  cookie ??= await sessionCookie(host)
   const socket = new WebSocket(wsUrl(host.origin), {
     headers: { Cookie: cookie, Origin: host.origin },
   })
@@ -48,6 +49,13 @@ async function until(check: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error('condition was not reached')
+}
+
+async function closeCode(socket: WebSocket): Promise<number | undefined> {
+  return await Promise.race([
+    new Promise<number>((resolve) => socket.once('close', resolve)),
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 250)),
+  ])
 }
 
 describe('authenticated WebSocket session', () => {
@@ -105,7 +113,10 @@ describe('authenticated WebSocket session', () => {
     const documents = new DocumentRegistry()
     const documentId = 'document-1' as DocumentId
     const revision = 1 as Revision
-    running = await startLocalHost({ documentRegistry: documents })
+    running = await startLocalHost({
+      documentRegistry: documents,
+      documents: [{ documentId, title: 'Forecast.xlsx', editorType: 'sheets', revision }],
+    })
     const { socket, clientId } = await openSession(running)
     socket.send(
       JSON.stringify({
@@ -155,6 +166,117 @@ describe('authenticated WebSocket session', () => {
 
     const code = await new Promise<number>((resolve) => socket.once('close', resolve))
     expect(code).toBe(1008)
+  })
+
+  it('rejects a second client without replacing the authorized document owner', async () => {
+    const documents = new DocumentRegistry()
+    const documentId = 'document-1' as DocumentId
+    const revision = 1 as Revision
+    running = await startLocalHost({
+      documentRegistry: documents,
+      documents: [{ documentId, title: 'Forecast.xlsx', editorType: 'sheets', revision }],
+    })
+    const cookie = await sessionCookie(running)
+    const owner = await openSession(running, cookie)
+    owner.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-owner',
+      clientId: owner.clientId,
+      documentId,
+      editorType: 'sheets',
+      revision,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient(documentId, owner.clientId).attached
+      } catch {
+        return false
+      }
+    })
+
+    const attacker = await openSession(running, cookie)
+    attacker.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-attacker',
+      clientId: attacker.clientId,
+      documentId,
+      editorType: 'sheets',
+      revision,
+    }))
+
+    expect(await closeCode(attacker.socket)).toBe(1008)
+    expect(documents.assertOwner({ documentId, clientId: owner.clientId, revision }).clientId)
+      .toBe(owner.clientId)
+    owner.socket.close()
+  })
+
+  it('uses Host metadata and ignores a former owner socket closing after handoff', async () => {
+    const documents = new DocumentRegistry()
+    const documentId = 'document-1' as DocumentId
+    const revision = 3 as Revision
+    running = await startLocalHost({
+      documentRegistry: documents,
+      documents: [{ documentId, title: 'Report.docx', editorType: 'docs', revision }],
+    })
+    const cookie = await sessionCookie(running)
+    const former = await openSession(running, cookie)
+    former.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-former',
+      clientId: former.clientId,
+      documentId,
+      editorType: 'docs',
+      revision,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient(documentId, former.clientId).attached
+      } catch {
+        return false
+      }
+    })
+    former.socket.send(JSON.stringify({
+      type: 'editor:detach',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'detach-former',
+      clientId: former.clientId,
+      documentId,
+    }))
+    await until(() => {
+      try {
+        documents.assertClient(documentId, former.clientId)
+        return false
+      } catch (error) {
+        return error instanceof DocumentRegistryError && error.code === 'DOCUMENT_DETACHED'
+      }
+    })
+
+    const current = await openSession(running, cookie)
+    current.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-current',
+      clientId: current.clientId,
+      documentId,
+      editorType: 'docs',
+      revision,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient(documentId, current.clientId).attached
+      } catch {
+        return false
+      }
+    })
+
+    former.socket.close()
+    await new Promise<void>((resolve) => former.socket.once('close', () => resolve()))
+    expect(documents.assertOwner({ documentId, clientId: current.clientId, revision }).clientId)
+      .toBe(current.clientId)
+    current.socket.close()
   })
 
   it('broadcasts sequenced Shell changes after a persisted tab mutation', async () => {

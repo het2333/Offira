@@ -102,7 +102,7 @@ export function installWsSessionServer(
             break
           case 'editor:detach':
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
-            options.documents.detachClient(frame.clientId)
+            options.documents.detach(frame)
             break
           case 'editor:result':
             if (frame.target.clientId !== clientId) throw new Error('client identity mismatch')

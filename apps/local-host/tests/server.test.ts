@@ -42,7 +42,15 @@ describe('startLocalHost HTTP bootstrap', () => {
 
   it('wires an explicitly injected runtime through the authenticated browser session', async () => {
     const runtimeEntry = fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url))
-    running = await startLocalHost({ runtimeCommand: { entry: runtimeEntry } })
+    running = await startLocalHost({
+      runtimeCommand: { entry: runtimeEntry },
+      documents: [{
+        documentId: 'document-1',
+        title: 'Forecast.xlsx',
+        editorType: 'sheets',
+        revision: 1,
+      }],
+    })
     const headers = await authenticatedHeaders()
     const socket = new WebSocket(running.origin.replace(/^http/, 'ws') + '/ws', {
       headers: { Cookie: headers.cookie, Origin: running.origin },
