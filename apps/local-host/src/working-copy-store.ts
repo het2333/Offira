@@ -33,6 +33,34 @@ export interface CheckpointReceipt extends WorkingCopyHead {
   result: AgentToolResult
 }
 
+export interface SaveReceipt extends Omit<CheckpointReceipt, 'dirty'> {
+  dirty: false
+  /** Save adopts the checkpoint's content revision; it does not create another edit revision. */
+  fromSavedRevision: number
+}
+
+export type WorkingCopyReceipt = CheckpointReceipt | SaveReceipt
+
+/** All bindings are supplied by the Host after independent save approval validation. */
+export interface PromoteWorkingCopyRequest {
+  documentEpoch: string
+  expectedSavedRevision: number
+  expectedWorkingRevision: number
+  checkpointId: string
+  operationId: string
+  requestFingerprint: string
+  planHash: string
+  result: AgentToolResult
+}
+
+interface SaveIntent {
+  schemaVersion: 1
+  temporaryName: string
+  temporaryIdentity: WorkingCopyBaseline
+  oldBaseline: WorkingCopyBaseline
+  receipt: SaveReceipt
+}
+
 export interface WorkingCopyStatus {
   documentId: string
   editorType: 'docs' | 'sheets' | 'pdf'
@@ -48,7 +76,8 @@ export interface WorkingCopyStatus {
 interface Manifest extends Omit<WorkingCopyStatus, 'recoveryState'> {
   schemaVersion: 1
   authorizedPath: string
-  operations: Record<string, CheckpointReceipt>
+  operations: Record<string, WorkingCopyReceipt>
+  saveIntent?: SaveIntent
 }
 
 export interface WorkingCopyStoreOptions {
@@ -82,8 +111,9 @@ export interface CheckpointRequest {
 export interface WorkingCopyStore {
   getStatus(): Promise<WorkingCopyStatus>
   readWorkingBytes(): Promise<Uint8Array>
-  lookupTerminal(operationId: string, requestFingerprint: string): Promise<CheckpointReceipt | undefined>
+  lookupTerminal(operationId: string, requestFingerprint: string): Promise<WorkingCopyReceipt | undefined>
   commitCheckpoint(request: CheckpointRequest): Promise<CheckpointReceipt>
+  promoteWorkingCopy(request: PromoteWorkingCopyRequest): Promise<SaveReceipt>
 }
 
 export type WorkingCopyStoreErrorCode =
@@ -166,6 +196,18 @@ function sameBaseline(left: WorkingCopyBaseline, right: WorkingCopyBaseline): bo
   return (Object.keys(left) as (keyof WorkingCopyBaseline)[]).every((key) => left[key] === right[key])
 }
 
+function validBaseline(value: unknown): value is WorkingCopyBaseline {
+  return isRecord(value) && isHash(value.sha256) &&
+    ['device', 'inode', 'size', 'mtimeNs', 'ctimeNs'].every((key) => typeof value[key] === 'string' && /^\d+$/.test(value[key]))
+}
+
+function isPromotedFile(actual: WorkingCopyBaseline, temporary: WorkingCopyBaseline): boolean {
+  // rename changes ctime on supported filesystems. Device/inode, bytes, size and mtime must
+  // remain identical; ctime may only advance. Equal bytes on a replacement inode are never ours.
+  return actual.sha256 === temporary.sha256 && actual.device === temporary.device && actual.inode === temporary.inode &&
+    actual.size === temporary.size && actual.mtimeNs === temporary.mtimeNs && BigInt(actual.ctimeNs) >= BigInt(temporary.ctimeNs)
+}
+
 async function readBaseline(path: string): Promise<{ bytes: Uint8Array; identity: WorkingCopyBaseline }> {
   const handle = await open(path, 'r')
   try {
@@ -228,7 +270,7 @@ async function publishManifest(path: string, json: string): Promise<void> {
   } finally { await unlink(temporaryPath).catch(() => undefined) }
 }
 
-/** Creates/reopens one Host-authorized document. Save/promote must later use this same queue. */
+/** Creates/reopens one Host-authorized document. Checkpoint and save share the same queue. */
 export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): Promise<WorkingCopyStore> {
   const maxByteLength = options.maxByteLength ?? 128 * 1024 * 1024
   const maxResultByteLength = options.maxResultByteLength ?? 256 * 1024
@@ -265,7 +307,22 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
   const validHead = (value: unknown): value is WorkingCopyHead => isRecord(value) && isText(value.checkpointId) &&
     isHash(value.blobHash) && isRevision(value.byteLength) && value.byteLength <= maxByteLength
 
-  const load = async (): Promise<Manifest> => {
+  const validReceipt = (value: unknown, operationId: string, manifest: Manifest): value is WorkingCopyReceipt => {
+    if (!isRecord(value) || !validHead(value) || value.state !== 'committed' ||
+        !isText(operationId) || value.operationId !== operationId || value.documentEpoch !== manifest.documentEpoch ||
+        !isText(value.requestFingerprint) || !isText(value.planHash) || !isRevision(value.fromWorkingRevision) ||
+        !isRevision(value.workingRevision) || value.workingRevision > manifest.workingRevision || !isRevision(value.savedRevision)) return false
+    if (value.dirty === true) {
+      if (value.workingRevision !== value.fromWorkingRevision + 1 || value.savedRevision > value.fromWorkingRevision) return false
+    } else if (value.dirty === false) {
+      if (value.workingRevision !== value.fromWorkingRevision || value.savedRevision !== value.workingRevision ||
+          !isRevision(value.fromSavedRevision) || value.fromSavedRevision >= value.savedRevision) return false
+    } else return false
+    boundedResult(value.result, maxResultByteLength)
+    return true
+  }
+
+  const loadManifest = async (): Promise<Manifest> => {
     let raw: string
     try {
       if ((await stat(manifestPath)).size > maxManifestByteLength) throw new Error('Oversized manifest')
@@ -278,31 +335,45 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
       const parsed: unknown = JSON.parse(raw)
       if (!isRecord(parsed) || parsed.schemaVersion !== 1 || parsed.documentId !== options.documentId ||
           parsed.editorType !== options.editorType || parsed.authorizedPath !== authorizedPath ||
-          !isText(parsed.documentEpoch) || !isRecord(parsed.baseline) || !isHash(parsed.baseline.sha256) ||
-          !['device', 'inode', 'size', 'mtimeNs', 'ctimeNs'].every((key) => typeof parsed.baseline === 'object' &&
-            typeof (parsed.baseline as Record<string, unknown>)[key] === 'string' && /^\d+$/.test(String((parsed.baseline as Record<string, unknown>)[key]))) ||
+          !isText(parsed.documentEpoch) || !validBaseline(parsed.baseline) ||
           !isRevision(parsed.savedRevision) || !isRevision(parsed.workingRevision) || parsed.workingRevision < parsed.savedRevision ||
           typeof parsed.dirty !== 'boolean' || !isRecord(parsed.operations) ||
           (parsed.head !== null && !validHead(parsed.head))) throw new Error('Invalid manifest schema or document binding')
       const manifest = parsed as unknown as Manifest
       const operations = Object.entries(manifest.operations)
       for (const [operationId, receipt] of operations) {
-        if (!isRecord(receipt) || !validHead(receipt) || receipt.state !== 'committed' ||
-            !isText(operationId) || receipt.operationId !== operationId || receipt.documentEpoch !== manifest.documentEpoch ||
-            !isText(receipt.requestFingerprint) || !isText(receipt.planHash) || receipt.dirty !== true ||
-            !isRevision(receipt.fromWorkingRevision) || receipt.workingRevision !== receipt.fromWorkingRevision + 1 ||
-            receipt.workingRevision > manifest.workingRevision || !isRevision(receipt.savedRevision) ||
-            receipt.savedRevision > receipt.fromWorkingRevision) throw new Error('Invalid operation receipt')
-        boundedResult(receipt.result, maxResultByteLength)
+        if (!validReceipt(receipt, operationId, manifest) || receipt.savedRevision > manifest.savedRevision) throw new Error('Invalid operation receipt')
+        if (!receipt.dirty) {
+          const checkpoint = operations.find(([, entry]) => entry.dirty && entry.checkpointId === receipt.checkpointId)?.[1]
+          if (checkpoint === undefined || checkpoint.workingRevision !== receipt.workingRevision ||
+              checkpoint.savedRevision !== receipt.fromSavedRevision || checkpoint.blobHash !== receipt.blobHash ||
+              checkpoint.byteLength !== receipt.byteLength ||
+              (receipt.savedRevision === manifest.savedRevision && (receipt.blobHash !== manifest.baseline.sha256 ||
+                String(receipt.byteLength) !== manifest.baseline.size))) throw new Error('Save terminal is not bound to its checkpoint and baseline')
+        }
       }
       if (manifest.head === null) {
-        if (manifest.dirty || operations.length !== 0 || manifest.workingRevision !== manifest.savedRevision) throw new Error('Invalid empty head')
+        if (manifest.dirty || manifest.workingRevision !== manifest.savedRevision ||
+            (operations.length > 0 && !operations.some(([, receipt]) => !receipt.dirty && receipt.savedRevision === manifest.savedRevision))) throw new Error('Invalid empty head')
       } else {
-        const latest = operations.find(([, receipt]) => receipt.checkpointId === manifest.head!.checkpointId)?.[1]
+        const latest = operations.find(([, receipt]) => receipt.dirty && receipt.checkpointId === manifest.head!.checkpointId)?.[1]
         if (!manifest.dirty || latest === undefined || latest.workingRevision !== manifest.workingRevision ||
             latest.savedRevision !== manifest.savedRevision || latest.blobHash !== manifest.head.blobHash ||
             latest.byteLength !== manifest.head.byteLength) throw new Error('Head is not bound to its terminal')
         await readBlob(manifest.head)
+      }
+      if (manifest.saveIntent !== undefined) {
+        const intent = manifest.saveIntent
+        if (!isRecord(intent) || intent.schemaVersion !== 1 || typeof intent.temporaryName !== 'string' ||
+            !/^\.nexusdesk-save-[a-f0-9-]{36}\.tmp$/.test(intent.temporaryName) ||
+            !validBaseline(intent.temporaryIdentity) || !validBaseline(intent.oldBaseline) ||
+            !sameBaseline(intent.oldBaseline, manifest.baseline) || !isRecord(intent.receipt) ||
+            !validReceipt(intent.receipt, String(intent.receipt.operationId), manifest) || intent.receipt.dirty !== false ||
+            intent.receipt.fromSavedRevision !== manifest.savedRevision || intent.receipt.workingRevision !== manifest.workingRevision ||
+            !manifest.dirty || manifest.head === null || intent.receipt.checkpointId !== manifest.head.checkpointId ||
+            intent.receipt.blobHash !== manifest.head.blobHash || intent.receipt.byteLength !== manifest.head.byteLength ||
+            intent.temporaryIdentity.sha256 !== manifest.head.blobHash || intent.temporaryIdentity.size !== String(manifest.head.byteLength) ||
+            Object.hasOwn(manifest.operations, intent.receipt.operationId)) throw new Error('Invalid save intent')
       }
       return manifest
     } catch (cause) {
@@ -319,6 +390,47 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
       throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The original file changed or is unavailable; the working copy was preserved.', { cause })
     }
   }
+
+  const reconcileSave = async (manifest: Manifest): Promise<Manifest> => {
+    const intent = manifest.saveIntent
+    if (intent === undefined) return manifest
+    const temporaryPath = join(dirname(authorizedPath), intent.temporaryName)
+    try {
+      let original = await readBaseline(authorizedPath)
+      if (sameBaseline(original.identity, intent.oldBaseline)) {
+        const temporary = await readBaseline(temporaryPath)
+        if (!sameBaseline(temporary.identity, intent.temporaryIdentity)) {
+          throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The save temporary file changed; recovery evidence was preserved.')
+        }
+        await confirmReceiptDurability(directory)
+        // Revalidate immediately before replacing; this queue excludes other Host mutations.
+        // Portable rename has no compare-and-swap: this is not a cross-process writer lease.
+        await currentBaseline(manifest)
+        await rename(temporaryPath, authorizedPath)
+      } else if (!isPromotedFile(original.identity, intent.temporaryIdentity)) {
+        throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The original no longer matches either side of the save intent; recovery evidence was preserved.')
+      }
+      await syncDirectory(dirname(authorizedPath))
+      original = await readBaseline(authorizedPath)
+      if (!isPromotedFile(original.identity, intent.temporaryIdentity)) {
+        throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The original changed during save; recovery evidence was preserved.')
+      }
+      const { saveIntent: _intent, ...previous } = manifest
+      const finished: Manifest = { ...previous, baseline: original.identity,
+        savedRevision: intent.receipt.savedRevision, dirty: false, head: null,
+        operations: { ...manifest.operations, [intent.receipt.operationId]: intent.receipt } }
+      await publishManifest(manifestPath, serializeManifest(finished, maxManifestByteLength))
+      return finished
+    } catch (cause) {
+      if (cause instanceof WorkingCopyStoreError && cause.code === 'REVISION_CONFLICT') throw cause
+      if (codeOf(cause) === 'ENOENT') {
+        throw new WorkingCopyStoreError('REVISION_CONFLICT', 'A save intent file is missing; recovery evidence was preserved.', { cause })
+      }
+      throw new WorkingCopyStoreError('WORKING_COPY_OUTCOME_UNKNOWN', 'A durable save intent remains; reconcile its outcome before retrying.', { cause })
+    }
+  }
+
+  const load = async () => reconcileSave(await loadManifest())
 
   await enqueue(manifestPath, async () => {
     await makeDirectory(blobs)
@@ -343,7 +455,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         const manifest = await load()
         let recoveryState: WorkingCopyStatus['recoveryState'] = 'ready'
         try { await currentBaseline(manifest) } catch { recoveryState = 'conflict' }
-        const { schemaVersion: _version, authorizedPath: _path, operations: _operations, ...status } = manifest
+        const { schemaVersion: _version, authorizedPath: _path, operations: _operations, saveIntent: _intent, ...status } = manifest
         return { ...status, recoveryState }
       })
     },
@@ -366,6 +478,77 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         return clone(receipt)
       })
     },
+    promoteWorkingCopy(request) {
+      let input: PromoteWorkingCopyRequest
+      try {
+        if (!isText(request.documentEpoch) || !isText(request.operationId) || !isText(request.requestFingerprint) ||
+            !isText(request.planHash) || !isText(request.checkpointId) || !isRevision(request.expectedSavedRevision) ||
+            !isRevision(request.expectedWorkingRevision)) invalid('Invalid save metadata.')
+        input = { ...request, result: boundedResult(request.result, maxResultByteLength) }
+      } catch (error) { return Promise.reject(error) }
+      return enqueue(manifestPath, async () => {
+        const manifest = await load()
+        await currentBaseline(manifest)
+        if (input.documentEpoch !== manifest.documentEpoch) throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The document epoch changed.')
+        const existing = Object.hasOwn(manifest.operations, input.operationId) ? manifest.operations[input.operationId] : undefined
+        if (existing !== undefined) {
+          if (existing.dirty || existing.requestFingerprint !== input.requestFingerprint || existing.planHash !== input.planHash ||
+              existing.checkpointId !== input.checkpointId || existing.fromSavedRevision !== input.expectedSavedRevision ||
+              existing.fromWorkingRevision !== input.expectedWorkingRevision) {
+            throw new WorkingCopyStoreError('OPERATION_ID_COLLISION', 'Operation ID is bound to a different save or checkpoint.')
+          }
+          await readBlob(existing)
+          await confirmReceiptDurability(directory)
+          return clone(existing)
+        }
+        if (manifest.savedRevision !== input.expectedSavedRevision || manifest.workingRevision !== input.expectedWorkingRevision ||
+            !manifest.dirty || manifest.head === null || manifest.head.checkpointId !== input.checkpointId) {
+          throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The approved saved revision or working checkpoint changed.')
+        }
+        const bytes = await readBlob(manifest.head)
+        const receipt: SaveReceipt = { ...manifest.head, state: 'committed', documentEpoch: manifest.documentEpoch,
+          operationId: input.operationId, requestFingerprint: input.requestFingerprint, planHash: input.planHash,
+          fromWorkingRevision: manifest.workingRevision, workingRevision: manifest.workingRevision,
+          fromSavedRevision: manifest.savedRevision, savedRevision: manifest.workingRevision,
+          dirty: false, result: input.result }
+        const temporaryName = `.nexusdesk-save-${randomUUID()}.tmp`
+        const temporaryPath = join(dirname(authorizedPath), temporaryName)
+        let preserveTemporary = false
+        try {
+          const handle = await open(temporaryPath, 'wx', 0o600)
+          try { await handle.writeFile(bytes); await handle.sync() } finally { await handle.close() }
+          const temporary = await readBaseline(temporaryPath)
+          if (temporary.identity.sha256 !== receipt.blobHash || temporary.bytes.byteLength !== receipt.byteLength) {
+            throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The save temporary bytes changed before intent publication.')
+          }
+          // Persist the temporary pathname before the intent may promise it can finish after a crash.
+          await syncDirectory(dirname(authorizedPath))
+          await currentBaseline(manifest)
+          const intent: SaveIntent = { schemaVersion: 1, temporaryName, temporaryIdentity: temporary.identity,
+            oldBaseline: manifest.baseline, receipt }
+          const pending: Manifest = { ...manifest, saveIntent: intent }
+          const pendingJson = serializeManifest(pending, maxManifestByteLength)
+          // A full ledger must not strand a save that can never publish its final receipt.
+          serializeManifest({ ...manifest, baseline: temporary.identity, savedRevision: receipt.savedRevision,
+            head: null, dirty: false, operations: { ...manifest.operations, [input.operationId]: receipt } }, maxManifestByteLength)
+          try {
+            await publishManifest(manifestPath, pendingJson)
+            preserveTemporary = true
+          } catch (cause) {
+            if (codeOf(cause) === 'WORKING_COPY_OUTCOME_UNKNOWN') preserveTemporary = true
+            throw cause
+          }
+          await reconcileSave(pending)
+          return clone(receipt)
+        } catch (cause) {
+          if (cause instanceof WorkingCopyStoreError) throw cause
+          throw new WorkingCopyStoreError(preserveTemporary ? 'WORKING_COPY_OUTCOME_UNKNOWN' : 'WORKING_COPY_PERSIST_FAILED',
+            'Could not finish the approved working-copy save.', { cause })
+        } finally {
+          if (!preserveTemporary) await unlink(temporaryPath).catch(() => undefined)
+        }
+      })
+    },
     commitCheckpoint(request) {
       // Capture inputs synchronously, before any queue wait, so callers cannot change the committed snapshot.
       let input: CheckpointRequest
@@ -383,7 +566,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         if (input.documentEpoch !== manifest.documentEpoch) throw new WorkingCopyStoreError('REVISION_CONFLICT', 'The document epoch changed.')
         const existing = Object.hasOwn(manifest.operations, input.operationId) ? manifest.operations[input.operationId] : undefined
         if (existing !== undefined) {
-          if (existing.requestFingerprint !== input.requestFingerprint || existing.planHash !== input.planHash) {
+          if (!existing.dirty || existing.requestFingerprint !== input.requestFingerprint || existing.planHash !== input.planHash) {
             throw new WorkingCopyStoreError('OPERATION_ID_COLLISION', 'Operation ID is bound to a different request or plan.')
           }
           await readBlob(existing)

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createWorkingCopyStore, type CheckpointRequest } from '../src/working-copy-store'
+import { createWorkingCopyStore, type CheckpointRequest, type PromoteWorkingCopyRequest } from '../src/working-copy-store'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -54,6 +54,197 @@ async function manifestPath(root: string): Promise<string> {
   expect(names).toHaveLength(1)
   return join(root, names[0], 'manifest.json')
 }
+
+async function saveFixture() {
+  const setup = await fixture()
+  const checkpoint = await setup.store.commitCheckpoint(setup.request())
+  const save: PromoteWorkingCopyRequest = {
+    documentEpoch: checkpoint.documentEpoch, expectedSavedRevision: 1, expectedWorkingRevision: 2,
+    checkpointId: checkpoint.checkpointId, operationId: 'save-1', requestFingerprint: 'save-request-1',
+    planHash: 'save-plan-1', result: { ok: true, summary: 'Saved', warnings: [] },
+  }
+  return { ...setup, checkpoint, save }
+}
+
+describe('Host crash-safe working-copy promotion', () => {
+  it('saves exactly the approved head, clears dirty, and retains both terminals through restart', async () => {
+    const { store, config, authorizedPath, checkpoint, save } = await saveFixture()
+    const receipt = await store.promoteWorkingCopy(save)
+    expect(await fs.readFile(authorizedPath, 'utf8')).toBe('manual and agent edits')
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.getStatus()).toMatchObject({ savedRevision: 2, workingRevision: 2, dirty: false, head: null })
+    expect(receipt).toMatchObject({ dirty: false, checkpointId: checkpoint.checkpointId, savedRevision: 2, workingRevision: 2 })
+    expect(await reopened.lookupTerminal('operation-1', 'exact-request-1')).toEqual(checkpoint)
+    expect(await reopened.lookupTerminal('save-1', 'save-request-1')).toEqual(receipt)
+    expect(await reopened.readWorkingBytes()).toEqual(encode('manual and agent edits'))
+  })
+
+  it('coalesces save retries and never rewrites the original or rolls back a newer head', async () => {
+    const { store, save, request, authorizedPath, checkpoint } = await saveFixture()
+    const [a, b] = await Promise.all([store.promoteWorkingCopy(save), store.promoteWorkingCopy(save)])
+    expect(a).toEqual(b)
+    const savedIdentity = await fs.stat(authorizedPath, { bigint: true })
+    const newer = await store.commitCheckpoint(request('newer unsaved work', {
+      operationId: 'operation-2', requestFingerprint: 'request-2', expectedSavedRevision: 2, expectedWorkingRevision: 2,
+    }))
+    expect(await store.promoteWorkingCopy(save)).toEqual(a)
+    expect(await store.commitCheckpoint(request())).toEqual(checkpoint)
+    expect(await fs.stat(authorizedPath, { bigint: true })).toEqual(savedIdentity)
+    expect(await store.getStatus()).toMatchObject({ savedRevision: 2, workingRevision: 3, dirty: true, head: { checkpointId: newer.checkpointId } })
+  })
+
+  it.each(['intent', 'rename', 'final-manifest', 'parent-fsync'] as const)('recovers %s failure without saving twice', async (stage) => {
+    const { store, config, save, authorizedPath } = await saveFixture()
+    const actual = await vi.importActual<typeof fs>('node:fs/promises')
+    let replaced = false
+    vi.mocked(fs.rename).mockImplementation(async (source, destination) => {
+      if (String(destination) === authorizedPath) {
+        if (stage === 'intent') throw new Error('interrupted after durable intent')
+        await actual.rename(source, destination)
+        replaced = true
+        if (stage === 'rename') throw new Error('interrupted after original rename')
+        return
+      }
+      if (replaced && stage === 'final-manifest' && String(destination).endsWith('/manifest.json')) throw new Error('interrupted before final manifest')
+      return actual.rename(source, destination)
+    })
+    if (stage === 'parent-fsync') {
+      vi.mocked(fs.open).mockImplementation(async (path, ...args) => {
+        const handle = await actual.open(path, ...args)
+        if (String(path) === join(authorizedPath, '..') && replaced) handle.sync = async () => { throw new Error('unknown directory durability') }
+        return handle
+      })
+    }
+    await expect(store.promoteWorkingCopy(save)).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    const interrupted = JSON.parse(await actual.readFile(await manifestPath(config.rootDirectory), 'utf8'))
+    expect(interrupted.saveIntent).toMatchObject({ schemaVersion: 1, receipt: { operationId: 'save-1' } })
+    const identityAfterFailure = await actual.stat(authorizedPath, { bigint: true })
+    vi.mocked(fs.rename).mockImplementation(actual.rename)
+    vi.mocked(fs.open).mockImplementation(actual.open)
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.getStatus()).toMatchObject({ savedRevision: 2, workingRevision: 2, dirty: false, head: null })
+    expect(await fs.readFile(authorizedPath, 'utf8')).toBe('manual and agent edits')
+    const savedIdentity = await fs.stat(authorizedPath, { bigint: true })
+    if (stage !== 'intent') expect(savedIdentity).toEqual(identityAfterFailure)
+    const receipt = await reopened.lookupTerminal('save-1', 'save-request-1')
+    expect(await reopened.promoteWorkingCopy(save)).toEqual(receipt)
+    expect(await fs.stat(authorizedPath, { bigint: true })).toEqual(savedIdentity)
+    expect(JSON.parse(await fs.readFile(await manifestPath(config.rootDirectory), 'utf8')).saveIntent).toBeUndefined()
+  })
+
+  it.each(['external-original', 'same-output-replacement', 'external-temp'] as const)('preserves intent and refuses %s during recovery', async (change) => {
+    const { store, config, save, authorizedPath, directory } = await saveFixture()
+    const actual = await vi.importActual<typeof fs>('node:fs/promises')
+    vi.mocked(fs.rename).mockImplementation(async (source, destination) => {
+      if (String(destination) === authorizedPath) throw new Error('interrupted')
+      return actual.rename(source, destination)
+    })
+    await expect(store.promoteWorkingCopy(save)).rejects.toBeDefined()
+    vi.mocked(fs.rename).mockImplementation(actual.rename)
+    const path = await manifestPath(config.rootDirectory)
+    const evidence = await fs.readFile(path)
+    if (change === 'external-temp') {
+      const intent = JSON.parse(evidence.toString()).saveIntent
+      await fs.writeFile(join(directory, intent.temporaryName), 'tampered')
+    } else {
+      const replacement = join(directory, 'external.bin')
+      await fs.writeFile(replacement, change === 'same-output-replacement' ? 'manual and agent edits' : 'external edit')
+      await actual.rename(replacement, authorizedPath)
+    }
+    const original = await fs.readFile(authorizedPath)
+    await expect(createWorkingCopyStore(config)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+    expect(await fs.readFile(path)).toEqual(evidence)
+    expect(await fs.readFile(authorizedPath)).toEqual(original)
+  })
+
+  it('rejects stale approvals, cross-kind collisions, and non-JSON results before changing the original', async () => {
+    const { store, save, authorizedPath } = await saveFixture()
+    for (const overrides of [{ documentEpoch: 'old' }, { expectedSavedRevision: 0 }, { expectedWorkingRevision: 1 }, { checkpointId: 'old' }]) {
+      await expect(store.promoteWorkingCopy({ ...save, ...overrides })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+    }
+    await expect(store.promoteWorkingCopy({ ...save, operationId: 'operation-1', requestFingerprint: 'exact-request-1' }))
+      .rejects.toMatchObject({ code: 'OPERATION_ID_COLLISION' })
+    await expect(store.promoteWorkingCopy({ ...save, result: { ...save.result, data: new Uint8Array([1]) } as unknown as PromoteWorkingCopyRequest['result'] }))
+      .rejects.toMatchObject({ code: 'WORKING_COPY_INVALID_CHECKPOINT' })
+    expect(await fs.readFile(authorizedPath, 'utf8')).toBe('saved original')
+    await store.promoteWorkingCopy(save)
+    await expect(store.promoteWorkingCopy({ ...save, requestFingerprint: 'other' })).rejects.toMatchObject({ code: 'OPERATION_ID_COLLISION' })
+  })
+
+  it('converges saved revision to the approved content after several checkpoints and subsequent saves', async () => {
+    const { store, config, request, save } = await saveFixture()
+    const second = await store.commitCheckpoint(request('second', {
+      operationId: 'apply-2', requestFingerprint: 'apply-2', expectedWorkingRevision: 2,
+    }))
+    const firstSave = await store.promoteWorkingCopy({ ...save, expectedWorkingRevision: 3, checkpointId: second.checkpointId })
+    expect(firstSave).toMatchObject({ fromSavedRevision: 1, savedRevision: 3, workingRevision: 3 })
+    const third = await store.commitCheckpoint(request('third', {
+      operationId: 'apply-3', requestFingerprint: 'apply-3', expectedWorkingRevision: 3, expectedSavedRevision: 3,
+    }))
+    await store.promoteWorkingCopy({ ...save, operationId: 'save-2', requestFingerprint: 'save-2',
+      expectedWorkingRevision: 4, expectedSavedRevision: 3, checkpointId: third.checkpointId })
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.getStatus()).toMatchObject({ savedRevision: 4, workingRevision: 4, dirty: false })
+    expect(await reopened.lookupTerminal('save-1', 'save-request-1')).toEqual(firstSave)
+    expect(await reopened.readWorkingBytes()).toEqual(encode('third'))
+  })
+
+  it('does not overwrite an external edit made while publishing the save intent', async () => {
+    const { store, config, save, authorizedPath } = await saveFixture()
+    const actual = await vi.importActual<typeof fs>('node:fs/promises')
+    vi.mocked(fs.rename).mockImplementation(async (source, destination) => {
+      await actual.rename(source, destination)
+      if (String(destination).endsWith('/manifest.json')) await actual.writeFile(authorizedPath, 'external edit during save')
+    })
+    await expect(store.promoteWorkingCopy(save)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+    expect(await fs.readFile(authorizedPath, 'utf8')).toBe('external edit during save')
+    expect(JSON.parse(await fs.readFile(await manifestPath(config.rootDirectory), 'utf8')).saveIntent).toBeDefined()
+  })
+
+  it('rejects a saved terminal rebound to an older checkpoint while preserving evidence', async () => {
+    const { store, config, save, request, checkpoint } = await saveFixture()
+    const second = await store.commitCheckpoint(request('second content', {
+      operationId: 'apply-2', requestFingerprint: 'apply-2', expectedWorkingRevision: 2,
+    }))
+    await store.promoteWorkingCopy({ ...save, checkpointId: second.checkpointId, expectedWorkingRevision: 3 })
+    const path = await manifestPath(config.rootDirectory)
+    const manifest = JSON.parse(await fs.readFile(path, 'utf8'))
+    Object.assign(manifest.operations['save-1'], {
+      checkpointId: checkpoint.checkpointId, blobHash: checkpoint.blobHash, byteLength: checkpoint.byteLength,
+    })
+    await fs.writeFile(path, JSON.stringify(manifest))
+    const evidence = await fs.readFile(path)
+    await expect(createWorkingCopyStore(config)).rejects.toMatchObject({ code: 'WORKING_COPY_RECOVERY_INVALID' })
+    expect(await fs.readFile(path)).toEqual(evidence)
+  })
+
+  it.each(['intent', 'terminal'] as const)('keeps an unknown %s manifest publication recoverable', async (stage) => {
+    const { store, config, save, authorizedPath } = await saveFixture()
+    const actual = await vi.importActual<typeof fs>('node:fs/promises')
+    const path = await fs.realpath(await manifestPath(config.rootDirectory))
+    const documentDirectory = join(path, '..')
+    let publications = 0
+    vi.mocked(fs.rename).mockImplementation(async (source, destination) => {
+      await actual.rename(source, destination)
+      if (String(destination) === path) publications++
+    })
+    vi.mocked(fs.open).mockImplementation(async (file, ...args) => {
+      const handle = await actual.open(file, ...args)
+      if (String(file) === documentDirectory && publications >= (stage === 'intent' ? 1 : 2)) {
+        handle.sync = async () => { throw new Error('directory sync unavailable') }
+      }
+      return handle
+    })
+    await expect(store.promoteWorkingCopy(save)).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    if (stage === 'intent') expect(await fs.readFile(authorizedPath, 'utf8')).toBe('saved original')
+    await expect(store.promoteWorkingCopy(save)).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    vi.mocked(fs.open).mockImplementation(actual.open)
+    vi.mocked(fs.rename).mockImplementation(actual.rename)
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.promoteWorkingCopy(save)).toMatchObject({ dirty: false, savedRevision: 2 })
+    expect(await fs.readFile(authorizedPath, 'utf8')).toBe('manual and agent edits')
+  })
+})
 
 describe('Host durable WorkingCopyStore', () => {
   it('atomically recovers working bytes and their terminal across a fresh Host instance', async () => {
