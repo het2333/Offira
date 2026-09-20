@@ -24,7 +24,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => fs.rm(path, { recursive: true, force: true })))
 })
 
-async function fixture(options: { maxByteLength?: number; maxResultByteLength?: number } = {}) {
+async function fixture(options: { maxByteLength?: number; maxResultByteLength?: number; maxManifestByteLength?: number } = {}) {
   const directory = await fs.mkdtemp(join(tmpdir(), 'nexusdesk-working-copy-'))
   directories.push(directory)
   const authorizedPath = join(directory, 'source.bin')
@@ -158,6 +158,8 @@ describe('Host durable WorkingCopyStore', () => {
     await expect(store.commitCheckpoint(request('second', {
       operationId: 'operation-2', requestFingerprint: 'exact-request-2', expectedWorkingRevision: 2,
     }))).rejects.toMatchObject({ code: 'WORKING_COPY_PERSIST_FAILED' })
+    const blobDirectory = join(await manifestPath(config.rootDirectory), '..', 'blobs')
+    expect(await fs.readdir(blobDirectory)).toEqual([hash(encode('first'))])
     const reopened = await createWorkingCopyStore(config)
     expect(await reopened.readWorkingBytes()).toEqual(encode('first'))
     expect(await reopened.lookupTerminal('operation-1', 'exact-request-1')).toEqual(first)
@@ -258,6 +260,13 @@ describe('Host durable WorkingCopyStore', () => {
       return handle
     })
     await expect(store.commitCheckpoint(request())).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    const unresolved = await Promise.allSettled([
+      store.lookupTerminal('operation-1', 'exact-request-1'), store.commitCheckpoint(request()),
+    ])
+    expect(unresolved).toMatchObject([
+      { status: 'rejected', reason: { code: 'WORKING_COPY_OUTCOME_UNKNOWN' } },
+      { status: 'rejected', reason: { code: 'WORKING_COPY_OUTCOME_UNKNOWN' } },
+    ])
     vi.mocked(fs.open).mockImplementation(actual.open)
     const reopened = await createWorkingCopyStore(config)
     const receipt = await reopened.lookupTerminal('operation-1', 'exact-request-1')
@@ -274,5 +283,39 @@ describe('Host durable WorkingCopyStore', () => {
     await expect(createWorkingCopyStore(config)).rejects.toMatchObject({ code: 'WORKING_COPY_RECOVERY_INVALID' })
     expect(await fs.readFile(join(path, '..', 'blobs', receipt.blobHash))).toEqual(Buffer.from('manual and agent edits'))
     await expect(fs.stat(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects ledger capacity before publishing any blobs for successive distinct payloads', async () => {
+    const { store, config, request } = await fixture({ maxManifestByteLength: 2048 })
+    const first = await store.commitCheckpoint(request('first'))
+    const path = await manifestPath(config.rootDirectory)
+    const blobDirectory = join(path, '..', 'blobs')
+    const before = await fs.readFile(path)
+    const actual = await vi.importActual<typeof fs>('node:fs/promises')
+    vi.mocked(fs.open).mockImplementation(async (path, ...args) => {
+      if (String(path).includes('/.blob-')) throw new Error('Blob allocation must not precede the capacity check')
+      return actual.open(path, ...args)
+    })
+    for (const suffix of ['second', 'third']) {
+      await expect(store.commitCheckpoint(request(suffix, {
+        operationId: `operation-${suffix}`, requestFingerprint: `exact-request-${suffix}`, expectedWorkingRevision: 2,
+        result: { ok: true, summary: 'x'.repeat(1800), warnings: [] },
+      }))).rejects.toMatchObject({ code: 'WORKING_COPY_INVALID_CHECKPOINT' })
+      expect(await fs.readdir(blobDirectory)).toEqual([first.blobHash])
+      expect(await fs.readFile(path)).toEqual(before)
+    }
+    expect(await store.readWorkingBytes()).toEqual(encode('first'))
+  })
+
+  it('preserves an existing shared blob when a new manifest fails to publish', async () => {
+    const { store, config, request } = await fixture()
+    const first = await store.commitCheckpoint(request('shared bytes'))
+    vi.mocked(fs.rename).mockRejectedValue(Object.assign(new Error('disk full'), { code: 'ENOSPC' }))
+    await expect(store.commitCheckpoint(request('shared bytes', {
+      operationId: 'operation-2', requestFingerprint: 'exact-request-2', expectedWorkingRevision: 2,
+    }))).rejects.toMatchObject({ code: 'WORKING_COPY_PERSIST_FAILED' })
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.readWorkingBytes()).toEqual(encode('shared bytes'))
+    expect(await reopened.lookupTerminal('operation-1', 'exact-request-1')).toEqual(first)
   })
 })

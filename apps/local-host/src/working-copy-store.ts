@@ -60,6 +60,8 @@ export interface WorkingCopyStoreOptions {
   initialSavedRevision?: number
   maxByteLength?: number
   maxResultByteLength?: number
+  /** Host storage policy may lower, but never exceed, the 64 MiB manifest ceiling. */
+  maxManifestByteLength?: number
 }
 
 export interface CheckpointRequest {
@@ -197,10 +199,21 @@ async function makeDirectory(path: string): Promise<void> {
   }
 }
 
-/** The rename is the sole commit point; a later sync error has an unknown durable outcome. */
-async function publishManifest(path: string, manifest: Manifest): Promise<void> {
+function serializeManifest(manifest: Manifest, maxByteLength: number): string {
   const json = JSON.stringify(manifest)
-  if (Buffer.byteLength(json) > MAX_MANIFEST_BYTES) invalid('The durable operation ledger is full.')
+  if (Buffer.byteLength(json) > maxByteLength) invalid('The durable operation ledger is full.')
+  return json
+}
+
+async function confirmReceiptDurability(directory: string): Promise<void> {
+  try { await syncDirectory(directory) } catch (cause) {
+    throw new WorkingCopyStoreError('WORKING_COPY_OUTCOME_UNKNOWN',
+      'The manifest receipt exists but directory durability is still unconfirmed; do not repeat the mutation.', { cause })
+  }
+}
+
+/** The rename is the sole commit point; a later sync error has an unknown durable outcome. */
+async function publishManifest(path: string, json: string): Promise<void> {
   const temporaryPath = join(dirname(path), `.manifest-${randomUUID()}.tmp`)
   let published = false
   try {
@@ -219,10 +232,14 @@ async function publishManifest(path: string, manifest: Manifest): Promise<void> 
 export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): Promise<WorkingCopyStore> {
   const maxByteLength = options.maxByteLength ?? 128 * 1024 * 1024
   const maxResultByteLength = options.maxResultByteLength ?? 256 * 1024
+  const maxManifestByteLength = options.maxManifestByteLength ?? MAX_MANIFEST_BYTES
   const initialSavedRevision = options.initialSavedRevision ?? 1
   if (!isText(options.documentId) || !['docs', 'sheets', 'pdf'].includes(options.editorType) ||
       !isRevision(initialSavedRevision) || !isRevision(maxByteLength) || maxByteLength === 0 ||
-      !isRevision(maxResultByteLength) || maxResultByteLength === 0) invalid('Invalid Host working-copy configuration.')
+      !isRevision(maxResultByteLength) || maxResultByteLength === 0 ||
+      !isRevision(maxManifestByteLength) || maxManifestByteLength === 0 || maxManifestByteLength > MAX_MANIFEST_BYTES) {
+    invalid('Invalid Host working-copy configuration.')
+  }
 
   // Preserve the authorized pathname so replacing the file still locates its original recovery record.
   const authorizedPath = resolve(options.authorizedPath)
@@ -251,7 +268,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
   const load = async (): Promise<Manifest> => {
     let raw: string
     try {
-      if ((await stat(manifestPath)).size > MAX_MANIFEST_BYTES) throw new Error('Oversized manifest')
+      if ((await stat(manifestPath)).size > maxManifestByteLength) throw new Error('Oversized manifest')
       raw = await readFile(manifestPath, 'utf8')
     } catch (cause) {
       if (codeOf(cause) === 'ENOENT') throw cause
@@ -311,12 +328,12 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         throw new WorkingCopyStoreError('WORKING_COPY_RECOVERY_INVALID', 'The manifest is missing but recovery bytes remain; evidence was preserved.')
       }
       const baseline = await readBaseline(authorizedPath)
-      await publishManifest(manifestPath, {
+      await publishManifest(manifestPath, serializeManifest({
         schemaVersion: 1, authorizedPath, documentId: options.documentId, editorType: options.editorType,
         documentEpoch: randomUUID(), baseline: baseline.identity,
         savedRevision: initialSavedRevision, workingRevision: initialSavedRevision,
         dirty: false, head: null, operations: {},
-      })
+      }, maxManifestByteLength))
     }
   })
 
@@ -345,7 +362,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         if (receipt === undefined) return undefined
         if (receipt.requestFingerprint !== requestFingerprint) throw new WorkingCopyStoreError('OPERATION_ID_COLLISION', 'Operation ID is bound to a different request.')
         await readBlob(receipt)
-        await syncDirectory(directory)
+        await confirmReceiptDurability(directory)
         return clone(receipt)
       })
     },
@@ -370,7 +387,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
             throw new WorkingCopyStoreError('OPERATION_ID_COLLISION', 'Operation ID is bound to a different request or plan.')
           }
           await readBlob(existing)
-          await syncDirectory(directory)
+          await confirmReceiptDurability(directory)
           return clone(existing)
         }
         if (input.expectedSavedRevision !== manifest.savedRevision || input.expectedWorkingRevision !== manifest.workingRevision) {
@@ -385,24 +402,47 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
           savedRevision: manifest.savedRevision, dirty: true, checkpointId: randomUUID(),
           blobHash: input.payloadHash, byteLength: input.bytes.byteLength, result: input.result,
         }
+        // Capacity rejection must precede all blob writes, including the temporary file.
+        const candidateJson = serializeManifest({
+          ...manifest, workingRevision: receipt.workingRevision, dirty: true,
+          head: { checkpointId: receipt.checkpointId, blobHash: receipt.blobHash, byteLength: receipt.byteLength },
+          operations: { ...manifest.operations, [input.operationId]: receipt },
+        }, maxManifestByteLength)
         const temporaryPath = join(blobs, `.blob-${randomUUID()}.tmp`)
+        const blobPath = join(blobs, receipt.blobHash)
+        let createdBlob = false
+        let manifestPublished = false
         try {
           const handle = await open(temporaryPath, 'wx', 0o600)
           try { await handle.writeFile(input.bytes); await handle.sync() } finally { await handle.close() }
-          try { await link(temporaryPath, join(blobs, receipt.blobHash)) } catch (error) {
+          try {
+            await link(temporaryPath, blobPath)
+            createdBlob = true
+          } catch (error) {
             if (codeOf(error) !== 'EEXIST') throw error
             await readBlob(receipt)
           }
           await syncDirectory(blobs)
           // Blob creation may take time; recheck the authorized file before publishing the new head.
           await currentBaseline(manifest)
-          await publishManifest(manifestPath, {
-            ...manifest, workingRevision: receipt.workingRevision, dirty: true,
-            head: { checkpointId: receipt.checkpointId, blobHash: receipt.blobHash, byteLength: receipt.byteLength },
-            operations: { ...manifest.operations, [input.operationId]: receipt },
-          })
+          await publishManifest(manifestPath, candidateJson)
+          manifestPublished = true
           return clone(receipt)
         } catch (cause) {
+          // Reclaim only this attempt's new, definitely uncommitted blob. Existing/shared blobs and
+          // unknown publication outcomes remain intact. Process crashes can leave one blob/temp per
+          // interrupted attempt; those require a later manifest/lease-aware GC, never blind deletion.
+          if (createdBlob && !manifestPublished && codeOf(cause) !== 'WORKING_COPY_OUTCOME_UNKNOWN' &&
+              !Object.values(manifest.operations).some((entry) => entry.blobHash === receipt.blobHash)) {
+            try {
+              await unlink(blobPath)
+              await syncDirectory(blobs)
+            } catch (cleanupCause) {
+              throw new WorkingCopyStoreError(cause instanceof WorkingCopyStoreError ? cause.code : 'WORKING_COPY_PERSIST_FAILED',
+                'Checkpoint failed and its unreferenced blob could not be fully reclaimed; recovery evidence was preserved.',
+                { cause: new AggregateError([cause, cleanupCause]) })
+            }
+          }
           if (cause instanceof WorkingCopyStoreError) throw cause
           throw new WorkingCopyStoreError('WORKING_COPY_PERSIST_FAILED', 'Could not persist checkpoint bytes.', { cause })
         } finally { await unlink(temporaryPath).catch(() => undefined) }
