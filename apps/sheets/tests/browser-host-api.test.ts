@@ -22,6 +22,8 @@ import {
   type BrowserHostBootstrap,
 } from '../src/renderer/browser-host-api'
 import type { WorkbookFile } from '../src/shared/desktop-api'
+import { createEditJournal } from '../src/renderer/edit-journal'
+import type { SaveContext } from '../src/renderer/save-actions'
 import { createAgentLoopRuntime } from '../src/renderer/ai/loop-runtime'
 import { createRendererServerOptions } from '../vite.renderer.config'
 
@@ -432,6 +434,120 @@ describe('browser Desktop API', () => {
 })
 
 describe('browser host installation', () => {
+  it('registers only after matching native workbook hydration and never writes volatile revisions', () => {
+    const bootstrap = browserBootstrap()
+    bootstrap.workingCopy = {
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'cp',
+      workingRevision: 3,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    }
+    const client = new FakeClient()
+    const handle = installBrowserHostApi(bootstrap, {
+      client,
+      target: {},
+      transport: { request: vi.fn() },
+    })
+    handle.attachEditor(adapterWith())
+    expect(client.sent).toHaveLength(0)
+    handle.markHydrated('wrong-session')
+    expect(client.sent).toHaveLength(0)
+    handle.markHydrated(bootstrap.workbook.sessionId)
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'editor:register',
+      revision: 3,
+      sourceContentId: 'a'.repeat(64),
+      restoredCheckpointId: 'cp',
+    })
+    handle.updateRevision(99 as Revision)
+    expect(handle.document.revision).toBe(3)
+    expect(client.sent.some((frame) => frame.type === 'editor:revision')).toBe(false)
+    handle.dispose()
+  })
+
+  it('saves an empty restored journal through binary manual promotion and reopens the saved source', async () => {
+    const bootstrap = browserBootstrap()
+    bootstrap.workbook.restoredFromRecovery = true
+    bootstrap.workingCopy = {
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'cp',
+      workingRevision: 3,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    }
+    const next = {
+      ...bootstrap,
+      workbook: { ...bootstrap.workbook, sessionId: 'reopened', restoredFromRecovery: false },
+      workingCopy: { ...bootstrap.workingCopy, workingRevision: 4, savedRevision: 2, dirty: false },
+    }
+    let operationId = ''
+    const calls: { url: string; body: unknown }[] = []
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input)
+      calls.push({ url, body: init?.body })
+      if (url.endsWith('/bootstrap')) return Response.json(next)
+      if (url.endsWith('/manual-save-uploads')) {
+        operationId = JSON.parse(String(init?.body)).operationId
+        return Response.json({
+          uploadId: 'upload',
+          operationId,
+          requestFingerprint: 'f'.repeat(64),
+        })
+      }
+      if (url.includes('/parts/'))
+        return Response.json({
+          partId: url.split('/').at(-1),
+          sha256: 'a'.repeat(64),
+          byteLength: (init?.body as Blob).size,
+        })
+      return Response.json({
+        persistence: {
+          documentEpoch: 'epoch',
+          operationId,
+          requestFingerprint: 'f'.repeat(64),
+          checkpointId: 'cp2',
+          blobHash: 'b'.repeat(64),
+          workingRevision: 4,
+          savedRevision: 2,
+          dirty: false,
+        },
+      })
+    }
+    const handle = installBrowserHostApi(bootstrap, {
+      client: new FakeClient(),
+      target: {},
+      transport: { request: vi.fn() },
+      fetch: fetcher,
+    })
+    let opened = ''
+    const ctx = {
+      univerRef: { current: null },
+      lazyWorkbookRef: { current: { file: bootstrap.workbook, editJournal: createEditJournal() } },
+      openLazyWorkbook: (file: WorkbookFile) => {
+        opened = file.sessionId
+      },
+      setMessage: () => {},
+      stashViewRestore: () => {},
+    } as unknown as SaveContext
+    handle.configureSaveContext(() => ctx)
+    await expect(handle.saveWorkingCopy(ctx)).resolves.toMatchObject({ ok: true })
+    expect(opened).toBe('reopened')
+    expect(calls.some((entry) => entry.url.endsWith('/save-workbook'))).toBe(false)
+    expect(
+      calls
+        .filter((entry) => entry.url.includes('/parts/'))
+        .every((entry) => entry.body instanceof Blob),
+    ).toBe(true)
+    handle.dispose()
+  })
+
   it('installs both stable browser APIs and owns their complete lifecycle', () => {
     const client = new FakeClient()
     const target: Record<string, unknown> = {}
@@ -454,6 +570,65 @@ describe('browser host installation', () => {
     handle.dispose()
     expect(target).toEqual({})
     expect(client.closeCount).toBe(1)
+  })
+
+  it('automatically rehydrates a rejected source with bounded retry and keeps registration gated', async () => {
+    const bootstrap = browserBootstrap()
+    bootstrap.workingCopy = {
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'cp',
+      workingRevision: 3,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    }
+    const client = new FakeClient()
+    let calls = 0
+    let reopened = ''
+    const handle = installBrowserHostApi(bootstrap, {
+      client,
+      target: {},
+      transport: { request: vi.fn() },
+      fetch: async () => {
+        calls++
+        if (calls === 1)
+          return Response.json(
+            { code: 'WORKING_COPY_STALE_SOURCE', message: 'head moved' },
+            { status: 409 },
+          )
+        return Response.json({
+          ...bootstrap,
+          workbook: { ...bootstrap.workbook, sessionId: 'fresh-session' },
+        })
+      },
+    })
+    handle.configureSaveContext(
+      () =>
+        ({
+          univerRef: { current: null },
+          openLazyWorkbook: (file: WorkbookFile) => {
+            reopened = file.sessionId
+          },
+          setMessage: () => {},
+        }) as unknown as SaveContext,
+    )
+    handle.attachEditor(adapterWith())
+    client.emit({
+      type: 'recovery:required',
+      protocolVersion: 1,
+      id: 'recover' as RequestId,
+      documentId,
+      code: 'WORKING_COPY_STALE_SOURCE',
+      message: 'head moved',
+    })
+    await vi.waitFor(() => expect(reopened).toBe('fresh-session'))
+    expect(calls).toBe(2)
+    expect(client.sent.filter((frame) => frame.type === 'editor:register')).toHaveLength(0)
+    handle.markHydrated('fresh-session')
+    expect(client.sent.at(-1)).toMatchObject({ type: 'editor:register' })
+    handle.dispose()
   })
 
   it('loads an authenticated editor bootstrap by stable document id', async () => {

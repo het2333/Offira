@@ -2,6 +2,9 @@ import {
   BoundedEditorCache,
   createEditorResultJournal,
   editorRequestFingerprint,
+  type BrowserWorkingCopyPayload,
+  type BrowserWorkingCopyPersistence,
+  type createWorkingCopyMutationLane,
 } from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
@@ -14,6 +17,8 @@ import {
   type EditorRequestFrame,
   type JsonValue,
   type Revision,
+  type PersistenceReference,
+  type WorkingCopyBootstrap,
 } from '@nexusdesk/protocol'
 import {
   createAgentApi,
@@ -29,6 +34,7 @@ export interface BrowserAgentBridge {
   client(): { clientId: ClientId | undefined; attached: boolean }
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
+  setHydrated(state: WorkingCopyBootstrap | null): void
   dispose(): void
 }
 
@@ -37,6 +43,17 @@ export interface BrowserAgentBridgeOptions {
   documentId: DocumentId
   revision: Revision
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+  workingCopy?: {
+    state(): WorkingCopyBootstrap | null
+    persistence: BrowserWorkingCopyPersistence
+    capture(): Promise<BrowserWorkingCopyPayload>
+    preflight?(operations: readonly JsonValue[]): void
+    lane: ReturnType<typeof createWorkingCopyMutationLane>
+    lock?(): () => void
+    committed(receipt: PersistenceReference): void
+    afterSave?(): Promise<void>
+    failed?(): void
+  }
 }
 
 function failure(code: string, message: string): AgentToolResult {
@@ -78,12 +95,17 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     { planHash: string; snapshotHash: string; snapshot: string; adapter: EditorAdapter }
   >()
   const proposals = new BoundedEditorCache<string, EditPlan>()
+  const proposalSnapshots = new BoundedEditorCache<string, string>()
   const storage = options.storage ?? sessionStorageOrUndefined()
-  const journal = createEditorResultJournal(storage, options.documentId)
+  const journal = createEditorResultJournal(storage, options.documentId, {
+    requirePersistence: !!options.workingCopy,
+  })
+  const receipts = new BoundedEditorCache<string, PersistenceReference>()
   const registration: EditorRegistrationHandle = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'sheets',
     revision: options.revision,
+    workingCopy: !!options.workingCopy,
   })
 
   const sendResult = (frame: EditorRequestFrame, result: AgentToolResult): void => {
@@ -93,6 +115,9 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
       id: frame.id,
       target: frame.target,
       result,
+      ...(receipts.get(frame.target.operationId)
+        ? { persistence: receipts.get(frame.target.operationId)! }
+        : {}),
     })
   }
 
@@ -175,14 +200,25 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
           'the editor changed after this save was proposed; propose it again',
         )
       }
+      // The shared coordinator performs preparation and promotion for this approved Save.
+      if (options.workingCopy)
+        return { ok: true, summary: 'Saved the current workbook.', warnings: [] }
       return saveAdapter.save(frame.target.documentId)
     }
     if (frame.command === 'propose_ops') {
+      const saveAdapter = adapter as EditorAdapter & { saveSnapshot?(): string }
+      const snapshot = saveAdapter.saveSnapshot?.()
       const plan = await adapter.propose({
         ...frame.target,
         command: 'apply_ops',
         arguments: frame.arguments,
       })
+      options.workingCopy?.preflight?.(plan.operations)
+      if (snapshot !== undefined) {
+        if (saveAdapter.saveSnapshot?.() !== snapshot)
+          return failure('STALE_CONTENT', 'The workbook changed while preparing this plan.')
+        proposalSnapshots.set(frame.target.operationId, snapshot)
+      }
       proposals.set(frame.target.operationId, plan)
       return {
         ok: true,
@@ -219,10 +255,21 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
       }
       approvals.set(frame.approval.id, plan.planHash)
       try {
+        const snapshot = proposalSnapshots.get(frame.target.operationId)
+        if (
+          snapshot !== undefined &&
+          (adapter as EditorAdapter & { saveSnapshot?(): string }).saveSnapshot?.() !== snapshot
+        ) {
+          return failure(
+            'STALE_CONTENT',
+            'The workbook changed after this plan was prepared; propose it again.',
+          )
+        }
         return await adapter.apply({ ...plan, approvalId: frame.approval.id } as ApprovedEditPlan)
       } finally {
         approvals.delete(frame.approval.id)
         proposals.delete(frame.target.operationId)
+        proposalSnapshots.delete(frame.target.operationId)
       }
     }
     return failure(
@@ -232,6 +279,7 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
   }
 
   const replay = (frame: EditorRequestFrame, fingerprint: string): AgentToolResult | undefined => {
+    if (options.workingCopy) return undefined // Host ledger is authoritative across pages and eviction.
     if (frame.command.startsWith('propose_')) return undefined
     const record = journal.read(frame.target.operationId)
     if (!record) return undefined
@@ -245,17 +293,27 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     fingerprint: string,
   ): void => {
     if (!frame.command.startsWith('propose_'))
-      journal.write(frame.target.operationId, { fingerprint, result })
+      journal.write(frame.target.operationId, {
+        fingerprint,
+        result,
+        ...(receipts.get(frame.target.operationId)
+          ? { persistence: receipts.get(frame.target.operationId)! }
+          : {}),
+      })
   }
   const releaseProposal = (operationId: string): void => {
     saveProposals.delete(operationId)
     proposals.delete(operationId)
+    proposalSnapshots.delete(operationId)
 
     releasedProposals.set(operationId, true)
   }
   const handleRequest = async (frame: EditorRequestFrame): Promise<void> => {
     if (disposed) return
-    const fingerprint = await editorRequestFingerprint(frame)
+    const fingerprint = await editorRequestFingerprint(
+      frame,
+      options.workingCopy?.state()?.documentEpoch,
+    )
     if (disposed) return
     const terminal = !frame.command.startsWith('propose_')
     const running = terminal ? terminalResults.get(frame.target.operationId) : undefined
@@ -280,10 +338,62 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
       return
     }
     // Schedule execution after the shared promise is registered, including synchronous failures.
-    const resultPromise = Promise.resolve().then(async () => {
+    const work = async () => {
       let result: AgentToolResult
       try {
+        const durable = options.workingCopy
+        const mutation = frame.command === 'apply_ops' || frame.command === 'save_sheet'
+        if (durable && mutation) {
+          const previous = await durable.persistence.lookup(frame.target.operationId, fingerprint)
+          if (previous.state === 'committed') {
+            receipts.set(frame.target.operationId, previous.persistence)
+            return previous.result
+          }
+          if (previous.state === 'pending')
+            return failure(
+              'WORKING_COPY_OUTCOME_UNKNOWN',
+              'The previous operation is still pending; restore and query it before continuing.',
+            )
+        }
+        const approvedSnapshot =
+          frame.command === 'save_sheet'
+            ? saveProposals.get(frame.target.operationId)?.snapshot
+            : undefined
         result = await execute(frame)
+        if (durable && mutation && result.ok) {
+          const release = durable.lock?.() ?? (() => {})
+          try {
+            if (
+              approvedSnapshot !== undefined &&
+              (adapter as EditorAdapter & { saveSnapshot?(): string }).saveSnapshot?.() !==
+                approvedSnapshot
+            ) {
+              throw new Error('STALE_CONTENT: the workbook changed after Save approval.')
+            }
+            const payload = await durable.capture()
+            const receipt = await durable.persistence.checkpoint(frame, result, payload)
+            receipts.set(frame.target.operationId, receipt)
+            durable.committed(receipt)
+          } finally {
+            release()
+          }
+          if (frame.command === 'save_sheet') {
+            try {
+              await durable.afterSave?.()
+            } catch {
+              result = {
+                ...result,
+                warnings: [
+                  ...result.warnings,
+                  {
+                    code: 'SAVED_RELOAD_FAILED',
+                    message: 'The workbook was saved, but reopening failed. Reload to continue.',
+                  },
+                ],
+              }
+            }
+          }
+        }
         if (
           frame.command.startsWith('propose_') &&
           (disposed || releasedProposals.has(frame.target.operationId))
@@ -294,8 +404,11 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
           result = failure('APPROVAL_INVALID', 'the proposal was released')
         }
       } catch (error) {
+        options.workingCopy?.failed?.()
         result = failure(
-          'EDITOR_REQUEST_FAILED',
+          options.workingCopy && (frame.command === 'apply_ops' || frame.command === 'save_sheet')
+            ? 'WORKING_COPY_OUTCOME_UNKNOWN'
+            : 'EDITOR_REQUEST_FAILED',
           error instanceof Error ? error.message : String(error),
         )
       }
@@ -305,7 +418,10 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
         /* The in-memory result remains authoritative if storage is unavailable. */
       }
       return result
-    })
+    }
+    const resultPromise = options.workingCopy
+      ? options.workingCopy.lane.run(work)
+      : Promise.resolve().then(work)
     if (terminal)
       terminalResults.set(frame.target.operationId, {
         fingerprint,
@@ -352,7 +468,8 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     client() {
       return {
         clientId: options.client.clientId,
-        attached: options.client.state === 'ready',
+        attached:
+          options.client.state === 'ready' && (!options.workingCopy || registration.attached),
       }
     },
     consumeApproval(approvalId, planHash) {
@@ -363,13 +480,18 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     updateRevision(revision) {
       registration.updateRevision(revision)
     },
+    setHydrated(state) {
+      registration.setHydrated(state)
+    },
     dispose() {
       disposed = true
       releasedProposals.clear()
       terminalResults.clear()
+      receipts.clear()
       journal.clearMemory()
       approvals.clear()
       proposals.clear()
+      proposalSnapshots.clear()
       saveProposals.clear()
       adapter = undefined
       unsubscribe()

@@ -5,7 +5,7 @@
  * Extracted from App.tsx; the App component passes a SaveContext built fresh
  * per call so refs and state never go stale.
  */
-import type { WorkbookFile, WorkbookFilterState } from '../shared/desktop-api'
+import type { WorkbookFile, WorkbookSaveRequest } from '../shared/desktop-api'
 import {
   isSheetRemoved,
   toSaveChartEdits,
@@ -64,6 +64,127 @@ export interface SaveContext {
       viewColumn: number
     } | null,
   ) => void
+}
+
+/** Capture complete in-memory save state without staging, UI, I/O or session mutation. */
+export function collectWorkbookSaveRequest(ctx: SaveContext): WorkbookSaveRequest {
+  const state = ctx.lazyWorkbookRef.current
+  if (!state) throw new Error('The workbook is not ready to capture.')
+  const edits = toSaveEdits(state.editJournal)
+  const bulkConstantFills = toSaveBulkConstantFills(state.editJournal)
+  const structuralOps = toSaveStructuralOps(state.editJournal)
+  const chartEdits = toSaveChartEdits(state.editJournal)
+  const visualEdits = toSaveVisualEdits(state.editJournal)
+  const visualAdditions = toSaveVisualAdds(state.editJournal)
+  const tableAdditions = toSaveTableAdds(state.editJournal)
+  const pivotAdditions = toSavePivotAdds(state.editJournal)
+  const sparklineAdditions = toSaveSparklineAdds(state.editJournal)
+  const sheetOps = toSaveSheetOps(state.editJournal)
+  const hyperlinkEdits = toSaveHyperlinkEdits(state.editJournal)
+  const filterStates = collectFilterStates(ctx.univerRef.current, state)
+  const cfStates = collectCfStates(ctx.univerRef.current, state)
+  const dvStates = collectDvStates(ctx.univerRef.current, state)
+  const sheetProtections = [...state.editJournal.sheetProtection]
+    .filter(([sheetId]) => !isSheetRemoved(state.editJournal, sheetId))
+    .map(([sheetId, isProtected]) => ({ sheetId, protected: isProtected }))
+  const pageSetupStates = toSavePageSetupStates(state.editJournal)
+  const noteStates = collectNoteStates(ctx.univerRef.current, state)
+  const pivotCacheRefreshPaths = [...state.editJournal.pivotCacheRefresh]
+  // Output-area expansion after layout growth (location ref write-back); the
+  // count folds into cacheRefresh.
+  const pivotRefreshUpdates = [...state.editJournal.pivotRefreshUpdates].map(
+    ([cachePath, update]) => ({
+      cachePath,
+      sheetId: update.sheetId,
+      newOutputRef: update.newOutputRef,
+      ...(update.relayout === undefined ? {} : { relayout: update.relayout }),
+    }),
+  )
+  const definedNamesState = collectDefinedNamesState(ctx.univerRef.current, state)
+  const workbookProtectionState =
+    state.editJournal.workbookProtection.desired === null
+      ? null
+      : { lockStructure: state.editJournal.workbookProtection.desired }
+  const protectedRangeStates = [...state.editJournal.protectedRangesDirty]
+    .filter((sheetId) => !isSheetRemoved(state.editJournal, sheetId))
+    .map((sheetId) => ({
+      sheetId,
+      ranges: (state.sheetProtectedRanges.get(sheetId) ?? []).map(({ name, sqref }) => ({
+        name,
+        sqref,
+      })),
+    }))
+  const themeState =
+    state.editJournal.theme.colors === undefined && state.editJournal.theme.fonts === undefined
+      ? null
+      : {
+          ...(state.editJournal.theme.colors === undefined
+            ? {}
+            : { colors: state.editJournal.theme.colors }),
+          ...(state.editJournal.theme.fonts === undefined
+            ? {}
+            : { fonts: state.editJournal.theme.fonts }),
+        }
+  // Recalculated formula results: the engine's values are on screen but
+  // deliberately kept out of the journal (they must not become literals). Send them
+  // separately so the save refreshes each formula cell's cached <v>, keeping its <f>.
+  // A journaled formula is excluded: the overlay may still hold the previous
+  // formula's result when the user saves immediately after entering a replacement.
+  const overlayValues = [...(state.recalc?.overlay ?? [])].flatMap(([sheetId, cells]) =>
+    isSheetRemoved(state.editJournal, sheetId)
+      ? []
+      : [...cells].flatMap(([key, cell]) => {
+          // #ERROR! is IronCalc's own failure, never a value Excel would cache.
+          if (cell.v === undefined || cell.v === '#ERROR!') return []
+          if (state.editJournal.cells.get(sheetId)?.get(key)?.formula !== undefined) return []
+          const [row, column] = key.split(':').map(Number)
+          if (row === undefined || column === undefined) return []
+          const value = cell.isError && typeof cell.v === 'string' ? { error: cell.v } : cell.v
+          return [{ sheetId, row, column, value }]
+        }),
+  )
+  // Journaled formulas an MCP batch saw settle (see formula-values.ts) were left
+  // out above because the overlay could be stale; their values are read live here.
+  const journaledValues = ctx.readCells ? verifiedFormulaValues(ctx.readCells) : []
+  const formulaValues = [...overlayValues, ...journaledValues]
+  const sheetOrder =
+    sheetOps.length === 0
+      ? []
+      : (ctx.univerRef.current?.univerAPI
+          .getActiveWorkbook()
+          ?.getSheets()
+          .map((sheet) => sheet.getSheetId()) ?? [])
+  if (sheetOps.length > 0 && sheetOrder.length === 0) throw new Error(t('appSheetOrderReadFailed'))
+  return {
+    sessionId: state.file.sessionId,
+    mode: 'save',
+    restoreWriteBack: true,
+    sheetOrder,
+    edits,
+    bulkConstantFills,
+    structuralOps,
+    chartEdits,
+    visualEdits,
+    visualAdditions,
+    tableAdditions,
+    pivotAdditions,
+    sparklineAdditions,
+    sheetOps,
+    hyperlinkEdits,
+    filterStates,
+    cfStates,
+    dvStates,
+    sheetProtections,
+    pageSetupStates,
+    noteStates,
+    pivotCacheRefreshPaths,
+    pivotRefreshUpdates,
+    definedNamesState,
+    workbookProtectionState,
+    protectedRangeStates,
+    themeState,
+    formulaValues,
+  }
 }
 
 /// CSV files whose "keep this format?" question was already answered with
@@ -188,91 +309,40 @@ async function saveOnce(
     if (mode !== 'recovery') ctx.setMessage(t('appDemoNoSave'))
     return { ok: false }
   }
-  const edits = toSaveEdits(state.editJournal)
-  const bulkConstantFills = toSaveBulkConstantFills(state.editJournal)
-  const structuralOps = toSaveStructuralOps(state.editJournal)
-  const chartEdits = toSaveChartEdits(state.editJournal)
-  const visualEdits = toSaveVisualEdits(state.editJournal)
-  const visualAdditions = toSaveVisualAdds(state.editJournal)
-  const tableAdditions = toSaveTableAdds(state.editJournal)
-  const pivotAdditions = toSavePivotAdds(state.editJournal)
-  const sparklineAdditions = toSaveSparklineAdds(state.editJournal)
-  const sheetOps = toSaveSheetOps(state.editJournal)
-  const hyperlinkEdits = toSaveHyperlinkEdits(state.editJournal)
-  let filterStates: WorkbookFilterState[]
+  let captured: WorkbookSaveRequest
   try {
-    filterStates = collectFilterStates(ctx.univerRef.current, state)
-  } catch (error: unknown) {
-    const failed = error instanceof Error ? error.message : t('appFilterSnapshotFailed')
-    ctx.setMessage(failed)
-    if (mode !== 'recovery' && !quiet) showToast(failed, 'error')
+    captured = collectWorkbookSaveRequest(ctx)
+  } catch (error) {
+    if (mode !== 'recovery')
+      ctx.setMessage(error instanceof Error ? error.message : t('appSaveFailed'))
     return { ok: false }
   }
-  const cfStates = collectCfStates(ctx.univerRef.current, state)
-  const dvStates = collectDvStates(ctx.univerRef.current, state)
-  const sheetProtections = [...state.editJournal.sheetProtection]
-    .filter(([sheetId]) => !isSheetRemoved(state.editJournal, sheetId))
-    .map(([sheetId, isProtected]) => ({ sheetId, protected: isProtected }))
-  const pageSetupStates = toSavePageSetupStates(state.editJournal)
-  const noteStates = collectNoteStates(ctx.univerRef.current, state)
-  const pivotCacheRefreshPaths = [...state.editJournal.pivotCacheRefresh]
-  // Output-area expansion after layout growth (location ref write-back); the
-  // count folds into cacheRefresh.
-  const pivotRefreshUpdates = [...state.editJournal.pivotRefreshUpdates].map(
-    ([cachePath, update]) => ({
-      cachePath,
-      sheetId: update.sheetId,
-      newOutputRef: update.newOutputRef,
-      ...(update.relayout === undefined ? {} : { relayout: update.relayout }),
-    }),
-  )
-  const definedNamesState = collectDefinedNamesState(ctx.univerRef.current, state)
-  const workbookProtectionState =
-    state.editJournal.workbookProtection.desired === null
-      ? null
-      : { lockStructure: state.editJournal.workbookProtection.desired }
-  const protectedRangeStates = [...state.editJournal.protectedRangesDirty]
-    .filter((sheetId) => !isSheetRemoved(state.editJournal, sheetId))
-    .map((sheetId) => ({
-      sheetId,
-      ranges: (state.sheetProtectedRanges.get(sheetId) ?? []).map(({ name, sqref }) => ({
-        name,
-        sqref,
-      })),
-    }))
-  const themeState =
-    state.editJournal.theme.colors === undefined && state.editJournal.theme.fonts === undefined
-      ? null
-      : {
-          ...(state.editJournal.theme.colors === undefined
-            ? {}
-            : { colors: state.editJournal.theme.colors }),
-          ...(state.editJournal.theme.fonts === undefined
-            ? {}
-            : { fonts: state.editJournal.theme.fonts }),
-        }
-  // Recalculated formula results: the engine's values are on screen but
-  // deliberately kept out of the journal (they must not become literals). Send them
-  // separately so the save refreshes each formula cell's cached <v>, keeping its <f>.
-  // A journaled formula is excluded: the overlay may still hold the previous
-  // formula's result when the user saves immediately after entering a replacement.
-  const overlayValues = [...(state.recalc?.overlay ?? [])].flatMap(([sheetId, cells]) =>
-    isSheetRemoved(state.editJournal, sheetId)
-      ? []
-      : [...cells].flatMap(([key, cell]) => {
-          // #ERROR! is IronCalc's own failure, never a value Excel would cache.
-          if (cell.v === undefined || cell.v === '#ERROR!') return []
-          if (state.editJournal.cells.get(sheetId)?.get(key)?.formula !== undefined) return []
-          const [row, column] = key.split(':').map(Number)
-          if (row === undefined || column === undefined) return []
-          const value = cell.isError && typeof cell.v === 'string' ? { error: cell.v } : cell.v
-          return [{ sheetId, row, column, value }]
-        }),
-  )
-  // Journaled formulas an MCP batch saw settle (see formula-values.ts) were left
-  // out above because the overlay could be stale; their values are read live here.
-  const journaledValues = ctx.readCells ? verifiedFormulaValues(ctx.readCells) : []
-  const formulaValues = [...overlayValues, ...journaledValues]
+  const {
+    edits,
+    bulkConstantFills,
+    structuralOps,
+    chartEdits,
+    visualEdits,
+    visualAdditions,
+    tableAdditions,
+    pivotAdditions,
+    sparklineAdditions,
+    sheetOps,
+    hyperlinkEdits,
+    filterStates,
+    cfStates,
+    dvStates,
+    sheetProtections,
+    pageSetupStates,
+    noteStates,
+    pivotCacheRefreshPaths,
+    pivotRefreshUpdates,
+    definedNamesState,
+    workbookProtectionState,
+    protectedRangeStates,
+    themeState,
+    formulaValues,
+  } = captured
   // The gateway fails closed when these additions ride with structural or
   // sheet changes (their coordinates entangle). Instead of bouncing the
   // user, hold them back and save in two sequential phases: structure
@@ -301,7 +371,7 @@ async function saveOnce(
   }
   const total =
     edits.length +
-    bulkConstantFills.length +
+    (bulkConstantFills?.length ?? 0) +
     structuralOps.length +
     chartEdits.length +
     sheetOps.length +

@@ -1,21 +1,30 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
-import type { DocumentId, EditorAdapter, Revision } from '@nexusdesk/protocol'
+import {
+  workingCopyBootstrapSchema,
+  type DocumentId,
+  type EditorAdapter,
+  type Revision,
+  type WorkingCopyBootstrap,
+  type PersistenceReference,
+} from '@nexusdesk/protocol'
 import {
   createNexusClient,
+  createBrowserWorkingCopyPersistence,
+  createWorkingCopyMutationLane,
   type AgentApi,
   type NexusClient,
 } from '@nexusdesk/web-client'
 
+import { createBrowserAgentBridge, type BrowserAgentBridge } from './agent/browser-agent-api'
+import type { DesktopApi, UiTheme, WorkbookFile } from '../shared/desktop-api'
 import {
-  createBrowserAgentBridge,
-  type BrowserAgentBridge,
-} from './agent/browser-agent-api'
-import type {
-  DesktopApi,
-  UiTheme,
-  WorkbookFile,
-} from '../shared/desktop-api'
+  assertWorkingCopyOperationsPersistable,
+  buildWorkingCopyPayload,
+} from './working-copy-payload'
+import type { SaveContext, SaveOutcome } from './save-actions'
+import { lockApprovedSave } from './approved-save-lock'
+import { aiBulkUndoGate } from './univer-state'
 
 export interface BrowserHostBootstrap {
   documentId: DocumentId
@@ -25,6 +34,7 @@ export interface BrowserHostBootstrap {
   language: Awaited<ReturnType<DesktopApi['getLanguage']>>
   theme: UiTheme
   workbook: WorkbookFile
+  workingCopy?: WorkingCopyBootstrap
 }
 
 export interface BrowserHostTransport {
@@ -41,6 +51,7 @@ export interface InstallBrowserHostOptions {
   client?: NexusClient
   target?: BrowserHostTarget
   transport?: BrowserHostTransport
+  fetch?: typeof fetch
 }
 
 export async function loadBrowserHostBootstrap(
@@ -51,8 +62,14 @@ export async function loadBrowserHostBootstrap(
     `/api/documents/${encodeURIComponent(documentId)}/bootstrap`,
     { credentials: 'same-origin' },
   )
-  if (!response.ok) throw new Error(`Document bootstrap failed with HTTP ${String(response.status)}`)
-  const value = await response.json() as Partial<BrowserHostBootstrap>
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { code?: string; message?: string }
+    throw Object.assign(
+      new Error(error.message ?? `Document bootstrap failed with HTTP ${String(response.status)}`),
+      { code: error.code },
+    )
+  }
+  const value = (await response.json()) as Partial<BrowserHostBootstrap>
   if (
     typeof value.documentId !== 'string' ||
     typeof value.title !== 'string' ||
@@ -61,6 +78,11 @@ export async function loadBrowserHostBootstrap(
     value.workbook === undefined
   ) {
     throw new Error('Local Host returned an invalid document bootstrap')
+  }
+  if (value.workingCopy) {
+    value.workingCopy = workingCopyBootstrapSchema.parse(value.workingCopy)
+    if (value.workbook.sha256 !== value.workingCopy.sourceContentId)
+      throw new Error('Workbook session and hydration source do not match.')
   }
   return value as BrowserHostBootstrap
 }
@@ -123,7 +145,10 @@ export function createBrowserDesktopApi(
     readLocalImage: () => unavailable('reading a local image path'),
     captureScreenSources: () => unavailable('screen capture'),
     captureScreenSource: () => unavailable('screen capture'),
-    saveWorkbookEdits: (request) => transport.request('save-workbook', request),
+    saveWorkbookEdits: (request) =>
+      bootstrap.workingCopy
+        ? unavailable('legacy save-workbook; use the working-copy save lane')
+        : transport.request('save-workbook', request),
     beginSaveEditsTransfer: (request) => transport.request('begin-save-edits-transfer', request),
     sendSaveEditsChunk: (request) => transport.request('send-save-edits-chunk', request),
     abortSaveEditsTransfer: (request) => transport.request('abort-save-edits-transfer', request),
@@ -196,10 +221,12 @@ export function createHttpBrowserHostTransport(
           body: JSON.stringify(payload ?? {}),
         },
       )
-      const value = await response.json() as unknown
+      const value = (await response.json()) as unknown
       if (!response.ok) {
         const message =
-          typeof value === 'object' && value !== null && typeof (value as { error?: unknown }).error === 'string'
+          typeof value === 'object' &&
+          value !== null &&
+          typeof (value as { error?: unknown }).error === 'string'
             ? (value as { error: string }).error
             : `Local Host request failed with HTTP ${String(response.status)}`
         throw new Error(message)
@@ -214,6 +241,10 @@ export interface BrowserHostHandle {
   readonly bridge: BrowserAgentBridge
   attachEditor(adapter: EditorAdapter): void
   updateRevision(revision: Revision): void
+  readonly hasWorkingCopy: boolean
+  configureSaveContext(context: () => SaveContext): void
+  markHydrated(sessionId: string): void
+  saveWorkingCopy(context: SaveContext): Promise<SaveOutcome>
   dispose(): void
 }
 
@@ -224,25 +255,170 @@ export function installBrowserHostApi(
   const target = options.target ?? (window as unknown as BrowserHostTarget)
   const client = options.client ?? createNexusClient({ url: bootstrap.websocketUrl })
   const transport = options.transport ?? createHttpBrowserHostTransport(bootstrap.documentId)
+  let currentBootstrap = bootstrap
+  let current = bootstrap.workingCopy ?? null
+  let context: (() => SaveContext) | undefined
+  let hydrated = false
+  let attached = false
+  const lane = createWorkingCopyMutationLane()
+  const capture = () => {
+    if (!context) throw new Error('Workbook capture is not ready.')
+    if (aiBulkUndoGate.active) throw new Error('The workbook is still applying edits.')
+    return buildWorkingCopyPayload(context())
+  }
+  const persistence = createBrowserWorkingCopyPersistence({
+    documentId: bootstrap.documentId,
+    origin: '',
+    state: () => current,
+    clientId: () => client.clientId,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+  })
+  const committed = (receipt: PersistenceReference) => {
+    if (!current || receipt.workingRevision < current.workingRevision) return
+    current = {
+      ...current,
+      checkpointId: receipt.checkpointId,
+      workingRevision: receipt.workingRevision,
+      savedRevision: receipt.savedRevision,
+      dirty: receipt.dirty,
+    }
+    document.revision = receipt.workingRevision as Revision
+    if (hydrated && attached) bridge.setHydrated(current)
+  }
+  const reopen = async () => {
+    hydrated = false
+    bridge.setHydrated(null)
+    currentBootstrap = await loadBrowserHostBootstrap(bootstrap.documentId, options.fetch)
+    current = currentBootstrap.workingCopy ?? null
+    if (!current || !context) throw new Error('The saved workbook could not be hydrated.')
+    document.revision = current.workingRevision as Revision
+    context().openLazyWorkbook(currentBootstrap.workbook)
+  }
   const bridge = createBrowserAgentBridge({
     client,
     documentId: bootstrap.documentId,
     revision: bootstrap.revision,
+    ...(current
+      ? {
+          workingCopy: {
+            state: () => current,
+            persistence,
+            capture,
+            preflight: (operations) => {
+              if (!context) throw new Error('The workbook is not ready.')
+              assertWorkingCopyOperationsPersistable(context(), operations)
+            },
+            lane,
+            lock: () => lockApprovedSave(context?.().univerRef.current ?? null),
+            committed,
+            afterSave: reopen,
+            failed: () => {
+              hydrated = false
+              bridge.setHydrated(null)
+            },
+          },
+        }
+      : {}),
   })
   const desktopApi = createBrowserDesktopApi(bootstrap, transport)
   const document = {
     documentId: bootstrap.documentId,
     title: bootstrap.title,
-    revision: bootstrap.revision,
+    revision: (current?.workingRevision ?? bootstrap.revision) as Revision,
   }
   let disposed = false
+  let recovering: Promise<void> | undefined
+  let recoveryAttempts = 0
+  const offRecovery = client.onFrame((frame) => {
+    if (
+      !bootstrap.workingCopy ||
+      disposed ||
+      (frame.type !== 'editor:registered' && frame.type !== 'recovery:required') ||
+      frame.documentId !== bootstrap.documentId
+    )
+      return
+    if (frame.type === 'editor:registered') {
+      recoveryAttempts = 0
+      return
+    }
+    if (frame.type !== 'recovery:required') return
+    hydrated = false
+    bridge.setHydrated(null)
+    if (recovering) return
+    recovering = lane
+      .run(async () => {
+        let lastError = frame.message
+        while (!disposed && recoveryAttempts < 3) {
+          recoveryAttempts++
+          try {
+            await reopen()
+            return
+          } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error)
+          }
+        }
+        context?.().setMessage('Workbook recovery failed: ' + lastError + '. Reload to retry.')
+      })
+      .finally(() => {
+        recovering = undefined
+      })
+  })
   const handle: BrowserHostHandle = {
     document,
     bridge,
+    hasWorkingCopy: !!bootstrap.workingCopy,
+    configureSaveContext(next) {
+      context = next
+    },
+    markHydrated(sessionId) {
+      if (!current || sessionId !== currentBootstrap.workbook.sessionId) return
+      hydrated = true
+      if (attached) bridge.setHydrated(current)
+    },
+    saveWorkingCopy(ctx) {
+      return lane.run(async () => {
+        if (!current || aiBulkUndoGate.active)
+          return { ok: false, error: 'The workbook is not ready to save.' }
+        let saved = false
+        const release = lockApprovedSave(ctx.univerRef.current)
+        try {
+          const payload = await buildWorkingCopyPayload(ctx)
+          if (ctx.approvedSaveGuard?.() === false)
+            throw new Error('STALE_CONTENT: the workbook changed after approval.')
+          const receipt = await persistence.saveManual(crypto.randomUUID(), payload)
+          saved = true
+          committed(receipt)
+          release()
+          await reopen()
+          ctx.setMessage('Saved the current workbook.')
+          return {
+            ok: true,
+            ...(ctx.lazyWorkbookRef.current?.file.path
+              ? { path: ctx.lazyWorkbookRef.current.file.path }
+              : {}),
+          }
+        } catch (error) {
+          hydrated = false
+          bridge.setHydrated(null)
+          const message = saved
+            ? 'The workbook was saved, but reopening failed. Reload to continue.'
+            : error instanceof Error
+              ? error.message
+              : 'Workbook save failed.'
+          ctx.setMessage(message)
+          return { ok: saved, error: message }
+        } finally {
+          release()
+        }
+      })
+    },
     attachEditor(adapter) {
+      attached = true
       bridge.attachEditor(adapter)
+      if (hydrated && current) bridge.setHydrated(current)
     },
     updateRevision(revision) {
+      if (bootstrap.workingCopy) return
       document.revision = revision
       bridge.updateRevision(revision)
     },
@@ -250,6 +426,7 @@ export function installBrowserHostApi(
       if (disposed) return
       disposed = true
       bridge.dispose()
+      offRecovery()
       client.close()
       if (target.desktopApi === desktopApi) delete target.desktopApi
       if (target.agentApi === bridge.agentApi) delete target.agentApi

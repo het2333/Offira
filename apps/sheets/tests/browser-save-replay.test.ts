@@ -1,8 +1,8 @@
 import { expect, it, vi } from 'vitest'
-import { BoundedEditorCache } from '@nexusdesk/web-client'
+import { BoundedEditorCache, createWorkingCopyMutationLane } from '@nexusdesk/web-client'
 import { createBrowserAgentBridge } from '../src/renderer/agent/browser-agent-api'
 
-function setup(storageOverride?: any) {
+function setup(storageOverride?: any, workingCopy?: any) {
   let receive: (frame: any) => void = () => {}
   const sent: any[] = []
   const values = new Map<string, string>()
@@ -29,6 +29,7 @@ function setup(storageOverride?: any) {
     client: client as never,
     documentId: 'sheets-1' as never,
     revision: 1 as never,
+    ...(workingCopy ? { workingCopy } : {}),
     storage: storageOverride ?? {
       getItem: (key) => values.get(key) ?? null,
       setItem: (key, value) => {
@@ -64,6 +65,159 @@ function setup(storageOverride?: any) {
     results: () => sent.filter((value) => value.type === 'editor:result'),
   }
 }
+
+it('durable apply delivers success only after full capture commits and carries the receipt', async () => {
+  let finish!: (value: any) => void
+  let mutations = 0
+  let captures = 0
+  let committed = false
+  const receipt = {
+    documentEpoch: 'epoch',
+    operationId: 'operation-1',
+    requestFingerprint: 'fingerprint',
+    checkpointId: 'checkpoint',
+    blobHash: 'a'.repeat(64),
+    workingRevision: 2,
+    savedRevision: 1,
+    dirty: true,
+  }
+  const workingCopy = {
+    state: () => ({ documentEpoch: 'epoch' }),
+    lane: createWorkingCopyMutationLane(),
+    capture: async () => {
+      captures++
+      return { kind: 'xlsx-save-plan', parts: new Map() }
+    },
+    persistence: {
+      lookup: async () => ({ state: 'not-found' }),
+      checkpoint: () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    },
+    committed: () => {
+      committed = true
+    },
+  }
+  const s = setup(undefined, workingCopy)
+  s.bridge.attachEditor({
+    propose: async () => ({ planHash: 'plan', summary: 'edit', warnings: [], operations: [] }),
+    apply: async () => {
+      mutations++
+      return { ok: true, summary: 'applied', warnings: [] }
+    },
+  } as never)
+  s.emit(s.frame('propose_ops'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  s.emit(s.frame('apply_ops', {}, { id: 'approval', planHash: 'plan' }))
+  await vi.waitFor(() => expect(captures).toBe(1))
+  expect(s.results()).toHaveLength(1)
+  finish(receipt)
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(s.results()[1]).toMatchObject({ result: { ok: true }, persistence: receipt })
+  expect(mutations).toBe(1)
+  expect(committed).toBe(true)
+  s.bridge.dispose()
+})
+
+it('durable historical lookup supersedes absent proposals without executing the mutation again', async () => {
+  let mutations = 0
+  const receipt = {
+    documentEpoch: 'epoch',
+    operationId: 'operation-1',
+    requestFingerprint: 'f',
+    checkpointId: 'cp',
+    blobHash: 'a'.repeat(64),
+    workingRevision: 2,
+    savedRevision: 1,
+    dirty: true,
+  }
+  const s = setup(undefined, {
+    state: () => ({ documentEpoch: 'epoch' }),
+    lane: createWorkingCopyMutationLane(),
+    persistence: {
+      lookup: async () => ({
+        state: 'committed',
+        persistence: receipt,
+        result: { ok: true, summary: 'original', warnings: [] },
+      }),
+    },
+    committed: () => {},
+  })
+  s.bridge.attachEditor({
+    apply: async () => {
+      mutations++
+      throw Error('must not run')
+    },
+  } as never)
+  s.emit(s.frame('apply_ops', {}, { id: 'approval', planHash: 'plan' }))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  expect(s.results()[0]).toMatchObject({
+    result: { ok: true, summary: 'original' },
+    persistence: receipt,
+  })
+  expect(mutations).toBe(0)
+  s.bridge.dispose()
+})
+
+it('rejects an approved Save if content changes between validation and acquiring the capture lock', async () => {
+  let content = 'approved'
+  let writes = 0
+  const s = setup(undefined, {
+    state: () => ({ documentEpoch: 'epoch' }),
+    lane: createWorkingCopyMutationLane(),
+    lock: () => {
+      content = 'late manual change'
+      return () => {}
+    },
+    capture: async () => ({ kind: 'xlsx-save-plan', parts: new Map() }),
+    persistence: {
+      lookup: async () => ({ state: 'not-found' }),
+      checkpoint: async () => {
+        writes++
+        throw Error('must not write')
+      },
+    },
+    committed: () => {},
+  })
+  s.bridge.attachEditor({ saveSnapshot: () => content } as never)
+  s.emit(s.frame('propose_save'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  const proposal = s.results()[0].result.data
+  s.emit(
+    s.frame(
+      'save_sheet',
+      { snapshotHash: proposal.snapshotHash },
+      { id: 'approval', planHash: proposal.planHash },
+    ),
+  )
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(s.results()[1].result.ok).toBe(false)
+  expect(writes).toBe(0)
+  s.bridge.dispose()
+})
+
+it('rejects a plan after manual content changes even when the durable revision is unchanged', async () => {
+  const s = setup()
+  let content = 'before'
+  let mutations = 0
+  s.bridge.attachEditor({
+    saveSnapshot: () => content,
+    propose: async () => ({ planHash: 'plan', summary: 'edit', warnings: [], operations: [] }),
+    apply: async () => {
+      mutations++
+      return { ok: true, summary: 'applied', warnings: [] }
+    },
+  } as never)
+  s.emit(s.frame('propose_ops'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  content = 'manual change'
+  s.emit(s.frame('apply_ops', {}, { id: 'approval', planHash: 'plan' }))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(s.results()[1].result).toMatchObject({ ok: false, warnings: [{ code: 'STALE_CONTENT' }] })
+  expect(mutations).toBe(0)
+  s.bridge.dispose()
+})
 
 it('shares concurrent terminal requests and preserves success after a conflicting retry', async () => {
   const s = setup()

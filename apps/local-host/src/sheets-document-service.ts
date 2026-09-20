@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
-
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
+import { HostError } from '@nexusdesk/office-host'
 import { XlsxSidecarClient } from '../../sheets/src/main/xlsx-sidecar-client'
 import {
   workbookFileSchema,
@@ -11,180 +12,374 @@ import {
   workbookRangeResultSchema,
   workbookRecalcRequestSchema,
   workbookRecalcResultSchema,
-  workbookSaveRequestSchema,
-  workbookSaveResultSchema,
+  workbookMediaRequestSchema,
+  workbookMediaResultSchema,
+  workbookPivotRequestSchema,
+  workbookPivotDefinitionSchema,
   type WorkbookFile,
+  type WorkbookSaveRequest,
 } from '../../sheets/src/shared/desktop-api'
-import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
-
-import type { LocalDocument, LocalDocumentDriver } from './document-driver'
+import {
+  buildWorkbookSavePlan,
+  decodeWorkbookSaveRequest,
+} from '../../sheets/src/shared/workbook-save-plan'
+import {
+  saveWorkbookViaSidecar,
+  readArchiveEntryText,
+} from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import { parsePivotDefinition } from '@genoffice/xlsx-gateway/gateway/xlsx-pivot'
+import { createWorkingCopyStore } from './working-copy-store'
+import {
+  defaultWorkingCopyRoot,
+  type LocalDocument,
+  type LocalDocumentDriver,
+  type WorkingCopyDriverOptions,
+} from './document-driver'
 
 interface OpenWorkbook {
   file: WorkbookFile
   sheetNames: Map<string, string>
+  sourceContentId: string
+  snapshotPath: string
 }
-
 function sidecarPath(repositoryRoot: string): string {
-  const executable = process.platform === 'win32' ? 'xlsx-sidecar.exe' : 'xlsx-sidecar'
-  return resolve(repositoryRoot, 'apps/sheets/native/xlsx-engine/target/release', executable)
+  return resolve(
+    repositoryRoot,
+    'apps/sheets/native/xlsx-engine/target/release',
+    process.platform === 'win32' ? 'xlsx-sidecar.exe' : 'xlsx-sidecar',
+  )
 }
-
 export async function createSheetsDocumentService(
   repositoryRoot: string,
   path: string,
-): Promise<{
-  drivers: LocalDocumentDriver[]
-  close(): Promise<void>
-}> {
+  options: WorkingCopyDriverOptions = {},
+): Promise<{ drivers: LocalDocumentDriver[]; close(): Promise<void> }> {
   const client = new XlsxSidecarClient(sidecarPath(repositoryRoot))
+  const directory = await mkdtemp(join(tmpdir(), 'nexusdesk-sheets-'))
   let opened: OpenWorkbook | undefined
+  let closed = false
+  const retiredSessions = new Set<string>()
+  let pendingBootstrap:
+    | {
+        sourceContentId: string
+        workingRevision: number
+        savedRevision: number
+        documentEpoch: string
+      }
+    | undefined
   const document: LocalDocument = {
-    documentId: `xlsx-${createHash('sha256').update(path).digest('hex').slice(0, 16)}`,
+    documentId: 'xlsx-' + createHash('sha256').update(path).digest('hex').slice(0, 16),
     title: basename(path),
     editorType: 'sheets',
     revision: 1,
     path,
   }
-
+  const store = await createWorkingCopyStore({
+    rootDirectory: options.workingCopyRoot ?? defaultWorkingCopyRoot(),
+    authorizedPath: path,
+    documentId: document.documentId,
+    editorType: 'sheets',
+    initialSavedRevision: 1,
+  })
+  const snapshot = async (sourceContentId: string): Promise<string> => {
+    const bytes = await store.readSource(sourceContentId)
+    const snapshotPath = join(directory, sourceContentId + '.xlsx')
+    try {
+      await writeFile(snapshotPath, bytes, { flag: 'wx' })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const existing = await readFile(snapshotPath)
+      if (createHash('sha256').update(existing).digest('hex') !== sourceContentId)
+        throw new Error('Invalid workbook source snapshot.')
+    }
+    return snapshotPath
+  }
+  const sheetNamesFor = (raw: { sheets: { id: string; name: string }[] }) =>
+    new Map(raw.sheets.map((sheet) => [sheet.id, sheet.name]))
   const openWorkbook = async (): Promise<OpenWorkbook> => {
-    const bytes = await readFile(path)
-    const raw = (await client.open(path, 'en')) as Record<string, unknown> & {
+    const before = await store.getStatus()
+    if (before.recoveryState !== 'ready')
+      throw new HostError(
+        'REVISION_CONFLICT',
+        'The original workbook changed; recovery needs attention.',
+        false,
+      )
+    const source = await store.acquireSource()
+    const snapshotPath = await snapshot(source.sourceContentId)
+    const raw = (await client.open(snapshotPath, 'en')) as {
       sessionId: string
       sheets: { id: string; name: string }[]
     }
-    return {
-      file: workbookFileSchema.parse({
+    try {
+      const after = await store.getStatus()
+      if (
+        before.workingRevision !== after.workingRevision ||
+        before.savedRevision !== after.savedRevision ||
+        before.documentEpoch !== after.documentEpoch
+      ) {
+        throw new HostError(
+          'REVISION_CONFLICT',
+          'Workbook changed during hydration; bootstrap again.',
+          true,
+        )
+      }
+      const file = workbookFileSchema.parse({
         ...raw,
+        name: basename(path),
         path,
-        sha256: createHash('sha256').update(bytes).digest('hex'),
-        fileBytes: (await stat(path)).size,
+        sha256: source.sourceContentId,
+        fileBytes: source.bytes.length,
         readOnly: false,
         needsSaveAs: false,
-        restoredFromRecovery: false,
-        automaticRecoveryDisabled: false,
-      }),
-      sheetNames: new Map(raw.sheets.map((sheet) => [sheet.id, sheet.name])),
+        restoredFromRecovery: after.dirty,
+        automaticRecoveryDisabled: true,
+      })
+      pendingBootstrap = {
+        sourceContentId: source.sourceContentId,
+        workingRevision: after.workingRevision,
+        savedRevision: after.savedRevision,
+        documentEpoch: after.documentEpoch,
+      }
+      document.revision = after.workingRevision
+      return {
+        file,
+        sheetNames: sheetNamesFor(raw),
+        sourceContentId: source.sourceContentId,
+        snapshotPath,
+      }
+    } catch (error) {
+      await client.close(raw.sessionId).catch(() => undefined)
+      throw error
     }
   }
-  const ensureOpen = async (): Promise<OpenWorkbook> => (opened ??= await openWorkbook())
-  const sheetName = (state: OpenWorkbook, sheetId: string): string => {
-    const name = state.sheetNames.get(sheetId)
-    if (name === undefined) throw new Error(`Unknown worksheet ${sheetId}.`)
-    return name
+  const requireSession = (payload: unknown): OpenWorkbook => {
+    if (
+      !opened ||
+      !payload ||
+      (payload as { sessionId?: unknown }).sessionId !== opened.file.sessionId
+    ) {
+      throw new HostError('DOCUMENT_NOT_FOUND', 'Unknown or obsolete workbook session.', false)
+    }
+    return opened
   }
-
   const driver: LocalDocumentDriver = {
     document,
+    workingCopy: {
+      store,
+      async acquireSource() {
+        if (pendingBootstrap) {
+          const expected = pendingBootstrap
+          const current = await store.getStatus()
+          if (
+            current.recoveryState !== 'ready' ||
+            current.workingRevision !== expected.workingRevision ||
+            current.savedRevision !== expected.savedRevision ||
+            current.documentEpoch !== expected.documentEpoch
+          ) {
+            throw new HostError(
+              'REVISION_CONFLICT',
+              'Workbook head changed after native hydration; bootstrap again.',
+              true,
+            )
+          }
+          pendingBootstrap = undefined
+          return {
+            sourceContentId: expected.sourceContentId,
+            bytes: await store.readSource(expected.sourceContentId),
+          }
+        }
+        return store.acquireSource()
+      },
+      readSource: (id) => store.readSource(id),
+      async materialize(input) {
+        if (input.payloadKind !== 'xlsx-save-plan')
+          throw new Error('Sheets requires an XLSX save plan.')
+        const request = decodeWorkbookSaveRequest(input.parts)
+        const state = requireSession(request)
+        if (state.sourceContentId !== input.sourceContentId)
+          throw new Error('Workbook plan belongs to a different source session.')
+        const sourcePath = await snapshot(input.sourceContentId)
+        const workDir = await mkdtemp(join(directory, 'materialize-'))
+        const targetPath = join(workDir, 'prepared.xlsx')
+        try {
+          const hasShifts = request.structuralOps.length > 0 || request.sheetOps.length > 0
+          const heldPivots = hasShifts ? request.pivotAdditions : []
+          const heldTables = request.structuralOps.length > 0 ? request.tableAdditions : []
+          const heldNames = hasShifts ? request.definedNamesState : null
+          const split = heldPivots.length > 0 || heldTables.length > 0 || heldNames !== null
+          const addedIds = new Set(
+            request.sheetOps.flatMap((op) =>
+              op.kind === 'add-sheet' || op.kind === 'duplicate-sheet' ? [op.sheetId] : [],
+            ),
+          )
+          if (
+            [
+              ...heldPivots.flatMap((p) => [p.sheetId, p.sourceSheetId]),
+              ...heldTables.map((t) => t.sheetId),
+            ].some((id) => addedIds.has(id))
+          ) {
+            throw new Error('Held table/pivot additions cannot target a newly added sheet.')
+          }
+          await saveWorkbookViaSidecar({
+            client,
+            sourcePath,
+            targetPath,
+            ...buildWorkbookSavePlan(
+              {
+                ...request,
+                tableAdditions: heldTables.length ? [] : request.tableAdditions,
+                pivotAdditions: heldPivots.length ? [] : request.pivotAdditions,
+                definedNamesState: split ? null : request.definedNamesState,
+              },
+              state.sheetNames,
+            ),
+          })
+          if (split) {
+            const stage = (await client.open(targetPath, 'en')) as {
+              sessionId: string
+              sheets: { id: string; name: string }[]
+            }
+            try {
+              // Only held operations run against phase one's isolated bytes. The cumulative
+              // journal is never applied to a previously published checkpoint.
+              const held: WorkbookSaveRequest = {
+                ...request,
+                edits: [],
+                bulkConstantFills: [],
+                structuralOps: [],
+                chartEdits: [],
+                visualEdits: [],
+                visualAdditions: [],
+                tableAdditions: heldTables,
+                pivotAdditions: heldPivots,
+                sheetOps: [],
+                sheetOrder: [],
+                filterStates: [],
+                hyperlinkEdits: [],
+                cfStates: [],
+                dvStates: [],
+                pageSetupStates: [],
+                noteStates: [],
+                formulaValues: [],
+                pivotCacheRefreshPaths: [],
+                pivotRefreshUpdates: [],
+                sheetProtections: [],
+                sparklineAdditions: [],
+                definedNamesState: heldNames,
+                themeState: null,
+                workbookProtectionState: null,
+                protectedRangeStates: [],
+              }
+              await saveWorkbookViaSidecar({
+                client,
+                sourcePath: targetPath,
+                targetPath,
+                ...buildWorkbookSavePlan(held, sheetNamesFor(stage)),
+              })
+            } finally {
+              await client.close(stage.sessionId)
+            }
+          }
+          // Fully reopen the final ZIP before it can enter the durable store.
+          const verified = (await client.open(targetPath, 'en')) as { sessionId: string }
+          await client.close(verified.sessionId)
+          return new Uint8Array(await readFile(targetPath))
+        } finally {
+          await rm(workDir, { recursive: true, force: true })
+        }
+      },
+    },
     async bootstrap(origin) {
-      const state = await ensureOpen()
+      const next = await openWorkbook()
+      if (opened) {
+        retiredSessions.add(opened.file.sessionId)
+        await client.close(opened.file.sessionId).catch(() => undefined)
+      }
+      opened = next
       return {
         documentId: document.documentId,
         title: document.title,
         revision: document.revision,
-        websocketUrl: `${origin.replace(/^http/, 'ws')}/ws`,
+        websocketUrl: origin.replace(/^http/, 'ws') + '/ws',
         language: 'en',
         theme: 'system',
-        workbook: state.file,
+        workbook: next.file,
       }
     },
     async execute(action, payload) {
-      const state = await ensureOpen()
-      if (action === 'read-workbook-range') {
+      if (action === 'save-workbook' || action === 'write-workbook-recovery')
+        throw new HostError(
+          'UNSUPPORTED_CAPABILITY',
+          'Use the authorized working-copy save lane.',
+          false,
+        )
+      if (
+        action === 'close-workbook' &&
+        retiredSessions.has((payload as { sessionId: string }).sessionId)
+      )
+        return { ok: true }
+      const state = requireSession(payload)
+      if (action === 'read-workbook-range')
         return workbookRangeResultSchema.parse(
           await client.readRange(workbookRangeRequestSchema.parse(payload)),
         )
-      }
-      if (action === 'read-workbook-formulas') {
+      if (action === 'read-workbook-formulas')
         return workbookFormulaCellsResultSchema.parse(
           await client.readFormulaCells(workbookFormulaCellsRequestSchema.parse(payload)),
         )
+      if (action === 'read-workbook-media')
+        return workbookMediaResultSchema.parse(
+          await client.readMedia(workbookMediaRequestSchema.parse(payload)),
+        )
+      if (action === 'read-pivot-definition') {
+        const request = workbookPivotRequestSchema.parse(payload)
+        const [pivot, cache] = await Promise.all([
+          readArchiveEntryText(client, state.snapshotPath, request.path),
+          readArchiveEntryText(client, state.snapshotPath, request.cachePath),
+        ])
+        return workbookPivotDefinitionSchema.parse(parsePivotDefinition(pivot, cache))
       }
       if (action === 'recalculate-workbook') {
         const request = workbookRecalcRequestSchema.parse(payload)
+        const name = (id: string) => {
+          const value = state.sheetNames.get(id)
+          if (!value) throw new Error('Unknown worksheet ' + id)
+          return value
+        }
         const result = (await client.recalcCells({
-          path,
+          path: state.snapshotPath,
           edits: request.edits.map((edit) => ({
-            sheet: sheetName(state, edit.sheetId),
+            sheet: name(edit.sheetId),
             row: edit.row,
             column: edit.column,
             input: edit.input,
           })),
-          reads: request.reads.map((read) => ({
-            sheet: sheetName(state, read.sheetId),
-            range: read.range,
-          })),
+          reads: request.reads.map((read) => ({ sheet: name(read.sheetId), range: read.range })),
         })) as { cells: Array<Record<string, unknown> & { sheet: string }> }
-        const idsByName = new Map([...state.sheetNames].map(([id, name]) => [name, id]))
+        const ids = new Map([...state.sheetNames].map(([id, value]) => [value, id]))
         return workbookRecalcResultSchema.parse({
-          cells: result.cells.flatMap((cell) => {
-            const sheetId = idsByName.get(cell.sheet)
-            if (sheetId === undefined) return []
-            const { sheet: _sheet, ...rest } = cell
-            return [{ ...rest, sheetId }]
+          cells: result.cells.flatMap(({ sheet, ...cell }) => {
+            const sheetId = ids.get(sheet)
+            return sheetId === undefined ? [] : [{ ...cell, sheetId }]
           }),
-        })
-      }
-      if (action === 'save-workbook') {
-        const request = workbookSaveRequestSchema.parse(payload)
-        const mutation = await saveWorkbookViaSidecar({
-          client,
-          sourcePath: path,
-          targetPath: path,
-          edits: request.edits.map((edit) => ({
-            sheetName: sheetName(state, edit.sheetId),
-            row: edit.row,
-            column: edit.column,
-            writeValue: edit.writeValue,
-            cell: { value: edit.value, formula: edit.formula },
-            style: edit.style,
-            rich: edit.rich,
-            styleReset: edit.styleReset,
-          })),
-          bulkConstantFills: (request.bulkConstantFills ?? []).map(({ sheetId, ...fill }) => ({
-            sheetName: sheetName(state, sheetId),
-            ...fill,
-          })),
-          chartEdits: request.chartEdits,
-          visualEdits: request.visualEdits,
-          visualAdditions: request.visualAdditions.map(({ sheetId, ...addition }) => ({
-            sheetName: sheetName(state, sheetId),
-            ...addition,
-          })),
-          formulaValues: [...new Set(request.formulaValues.map((cell) => cell.sheetId))].map(
-            (sheetId) => ({
-              sheetName: sheetName(state, sheetId),
-              cells: request.formulaValues
-                .filter((cell) => cell.sheetId === sheetId)
-                .map(({ sheetId: _sheetId, ...cell }) => cell),
-            }),
-          ),
-        })
-        await client.close(state.file.sessionId)
-        opened = await openWorkbook()
-        return workbookSaveResultSchema.parse({
-          canceled: false,
-          file: opened.file,
-          touchedEntries: mutation.touchedEntries,
         })
       }
       if (action === 'close-workbook') {
         await client.close(state.file.sessionId)
+        retiredSessions.add(state.file.sessionId)
         opened = undefined
         return { ok: true }
       }
-      throw new Error(`Unsupported Sheets document action: ${action}`)
+      throw new Error('Unsupported Sheets document action: ' + action)
     },
     async close() {
-      if (opened !== undefined) await client.close(opened.file.sessionId).catch(() => undefined)
+      if (closed) return
+      closed = true
+      if (opened) await client.close(opened.file.sessionId).catch(() => undefined)
       opened = undefined
       client.stop()
+      await rm(directory, { recursive: true, force: true })
     },
   }
-
-  return {
-    drivers: [driver],
-    async close() {
-      await driver.close()
-    },
-  }
+  return { drivers: [driver], close: () => driver.close() }
 }

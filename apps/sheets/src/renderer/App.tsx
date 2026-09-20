@@ -3825,23 +3825,26 @@ export function App(): React.JSX.Element {
       }
     }
     lazyWorkbookRef.current = state
+    const hydrationReads: Promise<unknown>[] = []
     // Pivot definitions load eagerly so refresh (a synchronous apply step)
     // never waits on IPC. Best effort: a failed parse just disables refresh.
     for (const sheet of selected.sheets) {
       for (const pivot of sheet.pivotTables) {
         if (pivot.cachePath === null) continue
-        void window.desktopApi
-          .readPivotDefinition({
-            sessionId: selected.sessionId,
-            path: pivot.path,
-            cachePath: pivot.cachePath,
-          })
-          .then((definition) => {
-            if (lazyWorkbookRef.current === state) {
-              state.pivotDefinitions.set(pivot.path, definition)
-            }
-          })
-          .catch(() => undefined)
+        hydrationReads.push(
+          window.desktopApi
+            .readPivotDefinition({
+              sessionId: selected.sessionId,
+              path: pivot.path,
+              cachePath: pivot.cachePath,
+            })
+            .then((definition) => {
+              if (lazyWorkbookRef.current === state) {
+                state.pivotDefinitions.set(pivot.path, definition)
+              }
+            })
+            .catch(() => undefined),
+        )
       }
     }
     // Dev-only diagnosis hooks: e2e drivers dump journal state and dispatch
@@ -3989,7 +3992,7 @@ export function App(): React.JSX.Element {
         }
         // getVisibleRange lags the jump by a frame (same as name-box goto) —
         // anchor the first stream at the restored cell, not the stale origin.
-        void loadVisibleRange(
+        const initialRange = loadVisibleRange(
           runtime,
           lazyWorkbookRef,
           restoredSheet ?? worksheet,
@@ -3999,13 +4002,21 @@ export function App(): React.JSX.Element {
             : undefined,
         )
         if (state.formulaMode) {
-          void preloadEntireWorkbook(runtime, lazyWorkbookRef, setMessage)
+          hydrationReads.push(preloadEntireWorkbook(runtime, lazyWorkbookRef, setMessage))
         } else {
           // Deferred so first paint and initial streaming win the sidecar.
           setTimeout(() => {
             void activateFormulaClosure(runtime, lazyWorkbookRef, setMessage)
           }, 1500)
         }
+        void Promise.all([...hydrationReads, initialRange, ...tableInstalls])
+          .then(() => {
+            if (lazyWorkbookRef.current === state)
+              window.nexusdeskBrowserHost?.markHydrated(selected.sessionId)
+          })
+          .catch((error: unknown) => {
+            setMessage(error instanceof Error ? error.message : 'Workbook hydration failed.')
+          })
       })
     }
   }
@@ -4036,11 +4047,23 @@ export function App(): React.JSX.Element {
     quiet = false,
     explicitTarget?: { path: string; overwrite: boolean },
   ): Promise<SaveOutcome> {
+    const host = window.nexusdeskBrowserHost
+    if (host?.hasWorkingCopy) {
+      if (mode === 'recovery') return { ok: false }
+      if (
+        mode === 'save-as' &&
+        (!explicitTarget || explicitTarget.path !== lazyWorkbookRef.current?.file.path)
+      ) {
+        setMessage('Save As is unavailable in Web Sheets. Use Save to write the current workbook.')
+        return { ok: false }
+      }
+      return host.saveWorkingCopy(saveContext())
+    }
     return handleSaveImpl(saveContext(), mode, quiet, explicitTarget)
   }
   closeSaveRef.current = async () => {
     const state = lazyWorkbookRef.current
-    if (!state || journalSize(state.editJournal) === 0) {
+    if (!state || (journalSize(state.editJournal) === 0 && !state.file.restoredFromRecovery)) {
       window.desktopApi?.reportCloseSaveResult?.(true)
       return
     }
@@ -4222,6 +4245,7 @@ export function App(): React.JSX.Element {
     const uninstallMcp = installSheetsMcpBridge(currentHandlers)
     const browserHost = window.nexusdeskBrowserHost
     if (browserHost !== undefined) {
+      browserHost.configureSaveContext(() => agentSaveContextRef.current())
       browserHost.attachEditor(
         createSheetsAdapter({
           handlers: currentHandlers,
@@ -4551,7 +4575,7 @@ export function App(): React.JSX.Element {
         onCommand={handleRibbonCommand}
         onIsCellEditing={isCellEditing}
         zoomPercent={zoomPercent}
-        canSave={pendingEdits > 0}
+        canSave={pendingEdits > 0 || workbookFile?.restoredFromRecovery === true}
         onSave={() => void handleSave('save')}
         canSaveAs={workbookFile !== null}
         onSaveAs={() => void handleSave('save-as')}
