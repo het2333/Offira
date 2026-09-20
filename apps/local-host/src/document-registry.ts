@@ -107,10 +107,21 @@ export class DocumentRegistry {
       this.documents.set(documentId, refreshed)
       return
     }
-    if (
-      rendererInstanceId !== undefined &&
-      current.rendererInstanceId === rendererInstanceId
-    ) return
+    if (rendererInstanceId === undefined) {
+      if (current.editorType !== document.editorType) {
+        throw new DocumentRegistryError(
+          'WRONG_EDITOR',
+          `document ${document.documentId} requires editor ${current.editorType}`,
+        )
+      }
+      if (document.revision <= current.revision) return
+      this.documents.set(documentId, {
+        ...current,
+        revision: document.revision as Revision,
+      })
+      return
+    }
+    if (current.rendererInstanceId === rendererInstanceId) return
     const refreshed: DetachedDocument = {
       documentId,
       editorType: document.editorType,

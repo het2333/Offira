@@ -1049,6 +1049,7 @@ describe('AgentRouter', () => {
     documents.commitRevision({ documentId, clientId, revision: 2 as Revision })
     router.disconnectClient(clientId)
     documents.detachClient(clientId)
+    documents.refreshFromHost({ documentId, editorType: 'sheets', revision })
     documents.refreshFromHost(
       { documentId, editorType: 'sheets', revision },
       rendererInstanceId,

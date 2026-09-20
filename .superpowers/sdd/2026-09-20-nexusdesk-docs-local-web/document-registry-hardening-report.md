@@ -46,3 +46,26 @@ GREEN verification:
 - Targeted ESLint and `git diff --check` passed.
 
 The complete repository suite is intentionally delegated to the controlling agent because concurrent suite execution had overloaded the shared host.
+
+## Round 3: detached Host refreshes without renderer identity
+
+An ordinary trusted Host refresh does not identify a renderer lifecycle. When a
+document is detached, a refresh without `rendererInstanceId` now preserves the
+saved renderer recovery identity, rejects an editor mismatch, ignores an equal
+or older revision, and applies only a newer Host revision. An explicit renderer
+refresh keeps the Round 2 distinction: the same renderer preserves live state,
+while a different renderer adopts the durable Host baseline.
+
+RED evidence:
+
+- `npm exec -w @nexusdesk/local-host -- vitest run tests/document-registry.test.ts tests/agent-router.test.ts --maxWorkers=1` failed 2/31 tests before the production change.
+- The Agent Router reconnect scenario failed with `STALE_REVISION` because the
+  detached document had been reset from revision 2 to revision 1.
+- The registry scenario failed because a newer revision 6 Host refresh was
+  later rolled back to revision 4 and the renderer recovery identity was lost.
+
+GREEN evidence:
+
+- The same targeted command passed 31/31 tests after the registry change.
+- `npm run typecheck -w @nexusdesk/local-host` passed.
+- Targeted ESLint and scoped `git diff --check` passed.

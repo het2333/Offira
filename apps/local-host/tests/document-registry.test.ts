@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
+import type {
+  ClientId,
+  DocumentId,
+  RendererInstanceId,
+  Revision,
+} from '@nexusdesk/protocol'
 import { DocumentRegistry, DocumentRegistryError } from '../src/document-registry'
 
 const documentId = 'document-1' as DocumentId
@@ -144,5 +149,37 @@ describe('DocumentRegistry', () => {
       clientId,
       revision: 5 as Revision,
     }).revision).toBe(5)
+  })
+
+  it('advances detached Host revisions without losing renderer recovery identity', () => {
+    const documents = registry()
+    const rendererInstanceId = 'renderer-1' as RendererInstanceId
+    documents.register({
+      documentId,
+      clientId,
+      rendererInstanceId,
+      editorType: 'sheets',
+      revision,
+    })
+    documents.detachClient(clientId)
+
+    documents.refreshFromHost({
+      documentId,
+      editorType: 'sheets',
+      revision: 6 as Revision,
+    })
+    documents.refreshFromHost({ documentId, editorType: 'sheets', revision })
+    documents.refreshFromHost(
+      { documentId, editorType: 'sheets', revision },
+      rendererInstanceId,
+    )
+
+    expect(documents.register({
+      documentId,
+      clientId: otherClient,
+      rendererInstanceId,
+      editorType: 'sheets',
+      revision: 6 as Revision,
+    }).revision).toBe(6)
   })
 })
