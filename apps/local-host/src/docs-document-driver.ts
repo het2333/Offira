@@ -1,12 +1,17 @@
-import { createHash, randomBytes } from 'node:crypto'
-import { open, readFile, rename, stat, unlink } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { basename, resolve } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 import JSZip, { type JSZipObject } from 'jszip'
-import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
+import { HostError } from '@nexusdesk/office-host'
 
-import type { LocalDocumentDriver } from './document-driver'
+import {
+  defaultWorkingCopyRoot,
+  type LocalDocumentDriver,
+  type WorkingCopyDriverOptions,
+} from './document-driver'
+import { createWorkingCopyStore } from './working-copy-store'
 
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const MAIN_DOCUMENT_TYPE =
@@ -89,42 +94,11 @@ async function validateDocx(bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function fsyncDirectory(path: string): Promise<void> {
-  let directory: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    directory = await open(path, 'r')
-    await directory.sync()
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EISDIR') throw error
-  } finally {
-    await directory?.close().catch(() => undefined)
-  }
-}
-
-async function atomicReplace(path: string, bytes: Uint8Array): Promise<void> {
-  const temporaryPath = join(
-    dirname(path),
-    `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`,
-  )
-  let handle: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    handle = await open(temporaryPath, 'wx', 0o600)
-    await handle.writeFile(bytes)
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await rename(temporaryPath, path)
-    await fsyncDirectory(dirname(path))
-  } catch (error: unknown) {
-    await handle?.close().catch(() => undefined)
-    await unlink(temporaryPath).catch(() => undefined)
-    throw error
-  }
-}
-
 /** Create one authorized, revisioned driver for a renderer-owned DOCX working copy. */
-export async function createDocsDocumentDriver(path: string): Promise<LocalDocumentDriver> {
+export async function createDocsDocumentDriver(
+  path: string,
+  options: WorkingCopyDriverOptions = {},
+): Promise<LocalDocumentDriver> {
   const authorizedPath = resolve(path)
   const initialBytes = new Uint8Array(await readFile(authorizedPath))
   await validateDocx(initialBytes)
@@ -135,11 +109,47 @@ export async function createDocsDocumentDriver(path: string): Promise<LocalDocum
     revision: 1,
     path: authorizedPath,
   }
-  let writeQueue: Promise<void> = Promise.resolve()
+  const store = await createWorkingCopyStore({
+    rootDirectory: options.workingCopyRoot ?? defaultWorkingCopyRoot(),
+    authorizedPath,
+    documentId: document.documentId,
+    editorType: 'docs',
+  })
+  document.revision = (await store.getStatus()).workingRevision
 
   const driver: LocalDocumentDriver = {
     document,
+    workingCopy: {
+      store,
+      acquireSource: () => store.acquireSource(),
+      readSource: (id) => store.readSource(id),
+      async materialize({ sourceContentId, payloadKind, parts }) {
+        await store.readSource(sourceContentId)
+        const bytes = parts.get('document')
+        if (payloadKind !== 'docx-bytes' || parts.size !== 1 || !bytes) {
+          throw new HostError(
+            'INVALID_DOCUMENT_CONTENT',
+            'A DOCX checkpoint requires exactly one document part.',
+            false,
+          )
+        }
+        const copy = new Uint8Array(bytes)
+        await validateDocx(copy)
+        return copy
+      },
+    },
     async bootstrap(origin) {
+      const status = await store.getStatus()
+      if (status.recoveryState !== 'ready') {
+        throw new HostError(
+          'REVISION_CONFLICT',
+          'The original file changed; DOCX recovery requires attention.',
+          false,
+        )
+      }
+      const source = await store.acquireSource()
+      const contentUrl = `/api/documents/${encodeURIComponent(document.documentId)}/sources/${source.sourceContentId}/content`
+      document.revision = status.workingRevision
       return {
         documentId: document.documentId,
         title: document.title,
@@ -147,7 +157,17 @@ export async function createDocsDocumentDriver(path: string): Promise<LocalDocum
         websocketUrl: `${origin.replace(/^http/, 'ws')}/ws`,
         language: 'en',
         theme: 'system',
-        contentUrl: `/api/documents/${encodeURIComponent(document.documentId)}/content`,
+        contentUrl,
+        workingCopy: {
+          documentEpoch: status.documentEpoch,
+          workingRevision: status.workingRevision,
+          savedRevision: status.savedRevision,
+          sourceContentId: source.sourceContentId,
+          checkpointId: status.head?.checkpointId ?? null,
+          dirty: status.dirty,
+          recoveryState: status.recoveryState,
+          contentUrl,
+        },
       }
     },
     async execute(action) {
@@ -159,30 +179,16 @@ export async function createDocsDocumentDriver(path: string): Promise<LocalDocum
     },
     async readContent() {
       return {
-        bytes: new Uint8Array(await readFile(authorizedPath)),
+        bytes: await store.readWorkingBytes(),
         contentType: DOCX_CONTENT_TYPE,
       }
     },
-    writeContent(bytes, expectedRevision) {
-      const write = writeQueue.then(async () => {
-        if (expectedRevision !== document.revision) {
-          throw new HostError(
-            'REVISION_CONFLICT',
-            'The document changed after this editor loaded it.',
-            false,
-          )
-        }
-        await validateDocx(bytes)
-        await atomicReplace(authorizedPath, bytes)
-        await stat(authorizedPath)
-        document.revision += 1
-        return shellDocumentSummarySchema.parse(document)
-      })
-      writeQueue = write.then(
-        () => undefined,
-        () => undefined,
+    async writeContent() {
+      throw new HostError(
+        'UNSUPPORTED_CAPABILITY',
+        'Save DOCX through the working-copy coordinator.',
+        false,
       )
-      return write
     },
     async close() {},
   }

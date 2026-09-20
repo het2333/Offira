@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
+import { createHash } from 'node:crypto'
 
 import { createDocsDocumentDriver } from '../src/docs-document-driver'
 
@@ -40,21 +41,113 @@ async function buildTestDocx(text: string): Promise<Uint8Array> {
 }
 
 describe('Docs Local Host driver', () => {
+  it('recovers complete checkpoint bytes with an immutable source and promotes only on Save', async () => {
+    const { path, bytes: original } = await fixture()
+    const options = { workingCopyRoot: join(directory!, 'recovery') }
+    const driver = await createDocsDocumentDriver(path, options)
+    expect(driver.workingCopy).toBeDefined()
+    const port = driver.workingCopy!
+    const source = await port.acquireSource()
+    const status = await port.store.getStatus()
+    const zip = await JSZip.loadAsync(await buildTestDocx('Manual edit. Agent edit.'))
+    zip.file('word/header1.xml', '<w:hdr>Manual header</w:hdr>')
+    const payload = await zip.generateAsync({ type: 'uint8array' })
+    const bytes = await port.materialize({
+      sourceContentId: source.sourceContentId,
+      payloadKind: 'docx-bytes',
+      parts: new Map([['document', payload]]),
+    })
+    const receipt = await port.store.commitCheckpoint({
+      documentEpoch: status.documentEpoch,
+      expectedSavedRevision: 1,
+      expectedWorkingRevision: 1,
+      operationId: 'apply-1',
+      requestFingerprint: 'a'.repeat(64),
+      planHash: 'plan-1',
+      payloadHash: createHash('sha256').update(bytes).digest('hex'),
+      payloadByteLength: bytes.length,
+      bytes,
+      result: { ok: true, summary: 'Applied', warnings: [] },
+    })
+    expect(await readFile(path)).toEqual(Buffer.from(original))
+    expect(await port.readSource(source.sourceContentId)).toEqual(original)
+    const reopened = await createDocsDocumentDriver(path, options)
+    const bootstrap = (await reopened.bootstrap('http://localhost')) as any
+    expect(bootstrap.workingCopy).toMatchObject({
+      workingRevision: 2,
+      savedRevision: 1,
+      checkpointId: receipt.checkpointId,
+      dirty: true,
+      recoveryState: 'ready',
+    })
+    expect(bootstrap.contentUrl).toContain('/sources/' + receipt.blobHash + '/content')
+    const recovered = await JSZip.loadAsync((await reopened.readContent!()).bytes)
+    expect(await recovered.file('word/document.xml')!.async('string')).toContain(
+      'Manual edit. Agent edit.',
+    )
+    expect(await recovered.file('word/header1.xml')!.async('string')).toContain('Manual header')
+    await reopened.workingCopy!.store.promoteWorkingCopy({
+      documentEpoch: status.documentEpoch,
+      expectedSavedRevision: 1,
+      expectedWorkingRevision: 2,
+      checkpointId: receipt.checkpointId,
+      operationId: 'save-1',
+      requestFingerprint: 'b'.repeat(64),
+      planHash: 'save-plan',
+      result: { ok: true, summary: 'Saved', warnings: [] },
+    })
+    expect(await readFile(path)).toEqual(Buffer.from(bytes))
+    expect(await reopened.workingCopy!.store.getStatus()).toMatchObject({
+      dirty: false,
+      savedRevision: 2,
+    })
+  }, 20_000)
+
+  it('rejects invalid checkpoint parts before changing either durable file', async () => {
+    const { path, bytes } = await fixture()
+    const driver = await createDocsDocumentDriver(path, {
+      workingCopyRoot: join(directory!, 'recovery'),
+    })
+    expect(driver.workingCopy).toBeDefined()
+    const port = driver.workingCopy!
+    const source = await port.acquireSource()
+    await expect(
+      port.materialize({
+        sourceContentId: source.sourceContentId,
+        payloadKind: 'docx-bytes',
+        parts: new Map([['document', new TextEncoder().encode('broken')]]),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_DOCUMENT_CONTENT' })
+    await expect(
+      port.materialize({
+        sourceContentId: source.sourceContentId,
+        payloadKind: 'docx-bytes',
+        parts: new Map([
+          ['document', bytes],
+          ['surprise', bytes],
+        ]),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_DOCUMENT_CONTENT' })
+    expect(await readFile(path)).toEqual(Buffer.from(bytes))
+    expect(await port.store.getStatus()).toMatchObject({ workingRevision: 1, dirty: false })
+  })
   it('loads a real docx and exposes metadata without embedding bytes in bootstrap', async () => {
     const { path, bytes } = await fixture()
-    const driver = await createDocsDocumentDriver(path)
+    const driver = await createDocsDocumentDriver(path, {
+      workingCopyRoot: join(directory!, 'recovery'),
+    })
 
     const bootstrap = await driver.bootstrap('http://127.0.0.1:43123')
     const content = await driver.readContent!()
 
-    expect(bootstrap).toEqual({
+    expect(bootstrap).toMatchObject({
       documentId: driver.document.documentId,
       title: basename(path),
       revision: 1,
       websocketUrl: 'ws://127.0.0.1:43123/ws',
       language: 'en',
       theme: 'system',
-      contentUrl: `/api/documents/${driver.document.documentId}/content`,
+      contentUrl: expect.stringContaining(`/api/documents/${driver.document.documentId}/sources/`),
     })
     expect(bootstrap).not.toHaveProperty('bytes')
     expect(content.contentType).toBe(
@@ -63,23 +156,28 @@ describe('Docs Local Host driver', () => {
     expect(content.bytes).toEqual(bytes)
   })
 
-  it('does not replace the docx or advance revision when candidate parsing fails', async () => {
+  it('rejects legacy content writes so the recovery baseline cannot be bypassed', async () => {
     const { path } = await fixture()
-    const driver = await createDocsDocumentDriver(path)
+    const driver = await createDocsDocumentDriver(path, {
+      workingCopyRoot: join(directory!, 'recovery'),
+    })
     const before = await readFile(path)
 
     await expect(
       driver.writeContent!(new TextEncoder().encode('not a zip'), 1),
-    ).rejects.toMatchObject({ code: 'INVALID_DOCUMENT_CONTENT' })
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' })
 
     expect(await readFile(path)).toEqual(before)
     expect(driver.document.revision).toBe(1)
     expect((await readdir(directory!)).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
-  it('serializes concurrent writes so only one matching revision can commit', async () => {
+  it('rejects concurrent legacy writes without changing the original', async () => {
     const { path } = await fixture()
-    const driver = await createDocsDocumentDriver(path)
+    const driver = await createDocsDocumentDriver(path, {
+      workingCopyRoot: join(directory!, 'recovery'),
+    })
+    const before = await readFile(path)
     const first = await buildTestDocx('First')
     const second = await buildTestDocx('Second')
 
@@ -88,12 +186,12 @@ describe('Docs Local Host driver', () => {
       driver.writeContent!(second, 1),
     ])
 
-    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(results.map((result) => result.status).sort()).toEqual(['rejected', 'rejected'])
     expect(results.find((result) => result.status === 'rejected')).toMatchObject({
-      reason: { code: 'REVISION_CONFLICT' },
+      reason: { code: 'UNSUPPORTED_CAPABILITY' },
     })
-    expect(driver.document.revision).toBe(2)
-    expect(await readFile(path)).toEqual(Buffer.from(first))
+    expect(driver.document.revision).toBe(1)
+    expect(await readFile(path)).toEqual(before)
     expect((await readdir(directory!)).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 

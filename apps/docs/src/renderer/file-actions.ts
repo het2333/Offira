@@ -93,6 +93,9 @@ export type PendingPdfExport = { outPath?: string; resolve: (ok: boolean) => voi
 export interface FileActionContext {
   /** Browser Agent saves revalidate approved content at the actual write boundary. */
   approvedSaveGuard?: () => boolean
+  /** Local Web captures complete state from the live React context before persisting. */
+  captureSaveBytes?: () => Promise<Uint8Array | null>
+  saveContentSnapshot?: () => string
   editor: Editor | null
   doc: DocState | null
   dirtyRef: { current: boolean }
@@ -885,6 +888,7 @@ async function saveOnce(
   if (!doc || !editor) return false
   ctx.saveInFlightRef.current = true
   ctx.saveIncompleteRef.current = false
+  let persisted = false
   try {
     // a mid-stream save would serialize (and write) a truncated document
     const generation = docGeneration
@@ -896,9 +900,11 @@ async function saveOnce(
     if (ctx.approvedSaveGuard?.() === false) return false
     // identity snapshot: detects edits that arrive while the save is in flight
     const docSnapshot = editor.state.doc
+    const fullSnapshot = ctx.saveContentSnapshot?.()
     const selectionPos = editor.state.selection.from
-    const bytes = await buildDocBytes(ctx)
+    const bytes = await (ctx.captureSaveBytes ? ctx.captureSaveBytes() : buildDocBytes(ctx))
     if (!bytes) return false
+    if (fullSnapshot !== ctx.saveContentSnapshot?.()) return false
     if (ctx.approvedSaveGuard?.() === false) return false
     const buffer = bytes.buffer.slice(
       bytes.byteOffset,
@@ -961,9 +967,14 @@ async function saveOnce(
       passwordIntentPending = result.passwordIntentPending === true
       if (result.data) fullBytes = new Uint8Array(result.data)
     }
+    persisted = true
     // parse before the identity check: a document opened during this await must not be rewritten
     const reparsed = await parseDocx(fullBytes ?? bytes)
-    if (editor.state.doc !== docSnapshot || passwordIntentPending) {
+    if (
+      editor.state.doc !== docSnapshot ||
+      passwordIntentPending ||
+      fullSnapshot !== ctx.saveContentSnapshot?.()
+    ) {
       // The user kept editing, opened another document or chose another
       // password after the main process captured this save. Keep the live state
       // dirty; replacing it with the saved snapshot or marking it clean would
@@ -1087,6 +1098,12 @@ async function saveOnce(
     if (!auto) showToast(t('appSaved'))
     return true
   } catch (err) {
+    if (persisted && ctx.captureSaveBytes) {
+      ctx.saveIncompleteRef.current = true
+      ctx.dirtyRef.current = true
+      ctx.setStatus(`Saving completed, but reloading the saved document failed: ${String(err)}`)
+      return true
+    }
     ctx.setStatus(t('appSaveFailed', { error: String(err) }))
     if (!auto) showToast(t('appSaveFailed', { error: String(err) }), 'error')
     return false

@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react'
 import type { CSSProperties, MouseEvent as ReactMouseEvent, SetStateAction } from 'react'
+import { flushSync } from 'react-dom'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor } from '@tiptap/core'
 import { handleDocsControl, type ControlRequest } from './control'
@@ -301,7 +302,8 @@ const WORD_COUNT_THROTTLE_MS = 400
 const MAX_FOLLOW_UP_PASSES = 6
 import { runHeadlessDocumentExport } from './headless-export'
 import { installMcpBridge } from './mcp-bridge'
-import { createDocsSaveAdapter } from './agent/docs-save-adapter'
+import { createDocsSaveAdapter, docsSaveSnapshot } from './agent/docs-save-adapter'
+import { captureDocsWorkingCopy } from './agent/docs-working-copy'
 import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
 import {
   allocateListNumId as allocateListNumIdImpl,
@@ -598,6 +600,7 @@ export function App() {
   const [doc, setDoc] = useState<DocState | null>(null)
   /** a phased open is still streaming the document tail: editor stays read-only */
   const [docLoading, setDocLoading] = useState(false)
+  const [browserReady, setBrowserReady] = useState(!window.nexusdeskDocsHost?.workingCopy)
   /** true until the pending-open / new-blank boot checks settle; the start screen stays hidden meanwhile */
   const bootPendingRef = useRef<Promise<[OpenDocxResult, boolean, AiDocContent | null]> | null>(
     null,
@@ -919,7 +922,8 @@ export function App() {
     otherName: string
     entries: CompareEntry[]
   } | null>(null)
-  const [autoSave, setAutoSave] = useAutoSavePref('aidocs.autoSave', window.desktop)
+  const [autoSavePreference, setAutoSave] = useAutoSavePref('aidocs.autoSave', window.desktop)
+  const autoSave = !window.nexusdeskDocsHost?.workingCopy && autoSavePreference
   // tab closed but this renderer kept alive (shell freeze workaround): go inert
   const [tornDown, setTornDown] = useState(false)
   const [aiPreset, setAiPreset] = useState<{
@@ -1551,14 +1555,14 @@ export function App() {
   // interleaved with (or serialized without) the not-yet-appended blocks.
   useEffect(() => {
     if (!editor) return
-    editor.setEditable(!readMode && !isProtected && !docLoading)
+    editor.setEditable(!readMode && !isProtected && !docLoading && browserReady)
     if (!readMode) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setReadMode(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [editor, readMode, isProtected, docLoading])
+  }, [editor, readMode, isProtected, docLoading, browserReady])
 
   // Track Changes: the recorder plugin reads its toggle from extension storage
   useEffect(() => {
@@ -1605,6 +1609,10 @@ export function App() {
     if (tornDown || !editor) return
     const uninstallMcp = installMcpBridge({ getCtx: () => fileCtxRef.current })
     const browserHost = window.nexusdeskDocsHost
+    const offReadiness = browserHost?.onReadinessChanged((ready, error) => {
+      setBrowserReady(ready)
+      if (error) setStatus(error)
+    })
     const detachEditor = browserHost?.attachEditor(
       createDocsSaveAdapter({
         context: () => fileCtxRef.current,
@@ -1621,8 +1629,15 @@ export function App() {
         consumeApproval: (approvalId, planHash) =>
           browserHost.bridge.consumeApproval(approvalId, planHash),
       }),
+      {
+        context: () => fileCtxRef.current,
+        settle: () => {
+          flushSync(() => {})
+        },
+      },
     )
     return () => {
+      offReadiness?.()
       detachEditor?.()
       uninstallMcp()
     }
@@ -1686,6 +1701,19 @@ export function App() {
   /** App state bundle for the extracted file actions (file-actions.ts); refreshed every render. */
   const fileCtxRef = useRef<FileActionContext>(null as unknown as FileActionContext)
   fileCtxRef.current = {
+    ...(window.nexusdeskDocsHost?.workingCopy
+      ? {
+          captureSaveBytes: async () => {
+            const payload = await captureDocsWorkingCopy(() => fileCtxRef.current, {
+              settle: () => {
+                flushSync(() => {})
+              },
+            })
+            return new Uint8Array(await payload.parts.get('document')!.arrayBuffer())
+          },
+          saveContentSnapshot: () => docsSaveSnapshot(fileCtxRef.current),
+        }
+      : {}),
     editor,
     doc,
     dirtyRef,
@@ -1816,11 +1844,16 @@ export function App() {
       setDocPwdPrompt({ path: info.path, name: info.name, value: '', errorKey: '', busy: false }),
   }
 
+  useEffect(() => {
+    if (!tornDown && editor && doc && !docLoading) window.nexusdeskDocsHost?.setHydrated()
+  }, [tornDown, editor, doc, docLoading])
+
   const loadFile = useCallback(async (result: OpenDocxResult) => {
     const outcome = await loadFileImpl(fileCtxRef.current, result)
     // a failed open with no document yet (boot, or the open that superseded the
     // boot open) must land on blank instead of the "Opening…" screen
-    if (outcome === 'failed' && !fileCtxRef.current.doc) await newFileImpl(fileCtxRef.current)
+    if (outcome === 'failed' && !fileCtxRef.current.doc && !window.nexusdeskDocsHost)
+      await newFileImpl(fileCtxRef.current)
     return outcome
   }, [])
 
@@ -1875,9 +1908,15 @@ export function App() {
         }
       })
       // Open failures also land on a blank document, or the tab stays at "Opening…" forever
-      .catch(() => {
+      .catch((error: unknown) => {
         if (bootHandledRef.current) return
         bootHandledRef.current = true
+        if (window.nexusdeskDocsHost) {
+          setStatus(
+            `Document recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          return
+        }
         void newFile().catch(() => {})
       })
     return unsubscribe
@@ -1973,10 +2012,12 @@ export function App() {
     }
   }
 
-  const save = useCallback(
-    (saveAs: boolean, auto = false) => saveImpl(fileCtxRef.current, saveAs, auto),
-    [],
-  )
+  const save = useCallback((saveAs: boolean, auto = false) => {
+    const action = () => saveImpl(fileCtxRef.current, saveAs, auto)
+    return window.nexusdeskDocsHost?.workingCopy
+      ? window.nexusdeskDocsHost.runMutation(action)
+      : action()
+  }, [])
 
   // inserting a section break needs one save for the new section to take effect; the
   // flag is consumed in the render after state commit, guaranteeing the save closure
@@ -5625,6 +5666,7 @@ export function App() {
           <input
             type="checkbox"
             checked={autoSave}
+            disabled={!!window.nexusdeskDocsHost?.workingCopy}
             onChange={(e) => setAutoSave(e.target.checked)}
           />
         </label>

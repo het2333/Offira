@@ -2,6 +2,9 @@ import {
   BoundedEditorCache,
   createEditorResultJournal,
   editorRequestFingerprint,
+  createWorkingCopyMutationLane,
+  type BrowserWorkingCopyPersistence,
+  type BrowserWorkingCopyPayload,
 } from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
@@ -14,6 +17,8 @@ import {
   type EditPlan,
   type JsonValue,
   type Revision,
+  type WorkingCopyBootstrap,
+  type PersistenceReference,
 } from '@nexusdesk/protocol'
 import {
   createAgentApi,
@@ -28,6 +33,7 @@ export interface DocsBrowserAgentBridge {
   client(): { clientId: ClientId | undefined; attached: boolean }
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
+  setHydrated(state: WorkingCopyBootstrap | null): void
   dispose(): void
 }
 
@@ -36,6 +42,17 @@ export interface DocsBrowserAgentBridgeOptions {
   documentId: DocumentId
   revision: Revision
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+  workingCopy?: {
+    state(): WorkingCopyBootstrap | null
+    persistence: BrowserWorkingCopyPersistence
+    capture(): Promise<BrowserWorkingCopyPayload>
+    run?<T>(task: () => Promise<T>): Promise<T>
+    save?(
+      frame: EditorRequestFrame,
+      action: () => Promise<AgentToolResult>,
+    ): Promise<{ result: AgentToolResult; persistence?: PersistenceReference }>
+    committed?(persistence: PersistenceReference): void
+  }
 }
 
 function failure(code: string, message: string): AgentToolResult {
@@ -79,11 +96,18 @@ export function createDocsBrowserAgentBridge(
   >()
   const proposals = new BoundedEditorCache<string, EditPlan>()
   const storage = options.storage ?? defaultStorage()
-  const journal = createEditorResultJournal(storage, options.documentId)
+  const working = options.workingCopy
+  const lane = createWorkingCopyMutationLane()
+  const receipts = new BoundedEditorCache<string, PersistenceReference>()
+  const uncertain = new Set<string>()
+  const journal = createEditorResultJournal(storage, options.documentId, {
+    requirePersistence: !!working,
+  })
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'docs',
     revision: options.revision,
+    workingCopy: !!working,
   })
 
   const sendResult = (frame: EditorRequestFrame, result: AgentToolResult): void => {
@@ -93,6 +117,9 @@ export function createDocsBrowserAgentBridge(
       id: frame.id,
       target: frame.target,
       result,
+      ...(result.ok && receipts.has(frame.target.operationId)
+        ? { persistence: receipts.get(frame.target.operationId) }
+        : {}),
     })
   }
 
@@ -105,7 +132,7 @@ export function createDocsBrowserAgentBridge(
   }
 
   const execute = async (frame: EditorRequestFrame): Promise<AgentToolResult> => {
-    if (adapter === undefined)
+    if (adapter === undefined || (working && !registration.attached))
       return failure('EDITOR_NOT_READY', 'the document editor is not ready')
     if (frame.command === 'read_document') {
       return adapter.read({
@@ -173,6 +200,30 @@ export function createDocsBrowserAgentBridge(
           'the editor changed after this save was proposed; propose it again',
         )
       }
+      if (working) {
+        if (!working.save)
+          return failure('WORKING_COPY_REQUIRED', 'Durable document saving is unavailable.')
+        const saved = await working.save(frame, () => saveAdapter.save(frame.target.documentId))
+        if (saved.persistence) {
+          receipts.set(frame.target.operationId, saved.persistence)
+          working.committed?.(saved.persistence)
+          // Persisted save success remains authoritative if reparsing the editor failed.
+          return {
+            ok: true,
+            summary: 'Saved the current document.',
+            warnings: saved.result.ok
+              ? []
+              : [
+                  {
+                    code: 'SAVED_RELOAD_FAILED',
+                    message:
+                      'Saving completed, but the editor could not reload the saved document.',
+                  },
+                ],
+          }
+        }
+        return saved.result
+      }
       return saveAdapter.save(frame.target.documentId)
     }
     if (frame.command === 'propose_ops') {
@@ -211,7 +262,19 @@ export function createDocsBrowserAgentBridge(
       }
       approvals.set(frame.approval.id, plan.planHash)
       try {
-        return await adapter.apply({ ...plan, approvalId: frame.approval.id } as ApprovedEditPlan)
+        const result = await adapter.apply({
+          ...plan,
+          approvalId: frame.approval.id,
+        } as ApprovedEditPlan)
+        if (working && result.ok) {
+          uncertain.add(frame.target.operationId)
+          const payload = await working.capture()
+          const receipt = await working.persistence.checkpoint(frame, result, payload)
+          receipts.set(frame.target.operationId, receipt)
+          uncertain.delete(frame.target.operationId)
+          working.committed?.(receipt)
+        }
+        return result
       } finally {
         approvals.delete(frame.approval.id)
         proposals.delete(frame.target.operationId)
@@ -220,8 +283,26 @@ export function createDocsBrowserAgentBridge(
     return failure('UNAVAILABLE_IN_WEB', `the command ${frame.command} is unavailable in Web Docs`)
   }
 
-  const replay = (frame: EditorRequestFrame, fingerprint: string): AgentToolResult | undefined => {
+  const replay = async (
+    frame: EditorRequestFrame,
+    fingerprint: string,
+  ): Promise<AgentToolResult | undefined> => {
     if (frame.command.startsWith('propose_')) return undefined
+    if (working && ['apply_ops', 'save_document'].includes(frame.command)) {
+      const found = await working.persistence.lookup(frame.target.operationId, fingerprint)
+      if (found.state === 'committed') {
+        receipts.set(frame.target.operationId, found.persistence)
+        // Historical terminal replay never moves the renderer's current head backward.
+        return found.result
+      }
+      if (found.state === 'pending' || uncertain.has(frame.target.operationId)) {
+        return failure(
+          'WORKING_COPY_OUTCOME_UNKNOWN',
+          'The earlier attempt needs recovery before another mutation.',
+        )
+      }
+      return undefined
+    }
     const record = journal.read(frame.target.operationId)
     if (!record) return undefined
     return record.fingerprint === fingerprint
@@ -234,7 +315,13 @@ export function createDocsBrowserAgentBridge(
     fingerprint: string,
   ): void => {
     if (!frame.command.startsWith('propose_'))
-      journal.write(frame.target.operationId, { fingerprint, result })
+      journal.write(frame.target.operationId, {
+        fingerprint,
+        result,
+        ...(receipts.has(frame.target.operationId)
+          ? { persistence: receipts.get(frame.target.operationId) }
+          : {}),
+      })
   }
   const releaseProposal = (operationId: string): void => {
     saveProposals.delete(operationId)
@@ -244,7 +331,7 @@ export function createDocsBrowserAgentBridge(
   }
   const handleRequest = async (frame: EditorRequestFrame): Promise<void> => {
     if (disposed) return
-    const fingerprint = await editorRequestFingerprint(frame)
+    const fingerprint = await editorRequestFingerprint(frame, working?.state()?.documentEpoch)
     if (disposed) return
     const terminal = !frame.command.startsWith('propose_')
     const running = terminal ? terminalResults.get(frame.target.operationId) : undefined
@@ -259,7 +346,7 @@ export function createDocsBrowserAgentBridge(
       }
       return
     }
-    const replayed = replay(frame, fingerprint)
+    const replayed = await replay(frame, fingerprint)
     if (replayed !== undefined) {
       deliverResult(frame, replayed)
       return
@@ -272,7 +359,8 @@ export function createDocsBrowserAgentBridge(
     const resultPromise = Promise.resolve().then(async () => {
       let result: AgentToolResult
       try {
-        result = await execute(frame)
+        const run = () => execute(frame)
+        result = working ? await (working.run ? working.run(run) : lane.run(run)) : await run()
         if (
           frame.command.startsWith('propose_') &&
           (disposed || releasedProposals.has(frame.target.operationId))
@@ -284,7 +372,9 @@ export function createDocsBrowserAgentBridge(
         }
       } catch (error) {
         result = failure(
-          'EDITOR_REQUEST_FAILED',
+          typeof (error as { code?: unknown })?.code === 'string'
+            ? (error as { code: string }).code
+            : 'EDITOR_REQUEST_FAILED',
           error instanceof Error ? error.message : String(error),
         )
       }
@@ -342,7 +432,12 @@ export function createDocsBrowserAgentBridge(
       }
     },
     client() {
-      return { clientId: options.client.clientId, attached: options.client.state === 'ready' }
+      return {
+        clientId: options.client.clientId,
+        attached: working
+          ? adapter !== undefined && registration.attached
+          : options.client.state === 'ready',
+      }
     },
     consumeApproval(approvalId, planHash) {
       if (approvals.get(approvalId) !== planHash) return false
@@ -352,6 +447,9 @@ export function createDocsBrowserAgentBridge(
     updateRevision(revision) {
       registration.updateRevision(revision)
     },
+    setHydrated(state) {
+      registration.setHydrated(state)
+    },
     dispose() {
       disposed = true
       releasedProposals.clear()
@@ -360,6 +458,8 @@ export function createDocsBrowserAgentBridge(
       approvals.clear()
       proposals.clear()
       saveProposals.clear()
+      receipts.clear()
+      uncertain.clear()
       adapter = undefined
       unsubscribe()
       registration.dispose()

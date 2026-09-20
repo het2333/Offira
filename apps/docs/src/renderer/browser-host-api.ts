@@ -1,7 +1,24 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
-import type { DocumentId, EditorAdapter, Revision } from '@nexusdesk/protocol'
-import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/web-client'
+import {
+  workingCopyBootstrapSchema,
+  type DocumentId,
+  type EditorAdapter,
+  type Revision,
+  type WorkingCopyBootstrap,
+  type PersistenceReference,
+  type EditorRequestFrame,
+} from '@nexusdesk/protocol'
+import {
+  createNexusClient,
+  createBrowserWorkingCopyPersistence,
+  createWorkingCopyMutationLane,
+  type AgentApi,
+  type NexusClient,
+} from '@nexusdesk/web-client'
+import { captureDocsWorkingCopy } from './agent/docs-working-copy'
+import { docsSaveSnapshot } from './agent/docs-save-adapter'
+import type { FileActionContext } from './file-actions'
 
 import type { DesktopApi, OpenFileResult, UiTheme } from '../shared/ipc'
 import {
@@ -19,6 +36,7 @@ export interface DocsBrowserBootstrap {
   language: DocsLanguage
   theme: UiTheme
   contentUrl: string
+  workingCopy?: WorkingCopyBootstrap
 }
 
 export interface DocsDocumentWriteResult {
@@ -54,7 +72,16 @@ export interface DocsBrowserHostHandle {
   readonly settings: Pick<DocsBrowserBootstrap, 'language' | 'theme'>
   readonly desktopApi: DesktopApi
   readonly bridge: DocsBrowserAgentBridge
-  attachEditor(adapter: EditorAdapter): () => void
+  readonly workingCopy?: WorkingCopyBootstrap
+  attachEditor(
+    adapter: EditorAdapter,
+    capture?: { context(): FileActionContext; settle?(): void | Promise<void> },
+  ): () => void
+  setHydrated(): void
+  runMutation<T>(task: () => Promise<T>): Promise<T>
+  persistBytes?(bytes: Uint8Array, auto?: boolean): Promise<void>
+  onOpenDocx: DesktopApi['onOpenDocx']
+  onReadinessChanged(handler: (ready: boolean, error?: string) => void): () => void
   updateRevision(revision: number): void
   dispose(): void
 }
@@ -69,6 +96,7 @@ export interface InstallDocsBrowserHostOptions {
   client?: NexusClient
   target?: DocsBrowserHostTarget
   transport?: DocsBrowserTransport
+  fetch?: typeof fetch
 }
 
 export class DocsWebUnavailableError extends Error {
@@ -130,6 +158,8 @@ export async function loadDocsBrowserBootstrap(
   ) {
     throw new Error('Local Host returned an invalid Docs bootstrap')
   }
+  if (value.workingCopy !== undefined)
+    value.workingCopy = workingCopyBootstrapSchema.parse(value.workingCopy)
   return value as DocsBrowserBootstrap
 }
 
@@ -155,7 +185,9 @@ export function createHttpDocsBrowserTransport(
 ): DocsBrowserTransport {
   return {
     async readContent() {
-      const response = await fetchImpl(bootstrap.contentUrl, { credentials: 'same-origin' })
+      const response = await fetchImpl(bootstrap.workingCopy?.contentUrl ?? bootstrap.contentUrl, {
+        credentials: 'same-origin',
+      })
       if (!response.ok) throw await hostError(response)
       return new Uint8Array(await response.arrayBuffer())
     },
@@ -199,7 +231,10 @@ const VOID_METHODS = new Set([
 
 /** Build the preload-shaped surface consumed by the unmodified Docs renderer. */
 export function createDocsBrowserDesktopApi(
-  handle: Pick<DocsBrowserHostHandle, 'document' | 'settings' | 'updateRevision'>,
+  handle: Pick<
+    DocsBrowserHostHandle,
+    'document' | 'settings' | 'updateRevision' | 'workingCopy' | 'persistBytes' | 'onOpenDocx'
+  >,
   transport: DocsBrowserTransport,
 ): DesktopApi {
   let pending = true
@@ -234,26 +269,31 @@ export function createDocsBrowserDesktopApi(
     discardDocPasswordIntents: async () => ({ ok: true }),
     async consumePendingOpenDocx(): Promise<OpenFileResult | null> {
       if (!pending) return null
-      pending = false
       const bytes = await transport.readContent()
+      pending = false
       return {
         path: currentPath,
         name: handle.document.title,
         data: toArrayBuffer(bytes),
         hash: await sha256(bytes),
+        ...(handle.workingCopy?.dirty ? { recovered: true } : {}),
       }
     },
     consumeNewBlankDoc: async () => false,
     consumeAiDocContent: async () => null,
     consumeHeadlessExport: async () => null,
     createDocument: () => unavailable('creating a separate native document'),
-    onOpenDocx: noListener,
+    onOpenDocx: handle.onOpenDocx,
     onRenamedDocx: noListener,
-    async saveDocx(path, data) {
+    async saveDocx(path, data, auto) {
       if (path !== currentPath) {
         return { ok: false, error: 'Web Docs can save only the Host-authorized document.' }
       }
       try {
+        if (handle.persistBytes) {
+          await handle.persistBytes(new Uint8Array(data), auto)
+          return { ok: true }
+        }
         const result = await transport.writeContent(new Uint8Array(data), handle.document.revision)
         handle.updateRevision(result.revision)
         return { ok: true }
@@ -329,15 +369,78 @@ export function installDocsBrowserHostApi(
   const target = options.target ?? (window as unknown as DocsBrowserHostTarget)
   const transport = options.transport ?? createHttpDocsBrowserTransport(bootstrap)
   const client = options.client ?? createNexusClient({ url: bootstrap.websocketUrl })
+  let state = bootstrap.workingCopy ? { ...bootstrap.workingCopy } : undefined
+  let hydrated = false
+  let capture: { context(): FileActionContext; settle?(): void | Promise<void> } | undefined
+  let activeSave: { frame: EditorRequestFrame; receipt?: PersistenceReference } | undefined
+  let everRegistered = false
+  let recoveryAttempts = 0
+  let recoveryInFlight = false
+  let initialHydrationSnapshot: string | undefined
+  const openListeners = new Set<Parameters<DesktopApi['onOpenDocx']>[0]>()
+  const readinessListeners = new Set<(ready: boolean, error?: string) => void>()
+  const notifyReadiness = (error?: string) => {
+    for (const listener of readinessListeners) listener(bridge.client().attached, error)
+  }
+  const lane = createWorkingCopyMutationLane()
+  const persistence = state
+    ? createBrowserWorkingCopyPersistence({
+        documentId: bootstrap.documentId,
+        origin: new URL(bootstrap.websocketUrl).origin.replace(/^ws/, 'http'),
+        state: () => state ?? null,
+        clientId: () => client.clientId,
+        fetch: options.fetch,
+      })
+    : undefined
+  const committed = (receipt: PersistenceReference) => {
+    if (
+      !state ||
+      receipt.documentEpoch !== state.documentEpoch ||
+      receipt.workingRevision < state.workingRevision
+    )
+      return
+    state = {
+      ...state,
+      workingRevision: receipt.workingRevision,
+      savedRevision: receipt.savedRevision,
+      checkpointId: receipt.checkpointId,
+      dirty: receipt.dirty,
+    }
+    document.revision = receipt.workingRevision
+    if (hydrated) bridge.setHydrated(state)
+  }
   const bridge = createDocsBrowserAgentBridge({
     client,
     documentId: bootstrap.documentId as DocumentId,
     revision: bootstrap.revision as Revision,
+    ...(persistence
+      ? ({
+          workingCopy: {
+            state: () => state ?? null,
+            persistence,
+            capture: () => {
+              if (!capture) throw new Error('The document has not finished hydration.')
+              return captureDocsWorkingCopy(capture.context, { settle: capture.settle })
+            },
+            run: lane.run,
+            committed,
+            async save(frame, action) {
+              const saving: NonNullable<typeof activeSave> = { frame }
+              activeSave = saving
+              try {
+                return { result: await action(), persistence: saving.receipt }
+              } finally {
+                activeSave = undefined
+              }
+            },
+          },
+        } satisfies Partial<Parameters<typeof createDocsBrowserAgentBridge>[0]>)
+      : {}),
   })
   const document = {
     documentId: bootstrap.documentId,
     title: bootstrap.title,
-    revision: bootstrap.revision,
+    revision: state?.workingRevision ?? bootstrap.revision,
   }
   const capabilities: DocsBrowserCapabilities = {
     openFile: false,
@@ -351,16 +454,130 @@ export function installDocsBrowserHostApi(
   }
   const settings = { language: bootstrap.language, theme: bootstrap.theme }
   let disposed = false
+  const offReadiness = client.onState(() => notifyReadiness())
+  const offRecovery = client.onFrame((frame) => {
+    if (disposed || !state) return
+    if (frame.type === 'editor:registered' && frame.documentId === bootstrap.documentId) {
+      everRegistered ||= bridge.client().attached
+      notifyReadiness()
+    }
+    if (frame.type !== 'recovery:required' || frame.documentId !== bootstrap.documentId) return
+    notifyReadiness(`${frame.code}: ${frame.message}`)
+    // Only replace a stale initial hydration automatically. After successful attachment,
+    // preserve any new manual edits and show the recovery error instead of discarding them.
+    if (
+      frame.code !== 'REVISION_CONFLICT' ||
+      everRegistered ||
+      recoveryInFlight ||
+      recoveryAttempts >= 3
+    )
+      return
+    if (capture) {
+      if (initialHydrationSnapshot === undefined) return
+      try {
+        if (docsSaveSnapshot(capture.context()) !== initialHydrationSnapshot) return
+      } catch {
+        return
+      }
+    }
+    recoveryInFlight = true
+    recoveryAttempts++
+    hydrated = false
+    bridge.setHydrated(null)
+    void (async () => {
+      await new Promise((resolve) => setTimeout(resolve, recoveryAttempts * 100))
+      const next = await loadDocsBrowserBootstrap(
+        bootstrap.documentId,
+        options.fetch ?? globalThis.fetch,
+      )
+      if (!next.workingCopy) throw new Error('The Host omitted its working-copy recovery state.')
+      const bytes = await createHttpDocsBrowserTransport(
+        next,
+        options.fetch ?? globalThis.fetch,
+      ).readContent()
+      if (disposed) return
+      const hash = await sha256(bytes)
+      state = { ...next.workingCopy }
+      document.revision = state.workingRevision
+      for (const listener of openListeners)
+        listener({
+          path: virtualPath(document.documentId),
+          name: document.title,
+          data: toArrayBuffer(bytes),
+          hash,
+          ...(state.dirty ? { recovered: true } : {}),
+        })
+    })()
+      .catch((error) => notifyReadiness(errorMessage(error)))
+      .finally(() => {
+        recoveryInFlight = false
+      })
+  })
   const handle: DocsBrowserHostHandle = {
     document,
     capabilities,
     settings,
     bridge,
+    get workingCopy() {
+      return state
+    },
+    setHydrated() {
+      if (!state || hydrated) return
+      if (!everRegistered && capture) {
+        try {
+          initialHydrationSnapshot = docsSaveSnapshot(capture.context())
+        } catch {
+          initialHydrationSnapshot = undefined
+        }
+      }
+      hydrated = true
+      bridge.setHydrated(state)
+    },
+    runMutation: lane.run,
+    onOpenDocx(handler) {
+      openListeners.add(handler)
+      return () => openListeners.delete(handler)
+    },
+    onReadinessChanged(handler) {
+      readinessListeners.add(handler)
+      handler(bridge.client().attached)
+      return () => readinessListeners.delete(handler)
+    },
+    ...(persistence
+      ? {
+          async persistBytes(bytes: Uint8Array, auto?: boolean) {
+            if (auto && !activeSave)
+              throw new Error('Use Save to write the original document in Web Docs.')
+            const payload = {
+              kind: 'docx-bytes' as const,
+              parts: new Map([['document', new Blob([new Uint8Array(bytes)])]]),
+            }
+            const receipt = activeSave
+              ? await persistence.checkpoint(
+                  activeSave.frame,
+                  { ok: true, summary: 'Saved the current document.', warnings: [] },
+                  payload,
+                )
+              : await persistence.saveManual('manual-save-' + crypto.randomUUID(), payload)
+            if (activeSave) activeSave.receipt = receipt
+            committed(receipt)
+          },
+        }
+      : {}),
     get desktopApi() {
       return desktopApi
     },
-    attachEditor(adapter) {
-      return bridge.attachEditor(adapter)
+    attachEditor(adapter, context) {
+      capture = context
+      const detach = bridge.attachEditor(adapter)
+      return () => {
+        detach()
+        capture = undefined
+        if (state) {
+          hydrated = false
+          bridge.setHydrated(null)
+        }
+      }
     },
     updateRevision(revision) {
       document.revision = revision
@@ -369,6 +586,10 @@ export function installDocsBrowserHostApi(
     dispose() {
       if (disposed) return
       disposed = true
+      offReadiness()
+      offRecovery()
+      openListeners.clear()
+      readinessListeners.clear()
       bridge.dispose()
       client.close()
       if (target.desktop === desktopApi) delete target.desktop

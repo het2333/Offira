@@ -11,7 +11,12 @@ import {
   type Revision,
   type SessionId,
 } from '@nexusdesk/protocol'
-import type { NexusClient, NexusClientState } from '@nexusdesk/web-client'
+import {
+  createEditorResultJournal,
+  editorRequestFingerprint,
+  type NexusClient,
+  type NexusClientState,
+} from '@nexusdesk/web-client'
 
 import { createDocsBrowserAgentBridge } from '../src/renderer/agent/browser-agent-api'
 
@@ -110,6 +115,150 @@ function request(command: string, approval?: { id: RequestId; planHash: string }
 }
 
 describe('Docs browser Agent bridge', () => {
+  it('never upgrades an old success journal into durable apply success', async () => {
+    const client = new FakeClient()
+    const storage = new MemoryStorage()
+    const state = {
+      documentEpoch: 'epoch-1',
+      workingRevision: 2,
+      savedRevision: 1,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'checkpoint-2',
+      dirty: true,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    const frame = request('apply_ops', {
+      id: 'approval-1' as RequestId,
+      planHash: 'exact-plan-hash',
+    })
+    const fingerprint = await editorRequestFingerprint(frame, state.documentEpoch)
+    const journal = createEditorResultJournal(storage, documentId)
+    journal.write(frame.target.operationId, {
+      fingerprint,
+      result: { ok: true, summary: 'old unverified success', warnings: [] },
+    })
+    const bridge = createDocsBrowserAgentBridge({
+      client,
+      storage,
+      documentId,
+      revision,
+      workingCopy: {
+        state: () => state,
+        capture: async () => {
+          throw Error('no mutation should run')
+        },
+        persistence: {
+          lookup: async () => ({ state: 'not-found' }),
+          checkpoint: async () => {
+            throw Error('no upload')
+          },
+        },
+      },
+    })
+    let applies = 0
+    bridge.attachEditor(
+      adapterWith({
+        apply: async () => {
+          applies++
+          return { ok: true, summary: 'bad', warnings: [] }
+        },
+      }),
+    )
+    bridge.setHydrated(state)
+    const registration = client.sent.find((item) => item.type === 'editor:register')!
+    client.emit({
+      type: 'editor:registered',
+      id: registration.id,
+      documentId,
+      revision: 2,
+      documentEpoch: state.documentEpoch,
+      sourceContentId: state.sourceContentId,
+    } as never)
+    client.emit(frame)
+    await vi.waitFor(() =>
+      expect(client.sent.find((item) => item.type === 'editor:result')).toMatchObject({
+        result: { ok: false },
+      }),
+    )
+    expect(applies).toBe(0)
+    bridge.dispose()
+    journal.clearMemory()
+  })
+
+  it('replays a durable terminal with empty browser storage without reverting a newer head', async () => {
+    const client = new FakeClient()
+    const state = {
+      documentEpoch: 'epoch-1',
+      workingRevision: 5,
+      savedRevision: 2,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'checkpoint-5',
+      dirty: true,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    const frame = request('apply_ops', {
+      id: 'approval-1' as RequestId,
+      planHash: 'exact-plan-hash',
+    })
+    let applied = false
+    let headChanged = false
+    const result = { ok: true, summary: 'original committed result', warnings: [] }
+    const bridge = createDocsBrowserAgentBridge({
+      client,
+      documentId,
+      revision,
+      storage: new MemoryStorage(),
+      workingCopy: {
+        state: () => state,
+        committed: () => {
+          headChanged = true
+        },
+        capture: async () => {
+          throw Error('no capture')
+        },
+        persistence: {
+          lookup: async (operationId, requestFingerprint) => ({
+            state: 'committed',
+            result,
+            persistence: {
+              documentEpoch: 'epoch-1',
+              operationId,
+              requestFingerprint,
+              checkpointId: 'checkpoint-2',
+              blobHash: 'b'.repeat(64),
+              workingRevision: 2,
+              savedRevision: 1,
+              dirty: true,
+            },
+          }),
+          checkpoint: async () => {
+            throw Error('no upload')
+          },
+        },
+      },
+    })
+    bridge.attachEditor(
+      adapterWith({
+        apply: async () => {
+          applied = true
+          return result
+        },
+      }),
+    )
+    client.emit(frame)
+    await vi.waitFor(() =>
+      expect(client.sent.find((item) => item.type === 'editor:result')).toMatchObject({
+        result,
+        persistence: { checkpointId: 'checkpoint-2' },
+      }),
+    )
+    expect(applied).toBe(false)
+    expect(headChanged).toBe(false)
+    expect(state.workingRevision).toBe(5)
+    bridge.dispose()
+  })
   it('requires a matching proposal and delivers only the Agent result envelope', async () => {
     const client = new FakeClient()
     const adapter = adapterWith()
@@ -167,9 +316,11 @@ describe('Docs browser Agent bridge', () => {
     expect(apply).toHaveBeenCalledTimes(1)
     const results = client.sent.filter((frame) => frame.type === 'editor:result')
     expect(results.at(-1)).toMatchObject({ result: { ok: true, summary: 'applied once' } })
-    expect(results.at(-1)?.type === 'editor:result' && results.at(-2)?.type === 'editor:result'
-      ? results.at(-1)?.result
-      : undefined).toEqual(results.at(-2)?.type === 'editor:result' ? results.at(-2)?.result : undefined)
+    expect(
+      results.at(-1)?.type === 'editor:result' && results.at(-2)?.type === 'editor:result'
+        ? results.at(-1)?.result
+        : undefined,
+    ).toEqual(results.at(-2)?.type === 'editor:result' ? results.at(-2)?.result : undefined)
     bridge.dispose()
   })
 

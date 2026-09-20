@@ -1,4 +1,5 @@
 import type { AgentSaveResult } from '@nexusdesk/protocol'
+import type { FileActionContext } from '../file-actions'
 import { createDocsEditorAdapter, type DocsEditorAdapterOptions } from './docs-editor-adapter'
 
 // These are buildDocBytes' mutable inputs; the parsed source is immutable and revision-bound.
@@ -96,22 +97,21 @@ function boundedSnapshot(value: unknown): string {
 }
 
 /** Includes the full body and every serializable save setting, including non-body edits. */
+export function docsSaveSnapshot(ctx: FileActionContext): string {
+  if (!ctx.editor || !ctx.doc) throw new Error('the document is not ready to save')
+  return boundedSnapshot({
+    source: { identity: identity(ctx.doc.parsed), hash: ctx.doc.hash, filePath: ctx.doc.filePath },
+    state: Object.fromEntries(SAVE_FIELDS.map((key) => [key, ctx[key]])),
+    body: ctx.editor.getJSON(),
+  })
+}
+
 export function createDocsSaveAdapter(options: DocsEditorAdapterOptions) {
   const saveSnapshot = (): string => {
     const ctx = options.context()
     if (!ctx.editor || !ctx.doc || !options.document().attached)
       throw new Error('the document is not ready to save')
-    const state = Object.fromEntries(SAVE_FIELDS.map((key) => [key, ctx[key]]))
-    return boundedSnapshot({
-      document: options.document(),
-      source: {
-        identity: identity(ctx.doc.parsed),
-        hash: ctx.doc.hash,
-        filePath: ctx.doc.filePath,
-      },
-      state,
-      body: ctx.editor.getJSON(),
-    })
+    return JSON.stringify({ document: options.document(), content: docsSaveSnapshot(ctx) })
   }
   const adapter = createDocsEditorAdapter(options)
   return Object.assign(adapter, {
