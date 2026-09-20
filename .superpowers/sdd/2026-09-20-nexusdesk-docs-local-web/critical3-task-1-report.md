@@ -129,3 +129,75 @@ Integration notes and remaining boundaries:
 - In-flight upload IDs are not durable across Host restarts; exact durable operation lookup is the recovery path. Completed-upload aliases are bounded to 4,096; old aliases may require lookup/new upload initialization. Source/history blobs are retained; no unsafe GC was introduced.
 - Manual edits made after the captured checkpoint are not automatically crash-safe. Format-specific recovery error presentation, full editor hydration and end-to-end browser release proof belong to subsequent tasks.
 - The pre-existing untracked `.superpowers/apply-refresh-recovery-analysis.md` is untouched and unstaged.
+
+## Fix round 1 — two Important review findings
+
+Base: `f11fec259e36952e26bde16f51d360abef3af8f2`. Scope is exactly the two Important findings assigned by the controller. The separately identified Minor journal cache-order issue is intentionally not changed.
+
+### Important 1: immediately finish uncertain runtime requests without inventing a terminal
+
+Verified root cause: `handleWorkingCopyResult` sent only `recovery:required` to the browser when the renderer lacked a matching receipt. It neither responded to the runtime for an actual renderer failure nor used a verified committed result when the renderer had merely lost its commit acknowledgement. A Store lookup exception also escaped the runtime-response path.
+
+RED (13:05–13:06): three new cases failed with `expected [] to have a length of 1 but got 0` for renderer `ok:false`, unverified `ok:true`, and a failed renderer response after a real durable commit. A fourth case injected real manifest-directory fsync failure and showed the Store's `WORKING_COPY_OUTCOME_UNKNOWN` escaping without an immediate runtime response.
+
+GREEN: the router now consults the authoritative ledger first. A renderer failure after a verified commit delivers the original terminal/receipt. Without a verified matching terminal, it immediately delivers a structured `ok:false` / `WORKING_COPY_OUTCOME_UNKNOWN` result to runtime and a recovery notice to the browser. It does not commit/fail OperationStore, write any terminal, consume new approval, delete the pending operation, or authorize another mutation. Runtime delivery precedes browser notification. Tests prove the reservation remains `reserved`, exact lookup remains `pending`, replay without new approval is rejected, and a later real commit can still deliver its original result with only one renderer execution.
+
+Initial post-fix coordinator + router gate: 38/38 passed. While strengthening the actual unknown-fsync recovery case to recover without an intervening bootstrap, its next RED exposed `currentRevision:1` beside a verified revision-2 receipt. This is corrected in the same lookup recovery boundary below by refreshing the current Host head before delivery, not by substituting the historical receipt's revision.
+
+### Important 2: reclaim all corresponding uploads after verified terminal recovery/replay
+
+Verified root cause: durable `lookup` and `commitUpload`'s prior-terminal early return bypassed temporary-upload cleanup. Unknown outcomes leave sealed uploads intentionally unexpired, so two resolved operations permanently consumed both per-document slots. A duplicate unsealed upload for an already committed operation also remained live.
+
+RED (13:08): the new unknown→committed loop and committed-replay loop both failed on their third upload with `UPLOAD_LIMIT`. A matching-operation cleanup test observed two remaining temporary directories instead of the one unrelated pending operation. The enhanced runtime-fsync test separately failed with currentRevision 1 instead of 2.
+
+GREEN: lookup now runs inside the document lane. After Store verifies the terminal and binding, a shared reclaim path selects uploads by document + operation + fingerprint, preserves each completed alias, and reclaims that operation's temporary directories. The same path is used by prior-terminal replay and ordinary successful commit, including duplicate uploads. An unresolved fsync outcome does not reach cleanup. Verified lookup refreshes Driver/Registry from the latest current head so recovered runtime delivery carries an authoritative revision. Cleanup errors cannot replace a committed result with a failure; their retained alias and upload remain retryable by later verified lookup.
+
+The seven new test cases cover immediate structured responses, committed result recovery, genuine unknown fsync recovery, two successive unknown→committed outcomes followed by a third usable upload, three committed-operation upload replays and retained aliases, and reclaiming matching duplicates without deleting an unrelated pending operation. Fault injection wraps real filesystem handles; Store bytes, manifests and terminals are not mocked. Combined coordinator/upload/router gate: 44/44 passed.
+
+### Final verification for fix round 1
+
+The full brief gate was rerun at 13:10–13:11 and exited 0:
+
+```sh
+npm run test -w @nexusdesk/protocol -- tests/schemas.test.ts
+npm run test -w @nexusdesk/local-host -- tests/working-copy-store.test.ts tests/working-copy-coordinator.test.ts tests/checkpoint-upload-store.test.ts tests/agent-router.test.ts tests/server.test.ts tests/document-registry.test.ts tests/ws-session.test.ts tests/operation-store.test.ts
+npm run test -w @nexusdesk/web-client -- tests/working-copy.test.ts tests/client.test.ts tests/agent-api.test.ts
+npm run test -w @nexusdesk/runtime-host
+npm run typecheck -w @nexusdesk/protocol
+npm run typecheck -w @nexusdesk/local-host
+npm run typecheck -w @nexusdesk/web-client
+npm run typecheck -w @nexusdesk/runtime-host
+npm exec -- eslint apps/local-host/src/agent-router.ts apps/local-host/src/checkpoint-upload-store.ts apps/local-host/src/working-copy-coordinator.ts apps/local-host/tests/working-copy-coordinator.test.ts
+git diff --check
+```
+
+Results: protocol 9/9; Host 119/119 across 8 files; web-client 14/14; runtime-host 61/61; all four typechecks passed; changed-file ESLint passed with no output; diff check passed.
+
+Root `npm test` was also rerun to `.superpowers/sdd/2026-09-20-nexusdesk-docs-local-web/critical3-task-1-fix1-full-suite.log` and exited 1 at the same four unchanged `fetchRemoteImage` tests already named in the original report. Complete protocol 11/11, Host 187/187, runtime 61/61, web-client 27/27 and i18n 19/19 passed before electron-utils (180 passed, 4 failed); downstream packages were not reached. No DNS/SSRF workaround was added.
+
+Root `npm run lint` was run to `.superpowers/sdd/2026-09-20-nexusdesk-docs-local-web/critical3-task-1-fix1-lint.log` and exited 1 with 10 errors / 29 warnings. All errors are in files unchanged from this round's base:
+
+| File | Line(s) | Existing lint error |
+| --- | --- | --- |
+| `apps/html/src/renderer/browser-host-api.ts` | 164 | `prefer-const` for api |
+| `apps/local-host/src/pdf-document-driver.ts` | 20 | Unused PageImageRef |
+| `apps/markdown/src/renderer/App.tsx` | 228 | Unused body |
+| `apps/markdown/src/renderer/browser-host-api.ts` | 267 | `prefer-const` for api |
+| `apps/pdf/src/main/image-edit.ts` | 93, 108 | `preserve-caught-error` |
+| `apps/slides/src/renderer/browser-host-api.ts` | 288 | `prefer-const` for slidesApi |
+| `e2e/local-web-slides.spec.ts` | 31, 120 | `preserve-caught-error` |
+| `e2e/production-runtime-slides.spec.ts` | 34 | `preserve-caught-error` |
+
+The 29 warnings are pre-existing hook-dependency/unused-disable warnings in the Docs/PDF/Sheets/Slides and shell UI files, not this round's files. `git diff f11fec259e36952e26bde16f51d360abef3af8f2 --` for all failing lint paths and `packages/electron-utils` was empty. Both logs remain ignored diagnostic artifacts and are not staged.
+
+Self-review rechecked receipt-gated success, pending reservation retention, one-time approval preservation, cleanup only after verified Store terminal, document/operation/fingerprint-scoped cleanup, completed-alias replay, current-head refresh without historical rollback, and unrelated-upload retention. No format app, journal, protocol, Store persistence format, or unrelated lint code was changed.
+
+Only these five files are included in this round's commit:
+
+```text
+apps/local-host/src/agent-router.ts
+apps/local-host/src/checkpoint-upload-store.ts
+apps/local-host/src/working-copy-coordinator.ts
+apps/local-host/tests/working-copy-coordinator.test.ts
+.superpowers/sdd/2026-09-20-nexusdesk-docs-local-web/critical3-task-1-report.md
+```

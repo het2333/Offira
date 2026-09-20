@@ -68,6 +68,10 @@ export class CheckpointUploadStore<T = unknown> {
     }
     return upload.metadata
   }
+  /** Snapshot matching attempts so a verified terminal can retire every upload of that operation. */
+  matching(predicate: (metadata: T) => boolean): ReadonlyArray<readonly [string, T]> {
+    return [...this.uploads].filter(([, upload]) => predicate(upload.metadata)).map(([id, upload]) => [id, upload.metadata] as const)
+  }
   put(id: string, partId: string, stream: AsyncIterable<Uint8Array> | Iterable<Uint8Array>): Promise<CheckpointPart> {
     return this.lane(id, async () => {
       await this.get(id)

@@ -206,18 +206,36 @@ export class WorkingCopyCoordinator {
     const binding = await store.lookupOperationBinding(operationId)
     const receipt = await store.lookupTerminal(operationId, fingerprint)
     if (receipt && !binding) fail('WORKING_COPY_RECOVERY_INVALID', 'A legacy receipt has no durable integration authorization binding.')
+    if (receipt) await this.reclaimCommittedUploads(documentId, operationId, fingerprint)
     return receipt
   }
-  async lookup(documentId: string, clientId: string, input: { documentEpoch: string; operationId: string; requestFingerprint: string }): Promise<WorkingCopyLookup> {
-    // Current document authorization is independent of the owner of the historical operation.
-    this.options.documents.assertClient(documentId as DocumentId, clientId as ClientId)
-    const status = await this.port(documentId).store.getStatus()
-    if (status.documentEpoch !== input.documentEpoch) fail('REVISION_CONFLICT', 'Document epoch changed.')
-    const receipt = await this.terminal(documentId, input.operationId, input.requestFingerprint)
-    if (receipt) return { state: 'committed', persistence: persistenceReference(receipt), result: receipt.result }
-    const pending = this.reservations.get(this.key(documentId, input.operationId))
-    if (pending && pending.binding.requestFingerprint !== input.requestFingerprint) fail('OPERATION_ID_COLLISION', 'Operation identity changed.')
-    return { state: pending ? 'pending' : 'not-found' }
+  /** Call only inside the document lane after Store verification, never for an unknown outcome. */
+  private async reclaimCommittedUploads(documentId: string, operationId: string, fingerprint: string): Promise<void> {
+    for (const [uploadId, upload] of this.uploads.matching(({ reservation }) => reservation.documentId === documentId &&
+        reservation.operationId === operationId && reservation.binding.requestFingerprint === fingerprint)) {
+      // Keep the alias even if temporary-file cleanup fails; a committed receipt remains authoritative.
+      this.completedUploads.set(uploadId, upload)
+      if (this.completedUploads.size > 4096) this.completedUploads.delete(this.completedUploads.keys().next().value!)
+      await this.uploads.discard(uploadId).catch(() => undefined)
+    }
+  }
+  lookup(documentId: string, clientId: string, input: { documentEpoch: string; operationId: string; requestFingerprint: string }): Promise<WorkingCopyLookup> {
+    return this.lane(documentId, async () => {
+      // Current document authorization is independent of the owner of the historical operation.
+      this.options.documents.assertClient(documentId as DocumentId, clientId as ClientId)
+      const status = await this.port(documentId).store.getStatus()
+      if (status.documentEpoch !== input.documentEpoch) fail('REVISION_CONFLICT', 'Document epoch changed.')
+      const receipt = await this.terminal(documentId, input.operationId, input.requestFingerprint)
+      if (receipt) {
+        // A formerly unknown commit may be discovered before bootstrap/normal commit refreshed the Host.
+        // Refresh from the current head, never from this possibly historical receipt.
+        await this.refresh(documentId, true)
+        return { state: 'committed', persistence: persistenceReference(receipt), result: receipt.result }
+      }
+      const pending = this.reservations.get(this.key(documentId, input.operationId))
+      if (pending && pending.binding.requestFingerprint !== input.requestFingerprint) fail('OPERATION_ID_COLLISION', 'Operation identity changed.')
+      return { state: pending ? 'pending' : 'not-found' }
+    })
   }
   async lookupRequest(frame: EditorRequestFrame): Promise<WorkingCopyLookup | undefined> {
     const store = this.port(frame.target.documentId).store
@@ -320,9 +338,7 @@ export class WorkingCopyCoordinator {
           throw new WorkingCopyCoordinatorError('WORKING_COPY_PERSIST_FAILED', cause instanceof Error ? cause.message : 'Could not materialize this working copy.')
         }
       }
-      this.completedUploads.set(uploadId, upload)
-      if (this.completedUploads.size > 4096) this.completedUploads.delete(this.completedUploads.keys().next().value!)
-      await this.uploads.discard(uploadId).catch(() => undefined)
+      await this.reclaimCommittedUploads(documentId, reservation.operationId, reservation.binding.requestFingerprint)
       return { persistence: persistenceReference(receipt), result: receipt.result }
     })
   }

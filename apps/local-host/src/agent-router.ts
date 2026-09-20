@@ -377,15 +377,23 @@ export class AgentRouter {
       throw Error('Renderer does not own this operation result.')
     }
     this.options.documents.assertClient(frame.target.documentId, clientId)
-    const committed = await this.options.workingCopy!.lookupRequest(owner.request)
-    if (committed?.state !== 'committed' || !frame.persistence ||
-        !isDeepStrictEqual(frame.persistence, committed.persistence) || !isDeepStrictEqual(frame.result, committed.result)) {
-      this.options.sendToClient(clientId, { type: 'recovery:required', protocolVersion: 1, id: frame.id,
-        documentId: frame.target.documentId, code: 'WORKING_COPY_OUTCOME_UNKNOWN',
-        message: 'No verified durable terminal matches this result. Preserve the operation and query its outcome.' })
+    // A lookup failure is uncertainty, not a failed mutation terminal. A renderer may report
+    // failure after losing the acknowledgement of an already committed checkpoint.
+    const committed = await this.options.workingCopy!.lookupRequest(owner.request).catch(() => undefined)
+    if (committed?.state === 'committed' && (!frame.result.ok || (frame.persistence &&
+        isDeepStrictEqual(frame.persistence, committed.persistence) && isDeepStrictEqual(frame.result, committed.result)))) {
+      this.deliverWorkingCopy(owner, committed)
       return
     }
-    this.deliverWorkingCopy(owner, committed)
+    const message = 'No verified durable terminal matches this result. Preserve the operation and query its outcome; do not repeat the mutation.'
+    // Finish the runtime request promptly without ending the reservation or recovery lookup.
+    // Deliver before the browser notification, whose transport may already be disconnected.
+    this.options.supervisor.respondEditor({ type: 'editor:result', protocolVersion: 1, id: owner.requestId,
+      target: owner.target, currentRevision: this.options.documents.assertClient(owner.target.documentId, clientId).revision,
+      result: { ok: false, summary: 'Working-copy outcome is unknown; recovery is required.',
+        warnings: [{ code: 'WORKING_COPY_OUTCOME_UNKNOWN', message }] } })
+    this.options.sendToClient(clientId, { type: 'recovery:required', protocolVersion: 1, id: frame.id,
+      documentId: frame.target.documentId, code: 'WORKING_COPY_OUTCOME_UNKNOWN', message })
   }
 
   private deliverWorkingCopy(owner: EditorOperationOwner, committed: Extract<Awaited<ReturnType<WorkingCopyCoordinator['lookup']>>, { state: 'committed' }>): void {

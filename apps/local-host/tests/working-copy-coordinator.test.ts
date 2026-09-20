@@ -68,6 +68,95 @@ async function upload(setup: Awaited<ReturnType<typeof fixture>>, text = 'edited
   return { ...created, parts: [part] }
 }
 
+async function routedFixture() {
+  const s = await fixture()
+  const supervisor = new HarnessSupervisor({ entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) })
+  const operations = new OperationStore()
+  const results: import('@nexusdesk/runtime-host/protocol').RuntimeEditorResponseFrame[] = []
+  const sent: Array<{ type: string }> = []
+  vi.spyOn(supervisor, 'respondEditor').mockImplementation((frame) => { results.push(frame) })
+  const router = new AgentRouter({ supervisor, documents: s.documents, operations, workingCopy: s.coordinator,
+    sendToClient: (_client, frame) => sent.push(frame) })
+  await supervisor.ready()
+  await router.handleClientFrame({ type: 'agent:start', protocolVersion: 1, id: 'start' as never,
+    sessionId: s.frame.target.sessionId, documentId: s.frame.target.documentId, prompt: 'hello' }, s.frame.target.clientId)
+  await router.routeRuntimeFrame({ type: 'approval:request', protocolVersion: 1, id: s.frame.approval!.id,
+    sessionId: s.frame.target.sessionId, toolName: 'apply_document_ops',
+    proposal: { planHash: 'approved', operationId: 'op', title: 'Apply', summary: 'Change', targets: [] } as never })
+  await router.handleClientFrame({ type: 'approval:response', protocolVersion: 1, id: s.frame.approval!.id, outcome: 'allowed-once' }, s.frame.target.clientId)
+  await router.routeRuntimeFrame(s.frame)
+  return { ...s, supervisor, operations, results, sent, router }
+}
+
+async function failManifestSync(s: Awaited<ReturnType<typeof fixture>>) {
+  const directory = await fs.realpath(join(s.config.rootDirectory, (await fs.readdir(s.config.rootDirectory))[0]!))
+  const actual = await vi.importActual<typeof fs>('node:fs/promises')
+  vi.mocked(fs.open).mockImplementation(async (path, ...args) => {
+    const handle = await actual.open(path, ...args)
+    if (String(path) === directory) handle.sync = async () => { throw Object.assign(Error('fsync unavailable'), { code: 'ENOSPC' }) }
+    return handle
+  })
+  return () => { vi.mocked(fs.open).mockImplementation(actual.open) }
+}
+
+it.each([false, true])('immediately returns an unknown runtime result for unverified renderer ok=%s without ending recovery', async (ok) => {
+  const s = await routedFixture()
+  try {
+    const up = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+    const part = await s.coordinator.putPart('doc', 'client', up.uploadId, 'document', [bytes('edited')])
+    await s.router.handleClientFrame({ type: 'editor:result', protocolVersion: 1, id: s.frame.id,
+      target: s.frame.target, result: { ok, summary: 'Renderer could not verify persistence.', warnings: [] } }, s.frame.target.clientId)
+    expect(s.results).toHaveLength(1)
+    expect(s.results[0]).toMatchObject({ id: s.frame.id, currentRevision: 1, result: {
+      ok: false, warnings: [{ code: 'WORKING_COPY_OUTCOME_UNKNOWN' }] } })
+    expect(s.results[0]?.persistence).toBeUndefined()
+    expect(s.operations.lookup('op' as never)?.state).toBe('reserved')
+    expect(await s.store.lookupTerminal('op', up.requestFingerprint)).toBeUndefined()
+    expect(await s.coordinator.lookup('doc', 'client', { documentEpoch: s.bootstrap.documentEpoch,
+      operationId: 'op', requestFingerprint: up.requestFingerprint })).toEqual({ state: 'pending' })
+    await expect(s.router.routeRuntimeFrame(s.frame)).rejects.toThrow('one-time approval')
+    const committed = await s.coordinator.commitUpload('doc', 'client', up.uploadId, [part])
+    await s.router.notifyWorkingCopyCommit('doc', 'op')
+    expect(s.results.at(-1)).toMatchObject({ result, persistence: committed.persistence, currentRevision: 2 })
+    expect(s.sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    expect(s.materializations()).toBe(1)
+  } finally { s.router.dispose(); await s.supervisor.shutdown() }
+})
+
+it('delivers the verified durable terminal when the renderer reports failure without its lost receipt', async () => {
+  const s = await routedFixture()
+  try {
+    const up = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+    const part = await s.coordinator.putPart('doc', 'client', up.uploadId, 'document', [bytes('edited')])
+    const committed = await s.coordinator.commitUpload('doc', 'client', up.uploadId, [part])
+    await s.router.handleClientFrame({ type: 'editor:result', protocolVersion: 1, id: s.frame.id,
+      target: s.frame.target, result: { ok: false, summary: 'Commit response lost.', warnings: [] } }, s.frame.target.clientId)
+    expect(s.results).toHaveLength(1)
+    expect(s.results[0]).toMatchObject({ result, persistence: committed.persistence, currentRevision: 2 })
+    expect(s.operations.lookup('op' as never)?.state).toBe('committed')
+    expect(s.materializations()).toBe(1)
+  } finally { s.router.dispose(); await s.supervisor.shutdown() }
+})
+
+it('immediately resolves runtime uncertainty even while durable lookup cannot finish its fsync check', async () => {
+  const s = await routedFixture()
+  try {
+    const up = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+    const part = await s.coordinator.putPart('doc', 'client', up.uploadId, 'document', [bytes('edited')])
+    const restore = await failManifestSync(s)
+    await expect(s.coordinator.commitUpload('doc', 'client', up.uploadId, [part])).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    await s.router.handleClientFrame({ type: 'editor:result', protocolVersion: 1, id: s.frame.id,
+      target: s.frame.target, result: { ok: false, summary: 'Persistence outcome unknown.', warnings: [] } }, s.frame.target.clientId)
+    expect(s.results).toHaveLength(1)
+    expect(s.results[0]).toMatchObject({ result: { ok: false, warnings: [{ code: 'WORKING_COPY_OUTCOME_UNKNOWN' }] } })
+    expect(s.operations.lookup('op' as never)?.state).toBe('reserved')
+    restore()
+    await s.router.notifyWorkingCopyCommit('doc', 'op')
+    expect(s.results.at(-1)).toMatchObject({ result, persistence: { operationId: 'op', dirty: true }, currentRevision: 2 })
+    expect(s.sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+  } finally { s.router.dispose(); await s.supervisor.shutdown() }
+})
+
 it('requires a reservation and atomically commits bytes plus bound terminal, recoverable without the original coordinator', async () => {
   const s = await fixture()
   await expect(s.coordinator.beginUpload('doc', 'client', s.metadata())).rejects.toMatchObject({ code: 'OPERATION_NOT_AUTHORIZED' })
@@ -185,6 +274,62 @@ it('releases definitively failed upload attempts after consulting the ledger so 
     expect(await s.store.lookupTerminal('op', up.requestFingerprint)).toBeUndefined()
   }
   expect(await s.store.readWorkingBytes()).toEqual(bytes('original'))
+})
+
+it('reclaims sealed uploads only after unknown outcomes are verified committed so later uploads remain available', async () => {
+  const s = await fixture()
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const frame = { ...s.frame, id: 'unknown-' + attempt, target: { ...s.frame.target,
+      operationId: 'unknown-' + attempt, revision: attempt + 1 }, arguments: { operationId: 'unknown-' + attempt } } as unknown as EditorRequestFrame
+    const up = await upload(s, 'edited-' + attempt, frame)
+    const restore = await failManifestSync(s)
+    await expect(s.coordinator.commitUpload('doc', 'client', up.uploadId, up.parts)).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    await expect(s.coordinator.lookup('doc', 'client', { documentEpoch: s.bootstrap.documentEpoch,
+      operationId: frame.target.operationId, requestFingerprint: up.requestFingerprint })).rejects.toMatchObject({ code: 'WORKING_COPY_OUTCOME_UNKNOWN' })
+    expect((await fs.readdir(join(s.dir, 'uploads'))).length).toBeGreaterThan(0)
+    restore()
+    const terminal = await s.coordinator.lookup('doc', 'client', { documentEpoch: s.bootstrap.documentEpoch,
+      operationId: frame.target.operationId, requestFingerprint: up.requestFingerprint })
+    expect(terminal.state).toBe('committed')
+    expect(await s.coordinator.commitUpload('doc', 'client', up.uploadId, up.parts)).toMatchObject(terminal.state === 'committed'
+      ? { persistence: terminal.persistence, result: terminal.result } : {})
+    await s.coordinator.bootstrap('doc', 'http://localhost', 'http-session')
+  }
+  const next = { ...s.frame, id: 'next', target: { ...s.frame.target, operationId: 'next', revision: 3 },
+    arguments: { operationId: 'next' } } as unknown as EditorRequestFrame
+  const up = await upload(s, 'next edits', next)
+  expect(await s.coordinator.commitUpload('doc', 'client', up.uploadId, up.parts)).toMatchObject({ persistence: { workingRevision: 4 } })
+  expect(s.materializations()).toBe(3)
+})
+
+it('reclaims unsealed uploads when replaying a committed operation and retains their receipt aliases', async () => {
+  const s = await fixture()
+  const first = await upload(s)
+  const committed = await s.coordinator.commitUpload('doc', 'client', first.uploadId, first.parts)
+  const replayIds: string[] = []
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const replay = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+    replayIds.push(replay.uploadId)
+    expect(await s.coordinator.commitUpload('doc', 'client', replay.uploadId, [])).toEqual(committed)
+  }
+  for (const uploadId of replayIds) expect(await s.coordinator.commitUpload('doc', 'client', uploadId, [])).toEqual(committed)
+  expect(await fs.readdir(join(s.dir, 'uploads'))).toEqual([])
+  expect(s.materializations()).toBe(1)
+})
+
+it('reclaims every upload of the verified operation but preserves an unrelated pending operation', async () => {
+  const s = await fixture()
+  const first = await upload(s)
+  const duplicate = await s.coordinator.beginUpload('doc', 'client', s.metadata())
+  const committed = await s.coordinator.commitUpload('doc', 'client', first.uploadId, first.parts)
+  const other = { ...s.frame, id: 'other', target: { ...s.frame.target, operationId: 'other', revision: 2 },
+    arguments: { operationId: 'other' } } as unknown as EditorRequestFrame
+  const pending = await upload(s, 'pending', other)
+  expect(await s.coordinator.lookup('doc', 'client', { documentEpoch: s.bootstrap.documentEpoch,
+    operationId: 'op', requestFingerprint: first.requestFingerprint })).toMatchObject({ state: 'committed' })
+  expect(await s.coordinator.commitUpload('doc', 'client', duplicate.uploadId, [])).toEqual(committed)
+  expect(await fs.readdir(join(s.dir, 'uploads'))).toHaveLength(1)
+  expect(await s.coordinator.commitUpload('doc', 'client', pending.uploadId, pending.parts)).toMatchObject({ persistence: { workingRevision: 3 } })
 })
 
 it.each(['ENOSPC', 'unknown-fsync'] as const)('preserves Store evidence through coordinator %s and never invents a failed terminal', async (failure) => {
