@@ -1082,7 +1082,7 @@ export default function App() {
   }
 
   const doSave = useCallback(
-    async (mode: SaveMode, suggestedName?: string): Promise<boolean> => {
+    async (mode: SaveMode, suggestedName?: string, approvedSaveGuard?: () => boolean): Promise<boolean> => {
       if (statusRef.current !== 'ready') return false
       // uncommitted live style pokes belong to the document being saved
       flushPending()
@@ -1093,6 +1093,10 @@ export default function App() {
       setSaveState('saving')
       try {
         const textAtSave = textRef.current
+        if (approvedSaveGuard?.() === false) {
+          setSaveState('idle')
+          return false
+        }
         const serialized = serializeDocText({ text: textAtSave, envelope: envelopeRef.current })
         const result = await window.htmlApi.save({
           text: serialized,
@@ -1407,8 +1411,8 @@ export default function App() {
             ? { ok: true, summary: `Applied ${String(operations.length)} HTML operation(s).`, warnings: [], changes: { targets: [], count: operations.length } }
             : { ok: false, summary: 'HTML operations were not applied.', warnings: outcome.errors.map((error) => ({ code: `HTML_${error.kind.toUpperCase()}`, message: error.message, target: `operation:${String(error.index)}` })) }
         },
-        async save() {
-          const ok = await doSave('save')
+        async save(approvedSaveGuard) {
+          const ok = await doSave('save', undefined, approvedSaveGuard)
           return ok ? { ok: true, summary: 'Saved the current HTML document.', warnings: [] } : { ok: false, summary: 'Could not save the current HTML document.', warnings: [{ code: 'SAVE_FAILED', message: 'The Local Host rejected the save.' }] }
         },
         consumeApproval: (id, hash) => host.bridge.consumeApproval(id, hash),

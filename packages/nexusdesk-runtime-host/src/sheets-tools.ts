@@ -1,5 +1,6 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { AgentApprovalProposal, AgentToolResult, JsonValue } from '@nexusdesk/protocol'
+import { parseAgentToolResult } from '@nexusdesk/protocol'
 
 export interface SheetsToolBridge {
   request(
@@ -106,26 +107,46 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
 
   const save = defineTool({
     name: 'save_sheet',
-    description:
-      'Save the open spreadsheet in place. The model cannot choose or change the destination path.',
+    description: 'Save the proposed document snapshot in place after exact approval.',
     parameters: {},
     output: agentOutput,
-    async execute(_args, exec) {
+    async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request('propose_save', {}, execution))
+      if (!proposed.ok) return proposed as unknown as JsonValue
+      const data = (proposed.data ?? {}) as Record<string, JsonValue>
+      if (
+        typeof data.operationId !== 'string' ||
+        typeof data.planHash !== 'string' ||
+        typeof data.snapshotHash !== 'string' ||
+        !data.snapshotHash
+      ) {
+        throw new Error('editor returned an invalid save proposal')
+      }
       const proposal: AgentApprovalProposal = {
-        planHash: 'save-current-workbook-in-place',
-        summary: 'Save the current spreadsheet in place.',
-        targets: ['current workbook'],
-        warnings: [],
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === 'string' ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets)
+          ? data.targets.filter((value): value is string => typeof value === 'string')
+          : [],
+        warnings: proposed.warnings,
       }
-      const approval = await bridge.approve('save_sheet', proposal, exec)
+      const approval = await bridge.approve('save_sheet', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
-        throw new Error('spreadsheet save was not approved')
+        throw new Error('document save was not approved')
       }
-      const result = await bridge.request('save_sheet', { inPlace: true }, exec, {
-        approvalId: approval.approvalId,
-        planHash: proposal.planHash,
-      })
-      return result as unknown as JsonValue
+      return parseAgentToolResult(
+        await bridge.request(
+          'save_sheet',
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId,
+          },
+        ),
+      ) as unknown as JsonValue
     },
   })
 

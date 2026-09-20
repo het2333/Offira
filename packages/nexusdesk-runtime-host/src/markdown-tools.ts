@@ -22,7 +22,9 @@ export interface MarkdownToolBridge {
 
 const agentOutput = {
   schema: { type: 'json' } as const,
-  render: (_args: unknown, value: JsonValue) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+  render: (_args: unknown, value: JsonValue) => [
+    { type: 'text' as const, text: JSON.stringify(value) },
+  ],
 }
 
 const MARKDOWN_DSL_GUIDE = [
@@ -65,7 +67,10 @@ function approvalDenied(action: string): AgentToolResult {
   })
 }
 
-function proposalFrom(result: AgentToolResult): { operationId: string; proposal: AgentApprovalProposal } {
+function proposalFrom(result: AgentToolResult): {
+  operationId: string
+  proposal: AgentApprovalProposal
+} {
   const data = (result.data ?? {}) as Record<string, JsonValue>
   if (typeof data.planHash !== 'string' || typeof data.operationId !== 'string') {
     throw new Error('Markdown editor returned an invalid edit proposal')
@@ -93,7 +98,9 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
     output: agentOutput,
     isConcurrencySafe: () => true,
     async execute(_args, execution) {
-      return agentResult(await bridge.request('read_markdown', {}, execution)) as unknown as JsonValue
+      return agentResult(
+        await bridge.request('read_markdown', {}, execution),
+      ) as unknown as JsonValue
     },
   })
   const apply = defineTool({
@@ -110,7 +117,9 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
     },
     output: agentOutput,
     async execute(args, execution) {
-      const proposed = agentResult(await bridge.request('propose_ops', { ops: args.operations }, execution))
+      const proposed = agentResult(
+        await bridge.request('propose_ops', { ops: args.operations }, execution),
+      )
       if (!proposed.ok) return proposed as unknown as JsonValue
       const { operationId, proposal } = proposalFrom(proposed)
       const approval = await bridge.approve('apply_markdown_operations', proposal, execution)
@@ -128,27 +137,48 @@ export function createMarkdownTools(bridge: MarkdownToolBridge): ToolDefinition[
   })
   const save = defineTool({
     name: 'save_markdown',
-    description: 'Save the current Markdown document in place. The model cannot choose the path.',
+    description: 'Save the proposed document snapshot in place after exact approval.',
     parameters: {},
     output: agentOutput,
     async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request('propose_save', {}, execution))
+      if (!proposed.ok) return proposed as unknown as JsonValue
+      const data = (proposed.data ?? {}) as Record<string, JsonValue>
+      if (
+        typeof data.operationId !== 'string' ||
+        typeof data.planHash !== 'string' ||
+        typeof data.snapshotHash !== 'string' ||
+        !data.snapshotHash
+      ) {
+        throw new Error('editor returned an invalid save proposal')
+      }
       const proposal: AgentApprovalProposal = {
-        planHash: 'save-current-markdown-in-place',
-        summary: 'Save the current Markdown document in place.',
-        targets: ['current document'],
-        warnings: [],
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === 'string' ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets)
+          ? data.targets.filter((value): value is string => typeof value === 'string')
+          : [],
+        warnings: proposed.warnings,
       }
       const approval = await bridge.approve('save_markdown', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
         return approvalDenied('Markdown save') as unknown as JsonValue
       }
-      return agentResult(
-        await bridge.request('save_markdown', { inPlace: true }, execution, {
-          approvalId: approval.approvalId,
-          planHash: proposal.planHash,
-        }),
+      return parseAgentToolResult(
+        await bridge.request(
+          'save_markdown',
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId,
+          },
+        ),
       ) as unknown as JsonValue
     },
   })
+
   return [read, apply, save]
 }

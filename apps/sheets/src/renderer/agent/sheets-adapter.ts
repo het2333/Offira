@@ -36,6 +36,8 @@ export interface SheetsDocumentState {
 }
 
 export interface SheetsAdapterOptions {
+  saveSnapshot?(): string
+  saveApproved?(guard: () => boolean): Promise<AgentSaveResult>
   handlers: McpSheetHandlers
   document(): SheetsDocumentState
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
@@ -210,9 +212,23 @@ class SheetsAdapter implements EditorAdapter {
     }
   }
 
+  saveSnapshot(): string {
+    if (!this.options.saveSnapshot) throw new Error('full workbook save snapshot is unavailable')
+    return canonical({ document: this.options.document(), content: this.options.saveSnapshot() })
+  }
+
   async save(documentId: DocumentId): Promise<AgentSaveResult> {
     if (documentId !== this.options.document().documentId) {
       return failure('DOCUMENT_NOT_FOUND', `document ${documentId} is not open`)
+    }
+    if (this.options.saveApproved) {
+      const snapshot = this.saveSnapshot()
+      let stale = false
+      const result = await this.options.saveApproved(() => {
+        stale = this.saveSnapshot() !== snapshot
+        return !stale
+      })
+      return stale ? failure('STALE_CONTENT', 'the workbook changed after save approval') : result
     }
     return agentResult(
       await executeSheetsCommand(this.options.handlers, {

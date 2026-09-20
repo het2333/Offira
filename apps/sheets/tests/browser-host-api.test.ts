@@ -321,7 +321,7 @@ describe('browser agent bridge', () => {
       },
       command: 'apply_ops',
       arguments: { ops: [] },
-      approval: { id: 'approval-2' as RequestId, planHash: 'new-plan-hash' },
+      approval: { id: 'approval-2' as RequestId, planHash: 'exact-plan-hash' },
     })
 
     await vi.waitFor(() =>
@@ -385,15 +385,15 @@ describe('browser agent bridge', () => {
         operationId: 'operation-save' as OperationId,
         clientId: 'client-1' as ClientId,
       },
-      command: 'save_sheet',
+      command: 'read_sheet',
       arguments: {},
     })
 
-    await vi.waitFor(() => expect(adapter.save).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(adapter.read).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => {
       const saved = storage.getItem('nexusdesk:editor-result:document-1:operation-save')
       expect(saved).not.toBeNull()
-      expect(JSON.parse(saved!).result).toMatchObject({ ok: true, summary: 'saved' })
+      expect(JSON.parse(saved!).result).toMatchObject({ ok: true, summary: 'read' })
     })
     bridge.dispose()
   })

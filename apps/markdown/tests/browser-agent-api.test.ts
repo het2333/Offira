@@ -11,11 +11,20 @@ class FakeClient implements NexusClient {
   readonly sent: unknown[] = []
   connect() {}
   close() {}
-  send(frame: unknown) { this.sent.push(frame) }
-  request(): never { throw new Error('not used') }
-  onState() { return () => undefined }
+  send(frame: unknown) {
+    this.sent.push(frame)
+  }
+  request(): never {
+    throw new Error('not used')
+  }
+  onState() {
+    return () => undefined
+  }
   onFrame(callback: (frame: EditorRequestFrame) => void) {
-    this.frames.push = ((frame: EditorRequestFrame) => { callback(frame); return 0 }) as never
+    this.frames.push = ((frame: EditorRequestFrame) => {
+      callback(frame)
+      return 0
+    }) as never
     return () => undefined
   }
 }
@@ -28,34 +37,105 @@ describe('Markdown browser Agent bridge', () => {
       client,
       documentId: 'markdown-1' as never,
       revision: 1 as never,
-      storage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
+      storage: {
+        getItem: (key) => storage.get(key) ?? null,
+        setItem: (key, value) => storage.set(key, value),
+        removeItem: (key) => storage.delete(key),
+      },
     })
     const apply = vi.fn().mockResolvedValue({ ok: true, summary: 'Applied.', warnings: [] })
     bridge.attachEditor({
       editorType: 'markdown',
-      capabilities: () => ({ editorType: 'markdown', commands: [], canUndo: false, canSave: true, canExport: false }),
-      snapshot: vi.fn(), read: vi.fn(), propose: vi.fn().mockResolvedValue({ planHash: 'plan-1', summary: 'Apply.', warnings: [], operations: [{ op: 'replaceText' }], target: {}}),
-      apply, verify: vi.fn(), undo: vi.fn(), save: vi.fn(), export: vi.fn(),
+      capabilities: () => ({
+        editorType: 'markdown',
+        commands: [],
+        canUndo: false,
+        canSave: true,
+        canExport: false,
+      }),
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi
+        .fn()
+        .mockResolvedValue({
+          planHash: 'plan-1',
+          summary: 'Apply.',
+          warnings: [],
+          operations: [{ op: 'replaceText' }],
+          target: {},
+        }),
+      apply,
+      verify: vi.fn(),
+      undo: vi.fn(),
+      save: vi.fn(),
+      export: vi.fn(),
     } as never)
 
-    const frame = { type: 'editor:request', protocolVersion: 1, id: 'request-1', target: { sessionId: 'session-1', documentId: 'markdown-1', editorType: 'markdown', revision: 1, operationId: 'operation-1', clientId: 'client-1' }, command: 'apply_ops', arguments: { ops: [{ op: 'replaceText' }] }, approval: { id: 'approval-1', planHash: 'plan-1' } } as never
+    const frame = {
+      type: 'editor:request',
+      protocolVersion: 1,
+      id: 'request-1',
+      target: {
+        sessionId: 'session-1',
+        documentId: 'markdown-1',
+        editorType: 'markdown',
+        revision: 1,
+        operationId: 'operation-1',
+        clientId: 'client-1',
+      },
+      command: 'apply_ops',
+      arguments: { ops: [{ op: 'replaceText' }] },
+      approval: { id: 'approval-1', planHash: 'plan-1' },
+    } as never
     // An apply without a proposal must not reach the editor.
     ;(client.frames.push as never)(frame)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(apply).not.toHaveBeenCalled()
   })
 
-  it('requires the exact save approval and consumes it after one save', async () => {
+  it('rejects missing, unrelated, and legacy constant save approvals without a proposal', async () => {
     const client = new FakeClient()
-    const bridge = createMarkdownBrowserAgentBridge({ client, documentId: 'markdown-1' as never, revision: 1 as never })
+    const bridge = createMarkdownBrowserAgentBridge({
+      client,
+      documentId: 'markdown-1' as never,
+      revision: 1 as never,
+    })
     const save = vi.fn().mockResolvedValue({ ok: true, summary: 'Saved.', warnings: [] })
     bridge.attachEditor({
-      editorType: 'markdown', capabilities: () => ({ editorType: 'markdown', commands: [], canUndo: false, canSave: true, canExport: false }),
-      snapshot: vi.fn(), read: vi.fn(), propose: vi.fn(), apply: vi.fn(), verify: vi.fn(), undo: vi.fn(), save, export: vi.fn(),
+      editorType: 'markdown',
+      capabilities: () => ({
+        editorType: 'markdown',
+        commands: [],
+        canUndo: false,
+        canSave: true,
+        canExport: false,
+      }),
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi.fn(),
+      apply: vi.fn(),
+      verify: vi.fn(),
+      undo: vi.fn(),
+      save,
+      export: vi.fn(),
     } as never)
-    const target = { sessionId: 'session-1', documentId: 'markdown-1', editorType: 'markdown', revision: 1, clientId: 'client-1' }
+    const target = {
+      sessionId: 'session-1',
+      documentId: 'markdown-1',
+      editorType: 'markdown',
+      revision: 1,
+      clientId: 'client-1',
+    }
     const sendSave = (operationId: string, approval?: { id: string; planHash: string }) =>
-      (client.frames.push as never)({ type: 'editor:request', protocolVersion: 1, id: `request-${operationId}`, target: { ...target, operationId }, command: 'save_markdown', arguments: { inPlace: true }, approval })
+      (client.frames.push as never)({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: `request-${operationId}`,
+        target: { ...target, operationId },
+        command: 'save_markdown',
+        arguments: { inPlace: true },
+        approval,
+      })
 
     sendSave('missing')
     sendSave('wrong', { id: 'approval-wrong', planHash: 'other-plan' })
@@ -63,16 +143,26 @@ describe('Markdown browser Agent bridge', () => {
     sendSave('replayed', { id: 'approval-1', planHash: 'save-current-markdown-in-place' })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(save).toHaveBeenCalledTimes(1)
-    expect(client.sent).toContainEqual(expect.objectContaining({
-      type: 'editor:result',
-      target: expect.objectContaining({ operationId: 'missing' }),
-      result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })] }),
-    }))
-    expect(client.sent).toContainEqual(expect.objectContaining({
-      type: 'editor:result',
-      target: expect.objectContaining({ operationId: 'wrong' }),
-      result: expect.objectContaining({ ok: false, warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })] }),
-    }))
+    expect(save).not.toHaveBeenCalled()
+    expect(client.sent).toContainEqual(
+      expect.objectContaining({
+        type: 'editor:result',
+        target: expect.objectContaining({ operationId: 'missing' }),
+        result: expect.objectContaining({
+          ok: false,
+          warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+        }),
+      }),
+    )
+    expect(client.sent).toContainEqual(
+      expect.objectContaining({
+        type: 'editor:result',
+        target: expect.objectContaining({ operationId: 'wrong' }),
+        result: expect.objectContaining({
+          ok: false,
+          warnings: [expect.objectContaining({ code: 'APPROVAL_INVALID' })],
+        }),
+      }),
+    )
   })
 })

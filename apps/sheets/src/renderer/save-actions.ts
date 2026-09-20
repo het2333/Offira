@@ -40,6 +40,8 @@ import type { LazyWorkbookState, UniverRuntime } from './univer-state'
 
 /** The App refs/state the save flow needs; built fresh per call. */
 export interface SaveContext {
+  /** Browser Agent saves must still match their approved in-memory snapshot. */
+  approvedSaveGuard?: () => boolean
   univerRef: { readonly current: UniverRuntime | null }
   lazyWorkbookRef: { readonly current: LazyWorkbookState | null }
   setMessage: (message: string) => void
@@ -65,6 +67,29 @@ export interface SaveContext {
 /// CSV files whose "keep this format?" question was already answered with
 /// "Continue as CSV" — asked once per file, like modern Excel's banner.
 const confirmedCsvSaves = new Set<string>()
+
+/** Full save inputs, including journal Maps and workbook-owned formatting metadata. */
+export function workbookSaveSnapshot(ctx: SaveContext): string {
+  const state = ctx.lazyWorkbookRef.current
+  if (!state) throw new Error('the workbook is not ready to save')
+  return JSON.stringify(
+    {
+      file: state.file,
+      journal: state.editJournal,
+      overlay: state.recalc?.overlay,
+      protectedRanges: state.sheetProtectedRanges,
+      workbook: ctx.univerRef.current?.univerAPI.getActiveWorkbook()?.getSnapshot(),
+      filters: collectFilterStates(ctx.univerRef.current, state),
+      conditionalFormats: collectCfStates(ctx.univerRef.current, state),
+      validations: collectDvStates(ctx.univerRef.current, state),
+      notes: collectNoteStates(ctx.univerRef.current, state),
+      names: collectDefinedNamesState(ctx.univerRef.current, state),
+      formulaValues: ctx.readCells ? verifiedFormulaValues(ctx.readCells) : [],
+    },
+    (_key, value) =>
+      value instanceof Map ? [...value] : value instanceof Set ? [...value] : value,
+  )
+}
 
 /** What a save actually did — the MCP bridge needs the outcome, fire-and-forget callers ignore it. */
 export interface SaveOutcome {
@@ -385,6 +410,17 @@ export async function handleSave(
   }
   try {
     ctx.setMessage(t('appSavingEdits', { count: total }))
+    if (ctx.approvedSaveGuard?.() === false) {
+      await abortStagedEditsTransfer(
+        window.desktopApi,
+        state.file.sessionId,
+        staged.editsTransferId,
+      )
+      return {
+        ok: false,
+        error: 'STALE_CONTENT: the workbook changed after this save was approved',
+      }
+    }
     const result = await window.desktopApi.saveWorkbookEdits({
       sessionId: state.file.sessionId,
       mode,
@@ -464,6 +500,13 @@ export async function handleSave(
     // carry undo history across them (and clears any stale stash).
     stashUndoCarry(null)
     try {
+      if (ctx.approvedSaveGuard?.() === false) {
+        return {
+          ok: false,
+          error:
+            'STALE_CONTENT: the workbook changed between save phases; the first phase was already written',
+        }
+      }
       const second = await window.desktopApi.saveWorkbookEdits({
         sessionId: result.file.sessionId,
         mode: 'save',

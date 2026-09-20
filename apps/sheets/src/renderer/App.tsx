@@ -336,7 +336,12 @@ import {
 import { handleExportCsv as handleExportCsvImpl, type CsvExportContext } from './csv-export'
 import { effectivePageBreaks, installPageBreakPreview } from './page-break-preview'
 import { mapProtectedRanges } from './protected-ranges'
-import { handleSave as handleSaveImpl, type SaveContext, type SaveOutcome } from './save-actions'
+import {
+  handleSave as handleSaveImpl,
+  workbookSaveSnapshot,
+  type SaveContext,
+  type SaveOutcome,
+} from './save-actions'
 import {
   applyChartEdit as applyChartEditImpl,
   applyShapeEdit as applyShapeEditImpl,
@@ -829,6 +834,9 @@ export function App(): React.JSX.Element {
       },
     }
   }
+
+  const agentSaveContextRef = useRef(saveContext)
+  agentSaveContextRef.current = saveContext
 
   function visualSyncContext(): VisualSyncContext {
     return {
@@ -4210,6 +4218,36 @@ export function App(): React.JSX.Element {
       browserHost.attachEditor(
         createSheetsAdapter({
           handlers: currentHandlers,
+          saveSnapshot: () => workbookSaveSnapshot(agentSaveContextRef.current()),
+          saveApproved: async (approvedSaveGuard) => {
+            const path = lazyWorkbookRef.current?.file.path
+            if (!path)
+              return {
+                ok: false,
+                summary: 'The workbook has no file.',
+                warnings: [{ code: 'SAVE_FAILED', message: 'The workbook has no file.' }],
+              }
+            const result = await handleSaveImpl(
+              { ...agentSaveContextRef.current(), approvedSaveGuard },
+              'save-as',
+              true,
+              { path, overwrite: true },
+            )
+            return result.ok
+              ? { ok: true, summary: 'Saved the current workbook.', warnings: [] }
+              : {
+                  ok: false,
+                  summary: result.error ?? 'Could not save the workbook.',
+                  warnings: [
+                    {
+                      code: result.error?.includes('STALE_CONTENT')
+                        ? 'STALE_CONTENT'
+                        : 'SAVE_FAILED',
+                      message: result.error ?? 'Could not save the workbook.',
+                    },
+                  ],
+                }
+          },
           document: () => {
             const connection = browserHost.bridge.client()
             return {

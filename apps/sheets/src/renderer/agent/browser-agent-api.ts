@@ -38,10 +38,6 @@ function failure(code: string, message: string): AgentToolResult {
   return { ok: false, summary: message, warnings: [{ code, message }] }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'the editor request failed'
-}
-
 interface JournalRecord {
   fingerprint: string
   result: AgentToolResult
@@ -63,6 +59,7 @@ function requestFingerprint(frame: EditorRequestFrame): string {
     editorType: frame.target.editorType,
     command: frame.command,
     arguments: frame.arguments,
+    planHash: frame.approval?.planHash,
   })
 }
 
@@ -77,7 +74,15 @@ function sessionStorageOrUndefined():
 
 export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): BrowserAgentBridge {
   let adapter: EditorAdapter | undefined
+  const terminalResults = new Map<
+    string,
+    { fingerprint: string; result: Promise<AgentToolResult> }
+  >()
   const approvals = new Map<string, string>()
+  const saveProposals = new Map<
+    string,
+    { planHash: string; snapshotHash: string; snapshot: string; adapter: EditorAdapter }
+  >()
   const proposals = new Map<string, EditPlan>()
   const storage = options.storage ?? sessionStorageOrUndefined()
   const registration: EditorRegistrationHandle = registerEditor(options.client, {
@@ -116,8 +121,66 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
         arguments: frame.arguments,
       })
     }
+    if (frame.command === 'propose_save') {
+      const saveAdapter = adapter as EditorAdapter & { saveSnapshot?(): string }
+      if (!saveAdapter.saveSnapshot)
+        return failure(
+          'SAVE_SNAPSHOT_UNAVAILABLE',
+          'the editor cannot prepare an exact save snapshot',
+        )
+      const snapshot = saveAdapter.saveSnapshot()
+      const digest = async (value: string): Promise<string> => {
+        const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+        return [...new Uint8Array(bytes)]
+          .map((value) => value.toString(16).padStart(2, '0'))
+          .join('')
+      }
+      const snapshotHash = await digest(snapshot)
+      const planHash = await digest(
+        canonical({ target: frame.target, command: 'save_sheet', snapshotHash }),
+      )
+      saveProposals.set(frame.target.operationId, {
+        planHash,
+        snapshotHash,
+        snapshot,
+        adapter: saveAdapter,
+      })
+      return {
+        ok: true,
+        summary: 'Save the proposed document snapshot in place.',
+        warnings: [],
+        data: {
+          operationId: frame.target.operationId,
+          planHash,
+          snapshotHash,
+          summary: 'Save the proposed document snapshot in place.',
+          targets: ['current document'],
+        },
+      }
+    }
     if (frame.command === 'save_sheet') {
-      return adapter.save(frame.target.documentId)
+      const plan = saveProposals.get(frame.target.operationId)
+      const args = frame.arguments as Record<string, unknown>
+      if (
+        !plan ||
+        !frame.approval ||
+        frame.approval.planHash !== plan.planHash ||
+        args.snapshotHash !== plan.snapshotHash
+      ) {
+        return failure(
+          'APPROVAL_INVALID',
+          'save request is not bound to an exact proposed snapshot',
+        )
+      }
+      saveProposals.delete(frame.target.operationId)
+      const saveAdapter = adapter as EditorAdapter & { saveSnapshot?(): string }
+      if (saveAdapter !== plan.adapter || saveAdapter.saveSnapshot?.() !== plan.snapshot) {
+        return failure(
+          'STALE_CONTENT',
+          'the editor changed after this save was proposed; propose it again',
+        )
+      }
+      return saveAdapter.save(frame.target.documentId)
     }
     if (frame.command === 'propose_ops') {
       const plan = await adapter.propose({
@@ -177,7 +240,7 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     `nexusdesk:editor-result:${options.documentId}:${operationId}`
 
   const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (storage === undefined || frame.command === 'propose_ops') return undefined
+    if (storage === undefined || frame.command.startsWith('propose_')) return undefined
     const raw = storage.getItem(journalKey(frame.target.operationId))
     if (raw === null) return undefined
     try {
@@ -196,7 +259,7 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
   }
 
   const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (storage === undefined || frame.command === 'propose_ops') return
+    if (storage === undefined || frame.command.startsWith('propose_')) return
     storage.setItem(
       journalKey(frame.target.operationId),
       JSON.stringify({
@@ -208,21 +271,48 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
 
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
+    const terminal = !frame.command.startsWith('propose_')
+    const running = terminal ? terminalResults.get(frame.target.operationId) : undefined
+    if (running) {
+      if (running.fingerprint !== requestFingerprint(frame)) {
+        deliverResult(
+          frame,
+          failure('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments'),
+        )
+      } else {
+        void running.result.then((result) => deliverResult(frame, result))
+      }
+      return
+    }
     const replayed = replay(frame)
     if (replayed !== undefined) {
       deliverResult(frame, replayed)
       return
     }
-    void (async () => {
+    // Schedule execution after the shared promise is registered, including synchronous failures.
+    const resultPromise = Promise.resolve().then(async () => {
       let result: AgentToolResult
       try {
         result = await execute(frame)
-      } catch (error: unknown) {
-        result = failure('EDITOR_REQUEST_FAILED', errorMessage(error))
+      } catch (error) {
+        result = failure(
+          'EDITOR_REQUEST_FAILED',
+          error instanceof Error ? error.message : String(error),
+        )
       }
-      remember(frame, result)
-      deliverResult(frame, result)
-    })()
+      try {
+        remember(frame, result)
+      } catch {
+        /* The in-memory result remains authoritative if storage is unavailable. */
+      }
+      return result
+    })
+    if (terminal)
+      terminalResults.set(frame.target.operationId, {
+        fingerprint: requestFingerprint(frame),
+        result: resultPromise,
+      })
+    void resultPromise.then((result) => deliverResult(frame, result))
   })
 
   return {
@@ -247,6 +337,7 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     dispose() {
       approvals.clear()
       proposals.clear()
+      saveProposals.clear()
       adapter = undefined
       unsubscribe()
       registration.dispose()

@@ -361,7 +361,7 @@ export default function App() {
   )
 
   /** Serialize and write to disk; false when canceled/failed (caller keeps the tab open) */
-  const doSave = useCallback(async (mode: SaveMode, suggestedName?: string): Promise<boolean> => {
+  const doSave = useCallback(async (mode: SaveMode, suggestedName?: string, approvedSaveGuard?: () => boolean): Promise<boolean> => {
     const current = editorRef.current
     if (!current || statusRef.current !== 'ready' || savingRef.current) return false
     savingRef.current = true
@@ -371,6 +371,10 @@ export default function App() {
       // Host's serialized document write is the final operation and clears it.
       cancelScheduledRecovery()
       await recoveryRequestRef.current
+      if (approvedSaveGuard?.() === false) {
+        setSaveState('idle')
+        return false
+      }
       // edits landing while the write is in flight (AI streaming, fast typing)
       // must keep the document dirty — compare doc identity after the await
       const docAtSave = current.state.doc
@@ -508,8 +512,8 @@ export default function App() {
             ...(outcome.mutated ? { changes: { targets: [], count: operations.length } } : {}),
           }
         },
-        async save() {
-          const ok = await doSave('save')
+        async save(approvedSaveGuard) {
+          const ok = await doSave('save', undefined, approvedSaveGuard)
           return ok
             ? { ok: true, summary: 'Saved the current Markdown document.', warnings: [] }
             : {

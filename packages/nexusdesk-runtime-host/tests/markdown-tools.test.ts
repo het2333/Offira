@@ -43,7 +43,8 @@ describe('official Harness Markdown tools', () => {
       'insertImage',
       'editTable',
       'setFrontmatter',
-    ]) expect(applySchema).toContain(operation)
+    ])
+      expect(applySchema).toContain(operation)
   })
 
   it('binds one Markdown operation batch to the exact approved proposal', async () => {
@@ -54,14 +55,24 @@ describe('official Harness Markdown tools', () => {
         ok: true,
         summary: 'Apply one Markdown operation.',
         warnings: [],
-        data: { operationId: 'operation-1', planHash: 'plan-1', targets: ['block:0'] },
+        data: {
+          operationId: 'operation-1',
+          planHash: 'plan-1',
+          snapshotHash: 'snapshot-1',
+          targets: ['block:0'],
+        },
       })
       .mockResolvedValueOnce(success)
     const approve = vi.fn().mockResolvedValue({ approved: true, approvalId: 'approval-1' })
     const apply = createMarkdownTools({ request, approve })[1]!
 
     await expect(apply.execute({ operations }, execution())).resolves.toEqual(success)
-    expect(request).toHaveBeenNthCalledWith(1, 'propose_ops', { ops: operations }, expect.anything())
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      'propose_ops',
+      { ops: operations },
+      expect.anything(),
+    )
     expect(approve).toHaveBeenCalledWith(
       'apply_markdown_operations',
       expect.objectContaining({
@@ -88,7 +99,12 @@ describe('official Harness Markdown tools', () => {
       ok: true,
       summary: 'Apply one Markdown operation.',
       warnings: [],
-      data: { operationId: 'operation-1', planHash: 'plan-1', targets: ['block:0'] },
+      data: {
+        operationId: 'operation-1',
+        planHash: 'plan-1',
+        snapshotHash: 'snapshot-1',
+        targets: ['block:0'],
+      },
     })
     const tool = createMarkdownTools({
       request,
@@ -100,6 +116,6 @@ describe('official Harness Markdown tools', () => {
       ok: false,
       warnings: [expect.objectContaining({ code: 'APPROVAL_DENIED' })],
     })
-    expect(request).toHaveBeenCalledTimes(index === 1 ? 1 : 0)
+    expect(request).toHaveBeenCalledTimes(1)
   })
 })

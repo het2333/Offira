@@ -62,6 +62,24 @@ function ctxWith(opts: { dirty: boolean; needsSaveAs?: boolean; restoredFromReco
 }
 
 describe('handleSave recovery mode', () => {
+  it('refuses the write when approved content changes during async edit staging', async () => {
+    const { ctx, journal } = ctxWith({ dirty: true })
+    const snapshot = () =>
+      JSON.stringify(journal.cells, (_key, value) => (value instanceof Map ? [...value] : value))
+    const approved = snapshot()
+    const guarded = { ...ctx, approvedSaveGuard: () => snapshot() === approved }
+    const saving = handleSave(guarded, 'save-as', true, {
+      path: '/tmp/approved.xlsx',
+      overwrite: true,
+    })
+    recordSetRangeValues(journal, 'sheet-1', { 0: { 0: { v: 'changed after approval' } } })
+    await expect(saving).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('STALE_CONTENT'),
+    })
+    expect(saveWorkbookEdits).not.toHaveBeenCalled()
+  })
+
   it('writes a recovery copy and never the opened file', async () => {
     const { ctx, messages } = ctxWith({ dirty: true })
     await handleSave(ctx, 'recovery')

@@ -91,6 +91,8 @@ export type PendingPdfExport = { outPath?: string; resolve: (ok: boolean) => voi
 
 /** The App state the file actions need; built fresh per call. */
 export interface FileActionContext {
+  /** Browser Agent saves revalidate approved content at the actual write boundary. */
+  approvedSaveGuard?: () => boolean
   editor: Editor | null
   doc: DocState | null
   dirtyRef: { current: boolean }
@@ -797,7 +799,12 @@ export function save(
   return runSerializedSave(
     () => saveOnce(ctx, saveAs, auto, newDocName, explicitTarget),
     // an explicit MCP target must always write, never reuse an earlier pass
-    () => !saveAs && !explicitTarget && !ctx.saveIncompleteRef.current && !isDocDirty(ctx),
+    () =>
+      !ctx.approvedSaveGuard &&
+      !saveAs &&
+      !explicitTarget &&
+      !ctx.saveIncompleteRef.current &&
+      !isDocDirty(ctx),
   )
 }
 
@@ -886,11 +893,13 @@ async function saveOnce(
     if (docGeneration !== generation) return false
     // flush pending in-place table cell / textbox edits into the PM doc first
     window.dispatchEvent(new Event('ai-docs-commit-tables'))
+    if (ctx.approvedSaveGuard?.() === false) return false
     // identity snapshot: detects edits that arrive while the save is in flight
     const docSnapshot = editor.state.doc
     const selectionPos = editor.state.selection.from
     const bytes = await buildDocBytes(ctx)
     if (!bytes) return false
+    if (ctx.approvedSaveGuard?.() === false) return false
     const buffer = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,

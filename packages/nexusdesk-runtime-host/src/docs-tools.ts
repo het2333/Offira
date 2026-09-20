@@ -128,26 +128,45 @@ export function createDocsTools(bridge: DocsToolBridge): ToolDefinition[] {
 
   const save = defineTool({
     name: 'save_document',
-    description:
-      'Save the open document in place. The model cannot choose or change the authorized path.',
+    description: 'Save the proposed document snapshot in place after exact approval.',
     parameters: {},
     output: agentOutput,
-    async execute(_args, exec) {
-      const proposal: AgentApprovalProposal = {
-        planHash: 'save-current-document-in-place',
-        summary: 'Save the current document in place.',
-        targets: ['current document'],
-        warnings: [],
+    async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request('propose_save', {}, execution))
+      if (!proposed.ok) return proposed as unknown as JsonValue
+      const data = (proposed.data ?? {}) as Record<string, JsonValue>
+      if (
+        typeof data.operationId !== 'string' ||
+        typeof data.planHash !== 'string' ||
+        typeof data.snapshotHash !== 'string' ||
+        !data.snapshotHash
+      ) {
+        throw new Error('editor returned an invalid save proposal')
       }
-      const approval = await bridge.approve('save_document', proposal, exec)
+      const proposal: AgentApprovalProposal = {
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === 'string' ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets)
+          ? data.targets.filter((value): value is string => typeof value === 'string')
+          : [],
+        warnings: proposed.warnings,
+      }
+      const approval = await bridge.approve('save_document', proposal, execution)
       if (!approval.approved || approval.approvalId === undefined) {
         throw new Error('document save was not approved')
       }
-      return agentResult(
-        await bridge.request('save_document', { inPlace: true }, exec, {
-          approvalId: approval.approvalId,
-          planHash: proposal.planHash,
-        }),
+      return parseAgentToolResult(
+        await bridge.request(
+          'save_document',
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId,
+          },
+        ),
       ) as unknown as JsonValue
     },
   })

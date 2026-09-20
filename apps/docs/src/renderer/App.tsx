@@ -301,7 +301,7 @@ const WORD_COUNT_THROTTLE_MS = 400
 const MAX_FOLLOW_UP_PASSES = 6
 import { runHeadlessDocumentExport } from './headless-export'
 import { installMcpBridge } from './mcp-bridge'
-import { createDocsEditorAdapter } from './agent/docs-editor-adapter'
+import { createDocsSaveAdapter } from './agent/docs-save-adapter'
 import type { ClientId, DocumentId, Revision } from '@nexusdesk/protocol'
 import {
   allocateListNumId as allocateListNumIdImpl,
@@ -1606,7 +1606,7 @@ export function App() {
     const uninstallMcp = installMcpBridge({ getCtx: () => fileCtxRef.current })
     const browserHost = window.nexusdeskDocsHost
     const detachEditor = browserHost?.attachEditor(
-      createDocsEditorAdapter({
+      createDocsSaveAdapter({
         context: () => fileCtxRef.current,
         document: () => {
           const connection = browserHost.bridge.client()

@@ -27,7 +27,7 @@ export interface MarkdownEditorAdapterOptions {
   document(): MarkdownDocumentState
   read(): AgentReadResult
   apply(operations: JsonValue[]): Promise<AgentEditResult>
-  save(): Promise<AgentSaveResult>
+  save(approvedSaveGuard?: () => boolean): Promise<AgentSaveResult>
   consumeApproval(approvalId: string, planHash: string): boolean | Promise<boolean>
 }
 
@@ -56,7 +56,9 @@ async function hashPlan(
 ): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode(canonical({ target: plan.target, operations: plan.operations, contentVersion })),
+    new TextEncoder().encode(
+      canonical({ target: plan.target, operations: plan.operations, contentVersion }),
+    ),
   )
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
@@ -72,7 +74,8 @@ function operationsFrom(request: EditRequest): JsonValue[] {
     throw new Error('apply_ops requires a non-empty ops array')
   }
   const operations = request.arguments.ops as JsonValue[]
-  if (operations.length > MAX_OPERATIONS) throw new Error(`A Markdown plan may contain at most ${MAX_OPERATIONS} operations`)
+  if (operations.length > MAX_OPERATIONS)
+    throw new Error(`A Markdown plan may contain at most ${MAX_OPERATIONS} operations`)
   if (new TextEncoder().encode(JSON.stringify(operations)).byteLength > MAX_PAYLOAD_BYTES) {
     throw new Error('A Markdown plan may not exceed 256 KiB')
   }
@@ -99,23 +102,41 @@ class MarkdownEditorAdapter implements EditorAdapter {
   constructor(private readonly options: MarkdownEditorAdapterOptions) {}
 
   capabilities() {
-    return { editorType: this.editorType, commands: ['read_markdown', 'apply_ops', 'save_markdown'], canUndo: true, canSave: true, canExport: false }
+    return {
+      editorType: this.editorType,
+      commands: ['read_markdown', 'apply_ops', 'save_markdown'],
+      canUndo: true,
+      canSave: true,
+      canExport: false,
+    }
   }
 
   async snapshot(documentId: import('@nexusdesk/protocol').DocumentId) {
     const document = this.options.document()
     if (document.documentId !== documentId) throw new Error(`document ${documentId} is not open`)
-    return { documentId, revision: document.revision, title: document.title, summary: `Markdown document ${document.title} is open.` }
+    return {
+      documentId,
+      revision: document.revision,
+      title: document.title,
+      summary: `Markdown document ${document.title} is open.`,
+    }
   }
 
-  async read(request: { documentId: import('@nexusdesk/protocol').DocumentId; command: string; arguments: JsonValue }): Promise<AgentReadResult> {
-    if (request.documentId !== this.options.document().documentId) return failure('DOCUMENT_NOT_FOUND', 'the requested Markdown document is not open')
-    if (request.command !== 'read_markdown') return failure('UNAVAILABLE_IN_WEB', `unsupported Markdown read command: ${request.command}`)
+  async read(request: {
+    documentId: import('@nexusdesk/protocol').DocumentId
+    command: string
+    arguments: JsonValue
+  }): Promise<AgentReadResult> {
+    if (request.documentId !== this.options.document().documentId)
+      return failure('DOCUMENT_NOT_FOUND', 'the requested Markdown document is not open')
+    if (request.command !== 'read_markdown')
+      return failure('UNAVAILABLE_IN_WEB', `unsupported Markdown read command: ${request.command}`)
     return this.options.read()
   }
 
   async propose(request: EditRequest): Promise<EditPlan> {
-    if (request.command !== 'apply_ops') throw new Error(`unsupported Markdown edit command: ${request.command}`)
+    if (request.command !== 'apply_ops')
+      throw new Error(`unsupported Markdown edit command: ${request.command}`)
     const operations = operationsFrom(request)
     const contentVersion = this.options.document().contentVersion
     const target = {
@@ -141,22 +162,37 @@ class MarkdownEditorAdapter implements EditorAdapter {
 
   async apply(plan: ApprovedEditPlan): Promise<AgentEditResult> {
     const existing = this.operations.get(plan.target.operationId)
-    if (existing !== undefined) return existing.planHash === plan.planHash ? existing.result : failure('OPERATION_ID_COLLISION', 'this operation id is already bound to another plan')
+    if (existing !== undefined)
+      return existing.planHash === plan.planHash
+        ? existing.result
+        : failure('OPERATION_ID_COLLISION', 'this operation id is already bound to another plan')
     const document = this.options.document()
-    if (!document.attached) return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
-    if (document.documentId !== plan.target.documentId || document.clientId !== plan.target.clientId) return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
-    if (document.revision !== plan.target.revision) return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+    if (!document.attached)
+      return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
+    if (
+      document.documentId !== plan.target.documentId ||
+      document.clientId !== plan.target.clientId
+    )
+      return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
+    if (document.revision !== plan.target.revision)
+      return failure('STALE_REVISION', 'the document changed after this plan was prepared')
     const proposedContentVersion = this.proposedContentVersions.get(plan.target.operationId)
     if (proposedContentVersion !== document.contentVersion) {
       return failure('STALE_CONTENT', 'the Markdown editor changed after this plan was prepared')
     }
-    if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash))) return failure('APPROVAL_INVALID', 'approval does not authorize this exact Markdown plan')
-    if ((await hashPlan(plan, proposedContentVersion)) !== plan.planHash) return failure('PLAN_TAMPERED', 'the approved Markdown plan no longer matches its hash')
+    if (!(await this.options.consumeApproval(plan.approvalId, plan.planHash)))
+      return failure('APPROVAL_INVALID', 'approval does not authorize this exact Markdown plan')
+    if ((await hashPlan(plan, proposedContentVersion)) !== plan.planHash)
+      return failure('PLAN_TAMPERED', 'the approved Markdown plan no longer matches its hash')
     const current = this.options.document()
-    if (!current.attached) return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
-    if (current.documentId !== plan.target.documentId || current.clientId !== plan.target.clientId) return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
-    if (current.revision !== plan.target.revision) return failure('STALE_REVISION', 'the document changed after this plan was prepared')
-    if (current.contentVersion !== proposedContentVersion) return failure('STALE_CONTENT', 'the Markdown editor changed after this plan was prepared')
+    if (!current.attached)
+      return failure('DOCUMENT_DETACHED', 'the Markdown browser is disconnected')
+    if (current.documentId !== plan.target.documentId || current.clientId !== plan.target.clientId)
+      return failure('WRONG_CLIENT', 'the Markdown document is open in another browser client')
+    if (current.revision !== plan.target.revision)
+      return failure('STALE_REVISION', 'the document changed after this plan was prepared')
+    if (current.contentVersion !== proposedContentVersion)
+      return failure('STALE_CONTENT', 'the Markdown editor changed after this plan was prepared')
     const result = this.applyOnce(plan.operations)
     this.operations.set(plan.target.operationId, { planHash: plan.planHash, result })
     this.proposedContentVersions.delete(plan.target.operationId)
@@ -166,17 +202,33 @@ class MarkdownEditorAdapter implements EditorAdapter {
   async verify(documentId: import('@nexusdesk/protocol').DocumentId): Promise<VerificationResult> {
     return documentId === this.options.document().documentId
       ? { passed: true, issues: [] }
-      : { passed: false, issues: [{ code: 'DOCUMENT_NOT_FOUND', message: 'the Markdown document is not open' }] }
+      : {
+          passed: false,
+          issues: [{ code: 'DOCUMENT_NOT_FOUND', message: 'the Markdown document is not open' }],
+        }
   }
 
   async undo(): Promise<AgentEditResult> {
     return failure('UNAVAILABLE_IN_WEB', 'undoing Agent operations is unavailable in Web Markdown')
   }
 
+  saveSnapshot(): string {
+    return canonical(this.options.document())
+  }
+
   async save(documentId: import('@nexusdesk/protocol').DocumentId): Promise<AgentSaveResult> {
-    return documentId === this.options.document().documentId
-      ? this.options.save()
-      : failure('DOCUMENT_NOT_FOUND', 'the Markdown document is not open')
+    const snapshot = this.saveSnapshot()
+    let stale = false
+    const result =
+      documentId === this.options.document().documentId
+        ? await this.options.save(() => {
+            stale = this.saveSnapshot() !== snapshot
+            return !stale
+          })
+        : failure('DOCUMENT_NOT_FOUND', 'the Markdown document is not open')
+    return stale
+      ? failure('STALE_CONTENT', 'the Markdown document changed after save approval')
+      : result
   }
 
   async export(): Promise<AgentEditResult> {
@@ -190,7 +242,8 @@ class MarkdownEditorAdapter implements EditorAdapter {
       ...result,
       changes: result.changes ?? { targets: targetsFor(operations), count: operations.length },
       verification: result.verification ?? { passed: true, issues: [] },
-      transactionId: result.transactionId ?? (`markdown-${globalThis.crypto.randomUUID()}` as never),
+      transactionId:
+        result.transactionId ?? (`markdown-${globalThis.crypto.randomUUID()}` as never),
     }
   }
 }
