@@ -24,7 +24,6 @@ import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
 import { PDFDocument, PDFName, PDFArray } from 'pdf-lib'
 import { createPdfDocumentDriver } from '../../apps/local-host/src/pdf-document-driver'
-import { DocumentDriverRegistry } from '../../apps/local-host/src/document-driver'
 import { startLocalPdfProvider } from './local-pdf-provider'
 
 interface OpenWorkbook {

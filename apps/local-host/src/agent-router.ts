@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import type {
+  AgentToolResult,
   AgentServerFrame,
   ClientFrame,
   ClientId,
@@ -35,6 +38,10 @@ interface EditorOperationOwner {
   request: EditorRequestFrame
 }
 
+interface DeliveredEditorResult extends EditorOperationOwner {
+  result: AgentToolResult
+}
+
 export interface AgentRouterOptions {
   supervisor: HarnessSupervisor
   documents: DocumentRegistry
@@ -49,6 +56,7 @@ export class AgentRouter {
   private readonly approvals = new Map<string, ApprovalOwner>()
   private readonly grantedApprovals = new Map<string, Omit<ApprovalOwner, 'timer'>>()
   private readonly editorOperations = new Map<OperationId, EditorOperationOwner>()
+  private readonly deliveredEditorResults = new Map<RequestId, DeliveredEditorResult>()
   private readonly offFrame: () => void
   private readonly offExit: () => void
 
@@ -133,6 +141,16 @@ export class AgentRouter {
         owner.requestId !== frame.id ||
         !sameTarget(owner.target, frame.target)
       ) {
+        const delivered = this.deliveredEditorResults.get(frame.id)
+        if (
+          delivered !== undefined &&
+          delivered.clientId === clientId &&
+          delivered.requestId === frame.id &&
+          sameTarget(delivered.target, frame.target) &&
+          isDeepStrictEqual(delivered.result, frame.result)
+        ) {
+          return
+        }
         throw new Error(`client ${clientId} does not own operation ${frame.target.operationId}`)
       }
       // routeEditorRequest already authenticated the exact target revision
@@ -145,6 +163,7 @@ export class AgentRouter {
         if (frame.result.ok) this.options.operations.commit(frame.target.operationId, frame.result)
         else this.options.operations.fail(frame.target.operationId, frame.result)
       }
+      this.deliveredEditorResults.set(frame.id, { ...owner, result: frame.result })
       this.editorOperations.delete(frame.target.operationId)
       this.options.supervisor.respondEditor({ ...frame, currentRevision: document.revision })
       return
@@ -261,6 +280,7 @@ export class AgentRouter {
     this.offExit()
     this.clearApprovals()
     this.grantedApprovals.clear()
+    this.deliveredEditorResults.clear()
   }
 
   private assertSessionOwner(sessionId: SessionId, clientId: ClientId): SessionOwner {

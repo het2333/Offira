@@ -128,9 +128,13 @@ test('Local Web persists a manual PDF edit and one approved semantic agent edit 
     await editor.getByRole('button', { name: /insert text/i }).click()
     await editor.locator('textarea.pdf-modal-textarea').fill('Manual Local Web text')
     await editor.getByRole('button', { name: /^ok$/i }).click()
-    const canvas = editor.locator('canvas').first()
-    await expect(canvas).toBeVisible()
-    await canvas.click({ position: { x: 120, y: 160 } })
+    await expect(editor.locator('.pdf-page.pdf-inserting-text')).toBeVisible()
+    const pdfPage = editor.locator('.pdf-page').first()
+    await expect(pdfPage).toBeVisible()
+    await pdfPage.click({ position: { x: 120, y: 160 } })
+    await expect(editor.locator('.pdf-textinsert-preview').first()).toContainText(
+      'Manual Local Web text',
+    )
 
     await startPdfHarnessTurn(editor, 'pdf-e2e-turn-1', 'Highlight NexusDesk and save.')
     await expect.poll(host.readApplyCount).toBe(1)

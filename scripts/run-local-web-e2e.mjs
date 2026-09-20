@@ -19,6 +19,12 @@ run(process.execPath, [
   'test',
   'e2e/local-web-sheets-agent.spec.ts',
   'e2e/local-web-docs-agent.spec.ts',
+  'e2e/local-web-slides.spec.ts',
+  'e2e/production-runtime-slides.spec.ts',
+  'e2e/local-web-pdf-agent.spec.ts',
+  'e2e/local-web-pdf-real-runtime.spec.ts',
+  'e2e/local-web-markdown-agent.spec.ts',
+  'e2e/local-web-html-agent.spec.ts',
   '--project=chromium',
   ...process.argv.slice(2),
 ])

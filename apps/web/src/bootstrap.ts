@@ -1,9 +1,10 @@
 import { shellBootstrapSchema } from '@nexusdesk/office-host'
+import type { EditorKind } from '@nexusdesk/office-host'
 
 export interface WebDocumentSummary {
   documentId: string
   title: string
-  editorType: 'docs' | 'sheets' | 'pdf'
+  editorType: EditorKind
   revision: number
 }
 

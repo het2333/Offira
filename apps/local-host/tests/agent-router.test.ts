@@ -400,6 +400,192 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
+  it('does not reserve a PDF propose_save result in the operation journal', async () => {
+    const documents = new DocumentRegistry()
+    const operations = new OperationStore()
+    documents.register({ documentId, clientId, editorType: 'pdf', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations,
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'hello',
+      },
+      clientId,
+    )
+
+    const operationId = 'pdf-save-operation-1' as OperationId
+    const request: EditorRequestFrame = {
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'pdf-save-proposal-request-1' as RequestId,
+      target: {
+        sessionId,
+        documentId,
+        editorType: 'pdf',
+        revision,
+        operationId,
+        clientId,
+      },
+      command: 'propose_save',
+      arguments: {},
+    }
+    router.routeRuntimeFrame(request)
+    expect(sent).toContainEqual(request)
+
+    router.handleClientFrame(
+      {
+        type: 'editor:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: request.id,
+        target: request.target,
+        result: {
+          ok: true,
+          summary: 'Save the current PDF in place.',
+          warnings: [],
+          data: {
+            operationId,
+            planHash: 'pdf-save-plan-1',
+            snapshotHash: 'pdf-snapshot-1',
+          },
+        },
+      },
+      clientId,
+    )
+
+    expect(operations.lookup(operationId)).toBeUndefined()
+    router.dispose()
+  })
+
+  it('replays a terminal PDF save with the proposal operation id and no second browser approval', async () => {
+    const documents = new DocumentRegistry()
+    const operations = new OperationStore()
+    documents.register({ documentId, clientId, editorType: 'pdf', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const sent: AgentServerFrame[] = []
+    const respondApproval = vi.spyOn(supervisor, 'respondApproval')
+    const respondEditor = vi.spyOn(supervisor, 'respondEditor')
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations,
+      sendToClient: (_clientId, frame) => sent.push(frame),
+    })
+    await supervisor.ready()
+    router.handleClientFrame(
+      {
+        type: 'agent:start',
+        protocolVersion: PROTOCOL_VERSION,
+        id: startRequestId,
+        sessionId,
+        documentId,
+        prompt: 'hello',
+      },
+      clientId,
+    )
+
+    const operationId = 'pdf-save-operation-1' as OperationId
+    const planHash = 'pdf-save-plan-1'
+    const proposal = {
+      operationId,
+      planHash,
+      summary: 'Save the current PDF in place.',
+      targets: ['current PDF'],
+      warnings: [],
+    }
+    router.routeRuntimeFrame({
+      type: 'approval:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'pdf-save-approval-1' as RequestId,
+      sessionId,
+      toolName: 'save_pdf',
+      reason: proposal.summary,
+      proposal,
+    })
+    router.handleClientFrame(
+      {
+        type: 'approval:response',
+        protocolVersion: PROTOCOL_VERSION,
+        id: 'pdf-save-approval-1' as RequestId,
+        outcome: 'allowed-once',
+      },
+      clientId,
+    )
+
+    const request: EditorRequestFrame = {
+      type: 'editor:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'pdf-save-request-1' as RequestId,
+      target: {
+        sessionId,
+        documentId,
+        editorType: 'pdf',
+        revision,
+        operationId,
+        clientId,
+      },
+      command: 'save_pdf',
+      arguments: { inPlace: true },
+      approval: { id: 'pdf-save-approval-1' as RequestId, planHash },
+    }
+    router.routeRuntimeFrame(request)
+    const result = {
+      ok: true,
+      summary: 'Saved the current PDF in place.',
+      warnings: [],
+      verification: { passed: true, issues: [] },
+    }
+    router.handleClientFrame(
+      {
+        type: 'editor:result',
+        protocolVersion: PROTOCOL_VERSION,
+        id: request.id,
+        target: request.target,
+        result,
+      },
+      clientId,
+    )
+
+    router.routeRuntimeFrame({
+      type: 'approval:request',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'pdf-save-approval-replay' as RequestId,
+      sessionId,
+      toolName: 'save_pdf',
+      reason: proposal.summary,
+      proposal,
+    })
+    router.routeRuntimeFrame({
+      ...request,
+      id: 'pdf-save-request-replay' as RequestId,
+      approval: { id: 'pdf-save-approval-replay' as RequestId, planHash },
+    })
+
+    expect(sent.filter((frame) => frame.type === 'approval:request')).toHaveLength(1)
+    expect(sent.filter((frame) => frame.type === 'editor:request')).toHaveLength(1)
+    expect(respondApproval).toHaveBeenCalledWith('pdf-save-approval-replay', 'allowed-once')
+    expect(respondEditor).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'editor:result',
+        id: 'pdf-save-request-replay',
+        target: expect.objectContaining({ operationId }),
+        result,
+      }),
+    )
+    router.dispose()
+  })
+
   it('expires a pending approval and sends one terminal failure when runtime crashes', async () => {
     const documents = new DocumentRegistry()
     const operations = new OperationStore()
@@ -589,7 +775,7 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
-  it('records an editor result before delivery and serves it after browser reconnect', async () => {
+  it('records one terminal editor result, tolerates its transport duplicate, and serves it after browser reconnect', async () => {
     const documents = new DocumentRegistry()
     const operations = new OperationStore()
     documents.register({ documentId, clientId, editorType: 'sheets', revision })
@@ -664,6 +850,34 @@ describe('AgentRouter', () => {
       state: 'committed',
       result,
     })
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'editor:result',
+          protocolVersion: PROTOCOL_VERSION,
+          id: request.id,
+          target: request.target,
+          result,
+        },
+        clientId,
+      ),
+    ).not.toThrow()
+    expect(operations.lookup('operation-1' as OperationId)).toMatchObject({
+      state: 'committed',
+      result,
+    })
+    expect(() =>
+      router.handleClientFrame(
+        {
+          type: 'editor:result',
+          protocolVersion: PROTOCOL_VERSION,
+          id: request.id,
+          target: request.target,
+          result: { ...result, summary: 'Forged duplicate.' },
+        },
+        clientId,
+      ),
+    ).toThrow(/does not own operation/)
     await until(() =>
       sent.some(
         ({ frame }) => frame.type === 'agent:event' && frame.event.type === 'test/editor-result',

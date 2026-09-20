@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { documentRoute, loadBootstrap } from '../src/bootstrap'
+import { documentRoute, loadBootstrap, type WebDocumentSummary } from '../src/bootstrap'
 
 describe('NexusDesk Web bootstrap', () => {
   it('returns an explicit reconnect action when authentication is missing', async () => {
@@ -82,4 +82,22 @@ describe('NexusDesk Web bootstrap', () => {
       documentRoute({ documentId: 'pdf-1', title: 'review.pdf', editorType: 'pdf', revision: 1 }),
     ).toBe('/pdf/?host=local-web&documentId=pdf-1')
   })
+
+  it.each([
+    ['slides', '/slides/?host=local-web&documentId=slides-1'],
+    ['markdown', '/markdown/?host=local-web&documentId=markdown-1'],
+    ['html', '/html/?host=local-web&documentId=html-1'],
+  ] satisfies Array<[WebDocumentSummary['editorType'], string]>)(
+    'builds the %s editor route from the authorized document id',
+    (editorType, expected) => {
+      expect(
+        documentRoute({
+          documentId: `${editorType}-1`,
+          title: `document.${editorType}`,
+          editorType,
+          revision: 1,
+        }),
+      ).toBe(expected)
+    },
+  )
 })
