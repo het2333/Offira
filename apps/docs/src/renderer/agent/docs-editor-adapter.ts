@@ -44,8 +44,10 @@ function contentGeneration(editor: DocsEditor): ContentGeneration {
   const existing = contentGenerations.get(editor)
   if (existing !== undefined) return existing
   const generation = { value: 0 }
-  editor.on('transaction', ({ transaction }) => {
-    if (transaction.docChanged) generation.value += 1
+  editor.on('transaction', ({ transaction, appendedTransactions }) => {
+    if (transaction.docChanged || appendedTransactions.some((appended) => appended.docChanged)) {
+      generation.value += 1
+    }
   })
   contentGenerations.set(editor, generation)
   return generation

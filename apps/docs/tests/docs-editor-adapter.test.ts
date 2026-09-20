@@ -265,6 +265,46 @@ describe('Docs editor adapter', () => {
     expect(editor.state.doc.textContent).toBe('Original text.')
   })
 
+  it('counts CaretMarksMemory appended document changes when root transactions do not change the doc', async () => {
+    const { adapter, approvals, ctx } = setup()
+    const editor = ctx.editor!
+    expect(
+      editor.commands.insertContentAt(editor.state.doc.content.size, { type: 'docParagraph' }),
+    ).toBe(true)
+    expect(editor.commands.setTextSelection(editor.state.doc.content.size - 1)).toBe(true)
+    const textStyle = editor.schema.marks.docTextStyle.create({
+      font: 'Calibri',
+      sizeHalfPoints: 24,
+    })
+    editor.view.dispatch(editor.state.tr.setStoredMarks([textStyle]))
+    const before = editor.getJSON()
+    const plan = await adapter.propose(editRequest())
+    approvals.set('approval-1', plan.planHash)
+    const transactions: Array<{ rootChanged: boolean; appendedChanged: boolean }> = []
+    editor.on('transaction', ({ transaction, appendedTransactions }) => {
+      transactions.push({
+        rootChanged: transaction.docChanged,
+        appendedChanged: appendedTransactions.some((appended) => appended.docChanged),
+      })
+    })
+
+    editor.view.dispatch(editor.state.tr.setStoredMarks([]))
+    editor.view.dispatch(editor.state.tr.setStoredMarks([textStyle]))
+    expect(transactions).toEqual([
+      { rootChanged: false, appendedChanged: true },
+      { rootChanged: false, appendedChanged: true },
+    ])
+    expect(editor.getJSON()).toEqual(before)
+    const result = await adapter.apply({ ...plan, approvalId: 'approval-1' })
+
+    expect(result).toMatchObject({
+      ok: false,
+      warnings: [expect.objectContaining({ code: 'STALE_CONTENT' })],
+    })
+    expect(approvals.has('approval-1')).toBe(true)
+    expect(editor.state.doc.textContent).toBe('Original text.')
+  })
+
   it('rechecks unsaved editor content after asynchronous approval consumption', async () => {
     const ctx = createContext()
     let approvalStarted!: () => void
