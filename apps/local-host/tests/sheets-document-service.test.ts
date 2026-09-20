@@ -10,6 +10,10 @@ import { encodeWorkbookSaveRequest } from '../../sheets/src/shared/workbook-save
 import type { WorkbookFile, WorkbookSaveRequest } from '../../sheets/src/shared/desktop-api'
 import { buildEditFixture } from '../../sheets/tests/fixture-builder'
 import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { DocumentDriverRegistry } from '../src/document-driver'
+import { DocumentRegistry } from '../src/document-registry'
+import { WorkingCopyCoordinator } from '../src/working-copy-coordinator'
+import type { EditorRegisterFrame } from '@nexusdesk/protocol'
 
 const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const cleanups: (() => Promise<void>)[] = []
@@ -66,6 +70,8 @@ async function fixture() {
   cleanups.push(() => service.close())
   const driver = service.drivers[0]!
   const bootstrap = (await driver.bootstrap('http://localhost')) as { workbook: WorkbookFile }
+  const source = await driver.workingCopy!.acquireSource(bootstrap.workbook.sessionId)
+  await driver.workingCopy!.activateSource!(source.sourceContentId, bootstrap.workbook.sessionId)
   return { dir, path, original, service, driver, bootstrap }
 }
 async function parts(value: WorkbookSaveRequest) {
@@ -98,6 +104,118 @@ async function commit(
 }
 
 describe('production Sheets durable native service', () => {
+  it('keeps owner A readable and materializable when a second page only bootstraps', async () => {
+    const { driver, bootstrap, dir } = await fixture()
+    const port = driver.workingCopy!
+    const coordinator = new WorkingCopyCoordinator({
+      drivers: new DocumentDriverRegistry([driver]),
+      documents: new DocumentRegistry([driver.document]),
+      uploadRoot: join(dir, 'uploads'),
+    })
+    const source = await coordinator.bootstrap(
+      driver.document.documentId,
+      'http://localhost',
+      'http',
+      bootstrap.workbook.sessionId,
+    )
+    const registration = {
+      type: 'editor:register',
+      protocolVersion: 1,
+      id: 'register',
+      clientId: 'A',
+      rendererInstanceId: 'renderer-A',
+      documentId: driver.document.documentId,
+      editorType: 'sheets',
+      revision: source.workingRevision,
+      documentEpoch: source.documentEpoch,
+      sourceContentId: source.sourceContentId,
+      restoredCheckpointId: source.checkpointId,
+      editorSessionId: bootstrap.workbook.sessionId,
+    } as EditorRegisterFrame
+    await coordinator.register(registration, 'http')
+    const b = (await driver.bootstrap('http://localhost')) as { workbook: WorkbookFile }
+    await expect(
+      port.materialize({
+        sourceContentId: source.sourceContentId,
+        payloadKind: 'xlsx-save-plan',
+        parts: await parts(request(b.workbook.sessionId)),
+      }),
+    ).rejects.toThrow(/registered owner/)
+    await coordinator.bootstrap(
+      driver.document.documentId,
+      'http://localhost',
+      'http',
+      b.workbook.sessionId,
+    )
+    await expect(
+      coordinator.register(
+        {
+          ...registration,
+          clientId: 'B' as never,
+          rendererInstanceId: 'renderer-B' as never,
+          editorSessionId: b.workbook.sessionId,
+        },
+        'http',
+      ),
+    ).rejects.toMatchObject({ code: 'WRONG_CLIENT' })
+    await expect(
+      driver.execute('read-workbook-range', { sessionId: b.workbook.sessionId }),
+    ).rejects.toThrow(/session/)
+    await expect(
+      driver.execute('read-workbook-range', {
+        sessionId: bootstrap.workbook.sessionId,
+        sheetId: 'sheet-1',
+        range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 },
+      }),
+    ).resolves.toHaveProperty('cells')
+    await expect(
+      driver.execute('recalculate-workbook', {
+        sessionId: bootstrap.workbook.sessionId,
+        edits: [],
+        reads: [
+          { sheetId: 'sheet-1', range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 } },
+        ],
+      }),
+    ).resolves.toHaveProperty('cells')
+    await expect(
+      port.materialize({
+        sourceContentId: source.sourceContentId,
+        payloadKind: 'xlsx-save-plan',
+        parts: await parts(request(bootstrap.workbook.sessionId)),
+      }),
+    ).resolves.toBeInstanceOf(Uint8Array)
+  })
+
+  it('binds source leases to the exact candidate and keeps owner A after activation TOCTOU failure', async () => {
+    const { driver, bootstrap, original } = await fixture()
+    const port = driver.workingCopy!
+    const source = await port.acquireSource(bootstrap.workbook.sessionId)
+    await port.activateSource!(source.sourceContentId, bootstrap.workbook.sessionId)
+    const b = (await driver.bootstrap('http://localhost')) as { workbook: WorkbookFile }
+    await port.acquireSource(b.workbook.sessionId)
+    await commit(port, original, 'moved-after-lease')
+    await expect(
+      port.activateSource!(source.sourceContentId, b.workbook.sessionId),
+    ).rejects.toThrow(/changed/)
+    await expect(
+      driver.execute('read-workbook-range', { sessionId: b.workbook.sessionId }),
+    ).rejects.toThrow(/session/)
+    await expect(
+      driver.execute('read-workbook-range', {
+        sessionId: bootstrap.workbook.sessionId,
+        sheetId: 'sheet-1',
+        range: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+      }),
+    ).resolves.toHaveProperty('cells')
+    const c = (await driver.bootstrap('http://localhost')) as { workbook: WorkbookFile }
+    await expect(port.acquireSource(b.workbook.sessionId)).rejects.toThrow(/session/)
+    await port.acquireSource(c.workbook.sessionId)
+    await port.activateSource!(c.workbook.sha256, c.workbook.sessionId)
+    await expect(
+      driver.execute('read-workbook-range', { sessionId: bootstrap.workbook.sessionId }),
+    ).rejects.toThrow(/session/)
+  })
+
   it('opens a startup XLSX and returns a browser bootstrap backed by the real sidecar', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'nexusdesk-document-service-'))
     cleanups.push(() => rm(directory, { recursive: true, force: true }))
@@ -299,11 +417,13 @@ describe('production Sheets durable native service', () => {
   })
 
   it('rejects hydration when head changes between native bootstrap and source lease', async () => {
-    const { driver } = await fixture()
+    const { driver, bootstrap } = await fixture()
     expect(driver.workingCopy).toBeDefined()
     const port = driver.workingCopy!
     await commit(port, await buildEditFixture(), 'raced')
-    await expect(port.acquireSource()).rejects.toThrow(/stale|changed|hydrate/i)
+    await expect(port.acquireSource(bootstrap.workbook.sessionId)).rejects.toThrow(
+      /stale|changed|hydrate/i,
+    )
   })
 
   it('writes metadata, formula caches and held table/pivot/names before publishing one complete XLSX', async () => {

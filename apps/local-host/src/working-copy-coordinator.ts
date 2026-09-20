@@ -25,7 +25,7 @@ export function persistenceReference(receipt: WorkingCopyReceipt): PersistenceRe
 export const isWorkingCopyMutation = (command: string): boolean =>
   ['apply_ops', 'apply_history', 'save_document', 'save_sheet', 'save_pdf'].includes(command)
 
-interface Lease { generation: string; clientId: string; rendererInstanceId: string; sourceContentId: string; documentEpoch: string; httpSession: string }
+interface Lease { generation: string; clientId: string; rendererInstanceId: string; sourceContentId: string; documentEpoch: string; httpSession: string; editorSessionId?: string }
 interface Reservation {
   documentId: string
   operationId: string
@@ -106,54 +106,145 @@ export class WorkingCopyCoordinator {
       }
     }
   }
-  async bootstrap(documentId: string, origin: string, httpSession: string): Promise<WorkingCopyBootstrap> {
+  async bootstrap(
+    documentId: string,
+    origin: string,
+    httpSession: string,
+    editorSessionId?: string,
+  ): Promise<WorkingCopyBootstrap> {
     return this.lane(documentId, async () => {
       const port = this.port(documentId)
-      const status = await port.store.getStatus()
-      if (status.recoveryState !== 'ready') fail('REVISION_CONFLICT', 'The original file changed; working-copy recovery requires attention.')
-      const source = await port.acquireSource()
-      const state: WorkingCopyBootstrap = { documentEpoch: status.documentEpoch, workingRevision: status.workingRevision,
-        savedRevision: status.savedRevision, sourceContentId: source.sourceContentId, checkpointId: status.head?.checkpointId ?? null,
-        dirty: status.dirty, recoveryState: status.recoveryState,
-        contentUrl: origin + '/api/documents/' + encodeURIComponent(documentId) + '/sources/' + source.sourceContentId + '/content' }
-      for (const [key, entry] of this.sources) if (entry.expiresAt <= Date.now()) this.sources.delete(key)
-      if (this.sources.size >= 1024) fail('UPLOAD_LIMIT', 'Too many pending hydration sources.')
-      this.sources.set(JSON.stringify([httpSession, documentId, source.sourceContentId]), { bootstrap: state, expiresAt: Date.now() + 600_000 })
-      await this.refresh(documentId)
-      return state
+      try {
+        const status = await port.store.getStatus()
+        if (status.recoveryState !== 'ready')
+          fail(
+            'REVISION_CONFLICT',
+            'The original file changed; working-copy recovery requires attention.',
+          )
+        const source = await port.acquireSource(editorSessionId)
+        const state: WorkingCopyBootstrap = {
+          documentEpoch: status.documentEpoch,
+          workingRevision: status.workingRevision,
+          savedRevision: status.savedRevision,
+          sourceContentId: source.sourceContentId,
+          checkpointId: status.head?.checkpointId ?? null,
+          dirty: status.dirty,
+          recoveryState: status.recoveryState,
+          contentUrl:
+            origin +
+            '/api/documents/' +
+            encodeURIComponent(documentId) +
+            '/sources/' +
+            source.sourceContentId +
+            '/content',
+        }
+        for (const [key, entry] of this.sources)
+          if (entry.expiresAt <= Date.now()) this.sources.delete(key)
+        if (this.sources.size >= 1024) fail('UPLOAD_LIMIT', 'Too many pending hydration sources.')
+        this.sources.set(JSON.stringify([httpSession, documentId, source.sourceContentId]), {
+          bootstrap: state,
+          expiresAt: Date.now() + 600_000,
+        })
+        await this.refresh(documentId)
+        return state
+      } catch (error) {
+        await port.discardSource?.(editorSessionId)
+        throw error
+      }
     })
   }
-  async readSource(documentId: string, httpSession: string, sourceContentId: string): Promise<Uint8Array> {
+  async readSource(
+    documentId: string,
+    httpSession: string,
+    sourceContentId: string,
+  ): Promise<Uint8Array> {
     const issued = this.sources.get(JSON.stringify([httpSession, documentId, sourceContentId]))
-    if (!issued || issued.expiresAt <= Date.now()) fail('WORKING_COPY_STALE_SOURCE', 'This source is not leased to this authenticated document session.')
+    if (!issued || issued.expiresAt <= Date.now())
+      fail(
+        'WORKING_COPY_STALE_SOURCE',
+        'This source is not leased to this authenticated document session.',
+      )
     return this.port(documentId).readSource(sourceContentId)
   }
   register(frame: EditorRegisterFrame, httpSession: string): Promise<void> {
     return this.lane(frame.documentId, async () => {
-      const status = await this.port(frame.documentId).store.getStatus()
-      const issued = this.sources.get(JSON.stringify([httpSession, frame.documentId, frame.sourceContentId]))
-      const renderer = this.rendererHeads.get(this.key(frame.documentId, frame.rendererInstanceId))
-      const matches = (state: WorkingCopyBootstrap | undefined) => state?.documentEpoch === frame.documentEpoch &&
-        state?.workingRevision === frame.revision && state?.sourceContentId === frame.sourceContentId &&
-        state?.checkpointId === frame.restoredCheckpointId
-      const resumed = renderer?.httpSession === httpSession && matches(renderer.bootstrap)
-      const fresh = issued !== undefined && issued.expiresAt > Date.now() && matches(issued.bootstrap)
-      if ((!resumed && !fresh) || status.recoveryState !== 'ready' ||
-          frame.documentEpoch !== status.documentEpoch || frame.revision !== status.workingRevision ||
-          frame.restoredCheckpointId !== (status.head?.checkpointId ?? null)) {
-        fail('REVISION_CONFLICT', 'Hydrated content is no longer the current head; bootstrap and restore again.')
+      try {
+        const status = await this.port(frame.documentId).store.getStatus()
+        const issued = this.sources.get(
+          JSON.stringify([httpSession, frame.documentId, frame.sourceContentId]),
+        )
+        const renderer = this.rendererHeads.get(
+          this.key(frame.documentId, frame.rendererInstanceId),
+        )
+        const matches = (state: WorkingCopyBootstrap | undefined) =>
+          state?.documentEpoch === frame.documentEpoch &&
+          state?.workingRevision === frame.revision &&
+          state?.sourceContentId === frame.sourceContentId &&
+          state?.checkpointId === frame.restoredCheckpointId
+        const resumed = renderer?.httpSession === httpSession && matches(renderer.bootstrap)
+        const fresh =
+          issued !== undefined && issued.expiresAt > Date.now() && matches(issued.bootstrap)
+        if (
+          (!resumed && !fresh) ||
+          status.recoveryState !== 'ready' ||
+          frame.documentEpoch !== status.documentEpoch ||
+          frame.revision !== status.workingRevision ||
+          frame.restoredCheckpointId !== (status.head?.checkpointId ?? null)
+        ) {
+          fail(
+            'REVISION_CONFLICT',
+            'Hydrated content is no longer the current head; bootstrap and restore again.',
+          )
+        }
+        await this.refresh(frame.documentId)
+        const oldLease = this.leases.get(frame.documentId)
+        const oldRegistration = oldLease
+          ? this.options.documents.assertClient(frame.documentId, oldLease.clientId as ClientId)
+          : undefined
+        this.options.documents.register(frame)
+        try {
+          await this.port(frame.documentId).activateSource?.(
+            frame.sourceContentId!,
+            frame.editorSessionId,
+          )
+        } catch (error) {
+          // Re-registering the attached owner is a registry no-op. Preserve
+          // that record and lease; only a newly attached client needs undo.
+          if (!oldRegistration) {
+            this.options.documents.detach({ documentId: frame.documentId, clientId: frame.clientId })
+            this.leases.delete(frame.documentId)
+          }
+          throw error
+        }
+        this.rendererHeads.set(this.key(frame.documentId, frame.rendererInstanceId), {
+          bootstrap: { ...(resumed ? renderer!.bootstrap : issued!.bootstrap) },
+          httpSession,
+        })
+        if (this.rendererHeads.size > 1024)
+          this.rendererHeads.delete(this.rendererHeads.keys().next().value!)
+        const previous = this.leases.get(frame.documentId)
+        this.leases.set(frame.documentId, {
+          generation:
+            previous?.clientId === frame.clientId &&
+            previous.rendererInstanceId === frame.rendererInstanceId &&
+            previous.sourceContentId === frame.sourceContentId &&
+            previous.editorSessionId === frame.editorSessionId &&
+            previous.documentEpoch === frame.documentEpoch
+              ? previous.generation
+              : randomUUID(),
+          clientId: frame.clientId,
+          rendererInstanceId: frame.rendererInstanceId,
+          sourceContentId: frame.sourceContentId!,
+          documentEpoch: frame.documentEpoch!,
+          httpSession,
+          ...(frame.editorSessionId === undefined
+            ? {}
+            : { editorSessionId: frame.editorSessionId }),
+        })
+      } catch (error) {
+        await this.port(frame.documentId).discardSource?.(frame.editorSessionId)
+        throw error
       }
-      await this.refresh(frame.documentId)
-      this.options.documents.register(frame)
-      this.rendererHeads.set(this.key(frame.documentId, frame.rendererInstanceId), {
-        bootstrap: { ...(resumed ? renderer!.bootstrap : issued!.bootstrap) }, httpSession })
-      if (this.rendererHeads.size > 1024) this.rendererHeads.delete(this.rendererHeads.keys().next().value!)
-      const previous = this.leases.get(frame.documentId)
-      this.leases.set(frame.documentId, { generation: previous?.clientId === frame.clientId &&
-        previous.rendererInstanceId === frame.rendererInstanceId && previous.sourceContentId === frame.sourceContentId &&
-        previous.documentEpoch === frame.documentEpoch ? previous.generation : randomUUID(),
-        clientId: frame.clientId, rendererInstanceId: frame.rendererInstanceId,
-        sourceContentId: frame.sourceContentId!, documentEpoch: frame.documentEpoch!, httpSession })
     })
   }
   async disconnect(clientId: string): Promise<void> {

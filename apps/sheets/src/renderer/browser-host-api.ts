@@ -292,7 +292,8 @@ export function installBrowserHostApi(
     current = currentBootstrap.workingCopy ?? null
     if (!current || !context) throw new Error('The saved workbook could not be hydrated.')
     document.revision = current.workingRevision as Revision
-    context().openLazyWorkbook(currentBootstrap.workbook)
+    await context().openLazyWorkbook(currentBootstrap.workbook)
+    if (!hydrated) throw new Error('Workbook installation did not confirm hydration.')
   }
   const bridge = createBrowserAgentBridge({
     client,
@@ -347,17 +348,22 @@ export function installBrowserHostApi(
     if (recovering) return
     recovering = lane
       .run(async () => {
-        let lastError = frame.message
-        while (!disposed && recoveryAttempts < 3) {
-          recoveryAttempts++
-          try {
-            await reopen()
-            return
-          } catch (error) {
-            lastError = error instanceof Error ? error.message : String(error)
+        const release = lockApprovedSave(context?.().univerRef.current ?? null)
+        try {
+          let lastError = frame.message
+          while (!disposed && recoveryAttempts < 3) {
+            recoveryAttempts++
+            try {
+              await reopen()
+              return
+            } catch (error) {
+              lastError = error instanceof Error ? error.message : String(error)
+            }
           }
+          context?.().setMessage('Workbook recovery failed: ' + lastError + '. Reload to retry.')
+        } finally {
+          release()
         }
-        context?.().setMessage('Workbook recovery failed: ' + lastError + '. Reload to retry.')
       })
       .finally(() => {
         recovering = undefined
@@ -372,12 +378,13 @@ export function installBrowserHostApi(
     },
     markHydrated(sessionId) {
       if (!current || sessionId !== currentBootstrap.workbook.sessionId) return
+      bridge.setEditorSessionId(sessionId)
       hydrated = true
       if (attached) bridge.setHydrated(current)
     },
     saveWorkingCopy(ctx) {
       return lane.run(async () => {
-        if (!current || aiBulkUndoGate.active)
+        if (!current || !hydrated || aiBulkUndoGate.active)
           return { ok: false, error: 'The workbook is not ready to save.' }
         let saved = false
         const release = lockApprovedSave(ctx.univerRef.current)
@@ -388,7 +395,6 @@ export function installBrowserHostApi(
           const receipt = await persistence.saveManual(crypto.randomUUID(), payload)
           saved = true
           committed(receipt)
-          release()
           await reopen()
           ctx.setMessage('Saved the current workbook.')
           return {

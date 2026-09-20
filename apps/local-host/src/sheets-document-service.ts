@@ -41,6 +41,10 @@ interface OpenWorkbook {
   sheetNames: Map<string, string>
   sourceContentId: string
   snapshotPath: string
+  workingRevision: number
+  savedRevision: number
+  documentEpoch: string
+  expiresAt: number
 }
 function sidecarPath(repositoryRoot: string): string {
   return resolve(
@@ -59,14 +63,7 @@ export async function createSheetsDocumentService(
   let opened: OpenWorkbook | undefined
   let closed = false
   const retiredSessions = new Set<string>()
-  let pendingBootstrap:
-    | {
-        sourceContentId: string
-        workingRevision: number
-        savedRevision: number
-        documentEpoch: string
-      }
-    | undefined
+  const sessions = new Map<string, OpenWorkbook>()
   const document: LocalDocument = {
     documentId: 'xlsx-' + createHash('sha256').update(path).digest('hex').slice(0, 16),
     title: basename(path),
@@ -90,7 +87,7 @@ export async function createSheetsDocumentService(
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       const existing = await readFile(snapshotPath)
       if (createHash('sha256').update(existing).digest('hex') !== sourceContentId)
-        throw new Error('Invalid workbook source snapshot.')
+        throw new Error('Invalid workbook source snapshot.', { cause: error })
     }
     return snapshotPath
   }
@@ -134,18 +131,16 @@ export async function createSheetsDocumentService(
         restoredFromRecovery: after.dirty,
         automaticRecoveryDisabled: true,
       })
-      pendingBootstrap = {
-        sourceContentId: source.sourceContentId,
-        workingRevision: after.workingRevision,
-        savedRevision: after.savedRevision,
-        documentEpoch: after.documentEpoch,
-      }
       document.revision = after.workingRevision
       return {
         file,
         sheetNames: sheetNamesFor(raw),
         sourceContentId: source.sourceContentId,
         snapshotPath,
+        workingRevision: after.workingRevision,
+        savedRevision: after.savedRevision,
+        documentEpoch: after.documentEpoch,
+        expiresAt: Date.now() + 600_000,
       }
     } catch (error) {
       await client.close(raw.sessionId).catch(() => undefined)
@@ -153,36 +148,41 @@ export async function createSheetsDocumentService(
     }
   }
   const requireSession = (payload: unknown): OpenWorkbook => {
-    if (
-      !opened ||
-      !payload ||
-      (payload as { sessionId?: unknown }).sessionId !== opened.file.sessionId
-    ) {
+    const state = sessions.get((payload as { sessionId?: string } | null)?.sessionId ?? '')
+    if (!state || (state !== opened && state.expiresAt <= Date.now())) {
       throw new HostError('DOCUMENT_NOT_FOUND', 'Unknown or obsolete workbook session.', false)
     }
-    return opened
+    return state
+  }
+  const retire = async (state: OpenWorkbook) => {
+    sessions.delete(state.file.sessionId)
+    retiredSessions.add(state.file.sessionId)
+    await client.close(state.file.sessionId).catch(() => undefined)
+  }
+  const validateCandidate = async (state: OpenWorkbook) => {
+    const current = await store.getStatus()
+    if (
+      current.recoveryState !== 'ready' ||
+      current.workingRevision !== state.workingRevision ||
+      current.savedRevision !== state.savedRevision ||
+      current.documentEpoch !== state.documentEpoch
+    ) {
+      if (state !== opened) await retire(state)
+      throw new HostError(
+        'REVISION_CONFLICT',
+        'Workbook head changed after native hydration; bootstrap again.',
+        true,
+      )
+    }
   }
   const driver: LocalDocumentDriver = {
     document,
     workingCopy: {
       store,
-      async acquireSource() {
-        if (pendingBootstrap) {
-          const expected = pendingBootstrap
-          const current = await store.getStatus()
-          if (
-            current.recoveryState !== 'ready' ||
-            current.workingRevision !== expected.workingRevision ||
-            current.savedRevision !== expected.savedRevision ||
-            current.documentEpoch !== expected.documentEpoch
-          ) {
-            throw new HostError(
-              'REVISION_CONFLICT',
-              'Workbook head changed after native hydration; bootstrap again.',
-              true,
-            )
-          }
-          pendingBootstrap = undefined
+      async acquireSource(editorSessionId) {
+        if (editorSessionId) {
+          const expected = requireSession({ sessionId: editorSessionId })
+          await validateCandidate(expected)
           return {
             sourceContentId: expected.sourceContentId,
             bytes: await store.readSource(expected.sourceContentId),
@@ -190,12 +190,33 @@ export async function createSheetsDocumentService(
         }
         return store.acquireSource()
       },
+      async activateSource(sourceContentId, editorSessionId) {
+        const candidate = requireSession({ sessionId: editorSessionId })
+        if (candidate.sourceContentId !== sourceContentId) {
+          if (candidate !== opened) await retire(candidate)
+          throw new HostError(
+            'REVISION_CONFLICT',
+            'Native session does not match the leased source.',
+            true,
+          )
+        }
+        if (candidate === opened) return
+        await validateCandidate(candidate)
+        const previous = opened
+        opened = candidate
+        if (previous) await retire(previous)
+      },
+      async discardSource(editorSessionId) {
+        const candidate = sessions.get(editorSessionId ?? '')
+        if (candidate && candidate !== opened) await retire(candidate)
+      },
       readSource: (id) => store.readSource(id),
       async materialize(input) {
         if (input.payloadKind !== 'xlsx-save-plan')
           throw new Error('Sheets requires an XLSX save plan.')
         const request = decodeWorkbookSaveRequest(input.parts)
         const state = requireSession(request)
+        if (state !== opened) throw new Error('Workbook session is not the registered owner.')
         if (state.sourceContentId !== input.sourceContentId)
           throw new Error('Workbook plan belongs to a different source session.')
         const sourcePath = await snapshot(input.sourceContentId)
@@ -290,12 +311,16 @@ export async function createSheetsDocumentService(
       },
     },
     async bootstrap(origin) {
+      for (const candidate of sessions.values())
+        if (candidate !== opened && candidate.expiresAt <= Date.now()) await retire(candidate)
+      if (sessions.size >= 64)
+        throw new HostError(
+          'REVISION_CONFLICT',
+          'Too many pending workbook sessions; close unused pages and retry.',
+          true,
+        )
       const next = await openWorkbook()
-      if (opened) {
-        retiredSessions.add(opened.file.sessionId)
-        await client.close(opened.file.sessionId).catch(() => undefined)
-      }
-      opened = next
+      sessions.set(next.file.sessionId, next)
       return {
         documentId: document.documentId,
         title: document.title,
@@ -365,9 +390,8 @@ export async function createSheetsDocumentService(
         })
       }
       if (action === 'close-workbook') {
-        await client.close(state.file.sessionId)
-        retiredSessions.add(state.file.sessionId)
-        opened = undefined
+        await retire(state)
+        if (opened === state) opened = undefined
         return { ok: true }
       }
       throw new Error('Unsupported Sheets document action: ' + action)
@@ -375,7 +399,7 @@ export async function createSheetsDocumentService(
     async close() {
       if (closed) return
       closed = true
-      if (opened) await client.close(opened.file.sessionId).catch(() => undefined)
+      await Promise.all([...sessions.values()].map(retire))
       opened = undefined
       client.stop()
       await rm(directory, { recursive: true, force: true })

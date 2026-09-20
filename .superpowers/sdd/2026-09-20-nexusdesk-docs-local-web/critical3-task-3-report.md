@@ -75,3 +75,31 @@ Logs retained in this task workspace: `critical3-task-3-gate.log`, `critical3-ta
 - `apps/sheets/tests/browser-host-api.test.ts`
 - `apps/sheets/tests/browser-save-replay.test.ts`
 - `.superpowers/sdd/2026-09-20-nexusdesk-docs-local-web/critical3-task-3-report.md`
+
+## Review fix round 1 — four Important findings
+
+The controller authorized this round to extend the previously frozen shared interface narrowly for exact native-session activation. The optional protocol/web-client `editorSessionId` wire was delivered separately in `f12226f`; this round consumes that wire and changes the optional driver port, bootstrap token forwarding and coordinator activation transaction. Docs/PDF/registry/router files are not changed by this round.
+
+### Fixes and RED evidence
+
+1. **Save lock through real hydration.** Manual and approved Agent Save now retain both the command veto and the inert document through receipt, delayed bootstrap, workbook installation and the awaited hydration promise. Trusted file installation gets a synchronous-only capability; the capability is cleared before asynchronous continuations. The Agent regression first failed with `locked === false` inside the delayed reopen. The manual regression now attempts an actual command during both delayed bootstrap and hydration and observes the veto; the independent lock test proves trusted synchronous installation cannot leave the bypass open for a later edit. A persisted Save still reports success with a reload warning if reopening fails.
+2. **Strict Web recovery hydration.** Web open returns an actual completion promise, and reopen checks that the matching session confirmed hydration. Recovery range reads poll boundedly until `indexingComplete: true`; viewport, frozen-column and required full-preload read failures propagate. Mandatory pivot reads no longer swallow failure in Web recovery. The registration gate stays closed and manual Save is refused when hydration fails; the recovery frame loop retries at most three times. Ordinary Electron open retains its existing non-blocking/best-effort flow. New helper tests first failed because the strict API did not exist; real `loadVisibleRange`/`preloadEntireWorkbook` tests now prove HTTP 503 propagation and that 200 incomplete-index reads install no loaded range. Browser tests verify three failed installs produce no registration.
+3. **Nested-list part budget.** Small nested arrays stay inline; growing lists are byte-chunked and raw image assets remain binary. The encoder checks part IDs/uniqueness and the 4096-part budget before returning a payload, and the decoder checks IDs/count before parsing. The 5000-rich-edit RED produced exactly 5004 parts; it now round-trips within the shared budget, as does a 5000-row pivot with nested member tuples. Oversized scalar and aggregate byte limits remain enforced.
+4. **Request-bound candidate sessions.** Bootstrap creates a session candidate without retiring the live owner. Server/coordinator forwards the exact bootstrap native session to `acquireSource`; no latest-bootstrap singleton remains. Registration first passes ownership/head validation, then activates precisely that session/source. Activation failure restores the previous registration/lease when present and never publishes a new lease; rejected candidates are discarded without closing the active owner. A same-source native-session replacement changes lease generation so pending old-session uploads cannot commit. Only the active native session can materialize checkpoints. Candidates have a ten-minute lifetime and a 64-session service bound. The native RED failed because B's bootstrap made A's range read throw “obsolete workbook session”; the coordinator RED showed no activation invocation. The real service/coordinator regression now proves B is rejected with `WRONG_CLIENT`, B's candidate is cleaned, and A still reads, recalculates and materializes. A moved head between lease issuance and activation cleans the candidate while keeping A readable, and a later valid candidate can activate and retire A.
+
+### Scope and remaining limits
+
+- This round uses the test-driven-development, systematic-debugging and verification-before-completion workflows recorded above; all four review issues have focused regression coverage.
+- The previous full-Sheets environment failures remain documented above; this round does not claim to have repaired LibreOffice, unrelated sidecar cancellation tests or the pressure-test timing threshold.
+- Whole-browser fidelity/interaction E2E remains the integration task's gate. Native service, real renderer loading entry points, host/bridge behavior and ownership integration are covered here.
+
+### Fix-round verification
+
+- Expanded Sheets gate: the prior seven brief-named files plus strict hydration and approved-save-lock tests, **9 files / 78 tests PASS** on the final run.
+- Native tests/build through `npm run test -w @genoffice/sheets`: **187 library + 6 binary tests PASS**, release build PASS.
+- Production native service **10 tests PASS**; coordinator **23 tests PASS**, including same-source native-session lease invalidation.
+- Full Local Host: **24 files / 212 tests PASS** on the final run.
+- Typecheck: Sheets, XLSX gateway and Local Host **all PASS**.
+- Targeted ESLint: **0 errors**, with the same three existing App hook warnings at lines 2905, 2906 and 2917. No unrelated effect rewrites were made. `git diff --check`: PASS.
+- An extra root browser-host API compatibility run passed **6 files / 61 tests**, including the other editor hosts.
+- Full Sheets was not rerun in this round; its previous 2812-pass / 3-known-failure evidence and limitations remain above.

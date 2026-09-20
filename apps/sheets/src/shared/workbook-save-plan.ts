@@ -6,6 +6,8 @@ import { workbookSaveRequestSchema, type WorkbookSaveRequest } from './desktop-a
 /** Binary checkpoint transport; limits are bytes, independently of Electron's IPC item cap. */
 const PART_LIMIT = 256 * 1024
 const TOTAL_LIMIT = 128 * 1024 * 1024
+const PART_COUNT_LIMIT = 4096
+const PART_ID = /^(manifest|(?:edits|asset)-\d+)$/
 type WireValue = null | boolean | number | string | WireValue[] | { [key: string]: WireValue }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -16,13 +18,15 @@ export function encodeWorkbookSaveRequest(
   const parts = new Map<string, Blob>()
   let total = 0
   const put = (id: string, bytes: Uint8Array): string => {
+    if (!PART_ID.test(id) || parts.has(id)) throw new Error('Invalid workbook part ID.')
+    if (parts.size >= PART_COUNT_LIMIT) throw new Error('Workbook checkpoint exceeds 4096 parts.')
     total += bytes.byteLength
     if (total > TOTAL_LIMIT) throw new Error('Workbook checkpoint exceeds 128 MiB.')
     parts.set(id, new Blob([bytes as Uint8Array<ArrayBuffer>]))
     return id
   }
   let serial = 0
-  const pack = (value: unknown, key = ''): WireValue => {
+  const pack = (value: unknown, key = '', depth = 0): WireValue => {
     if (key === 'base64' && typeof value === 'string') {
       const binary = atob(value)
       return {
@@ -33,6 +37,11 @@ export function encodeWorkbookSaveRequest(
       }
     }
     if (Array.isArray(value)) {
+      const packed = value.map((item) => pack(item, '', depth + 1))
+      // Rich runs, pivot tuples and rule ranges are normally tiny. Preserve
+      // them inline; only growing lists warrant their own transport parts.
+      if (depth > 1 && encoder.encode(JSON.stringify(packed)).byteLength <= PART_LIMIT / 2)
+        return packed
       const ids: string[] = []
       let entries: string[] = []
       let size = 2
@@ -47,10 +56,10 @@ export function encodeWorkbookSaveRequest(
         entries = []
         size = 2
       }
-      for (const item of value) {
+      for (const item of packed) {
         // Nested growing lists (notes, rules, names, pivot members) have the same
         // byte boundary. Scalar records remain indivisible, and images stay binary.
-        const raw = JSON.stringify(pack(item))
+        const raw = JSON.stringify(item)
         const bytes = encoder.encode(raw).byteLength
         if (bytes + 2 > PART_LIMIT) throw new Error('One workbook record exceeds 256 KiB.')
         if (size + bytes + (entries.length ? 1 : 0) > PART_LIMIT) flush()
@@ -64,7 +73,7 @@ export function encodeWorkbookSaveRequest(
       return Object.fromEntries(
         Object.entries(value)
           .filter(([, v]) => v !== undefined)
-          .map(([k, v]) => [k, pack(v, k)]),
+          .map(([k, v]) => [k, pack(v, k, depth + 1)]),
       )
     }
     return value as WireValue
@@ -78,6 +87,8 @@ export function encodeWorkbookSaveRequest(
 export function decodeWorkbookSaveRequest(
   parts: ReadonlyMap<string, Uint8Array>,
 ): WorkbookSaveRequest {
+  if (parts.size > PART_COUNT_LIMIT) throw new Error('Workbook checkpoint exceeds 4096 parts.')
+  for (const id of parts.keys()) if (!PART_ID.test(id)) throw new Error('Invalid workbook part ID.')
   const used = new Set(['manifest'])
   const json = (id: string): unknown => {
     const bytes = parts.get(id)

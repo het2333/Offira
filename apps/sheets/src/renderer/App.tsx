@@ -335,7 +335,7 @@ import {
 } from './page-layout-actions'
 import { handleExportCsv as handleExportCsvImpl, type CsvExportContext } from './csv-export'
 import { effectivePageBreaks, installPageBreakPreview } from './page-break-preview'
-import { isApprovedSaveLocked } from './approved-save-lock'
+import { isApprovedSaveLocked, withWorkbookInstallation } from './approved-save-lock'
 import { mapProtectedRanges } from './protected-ranges'
 import {
   handleSave as handleSaveImpl,
@@ -3727,7 +3727,16 @@ export function App(): React.JSX.Element {
     return state.hyperlinkTargets.get(sheetId)?.get(`${row}:${column}`) ?? null
   }
 
-  function openLazyWorkbook(opened: WorkbookFile): void {
+  function openLazyWorkbook(opened: WorkbookFile): void | Promise<void> {
+    const completion = withWorkbookInstallation(() => openLazyWorkbookInner(opened))
+    if (window.nexusdeskBrowserHost?.hasWorkingCopy) return completion
+    void completion.catch((error: unknown) =>
+      setMessage(error instanceof Error ? error.message : 'Workbook hydration failed.'),
+    )
+  }
+
+  function openLazyWorkbookInner(opened: WorkbookFile): Promise<void> {
+    const recovery = !!window.nexusdeskBrowserHost?.hasWorkingCopy
     const selected: WorkbookFile = {
       ...opened,
       visuals: opened.visuals.map((visual) =>
@@ -3843,7 +3852,9 @@ export function App(): React.JSX.Element {
                 state.pivotDefinitions.set(pivot.path, definition)
               }
             })
-            .catch(() => undefined),
+            .catch((error: unknown) => {
+              if (recovery) throw error
+            }),
         )
       }
     }
@@ -3885,140 +3896,159 @@ export function App(): React.JSX.Element {
     applyDefinedNames(univerRef.current, selected, state)
     const runtime = univerRef.current
     if (runtime) {
-      requestAnimationFrame(() => {
-        const workbook = runtime.univerAPI.getActiveWorkbook()
-        if (!workbook) return
-        // Register existing file tables so Univer renders filter dropdowns
-        // and banding. This is visual-only (the journal is empty for file
-        // tables), so failures are swallowed — the data is still usable.
-        const tableInstalls: Promise<unknown>[] = []
-        for (const sheet of selected.sheets) {
-          if (sheet.tables.length === 0) continue
-          const ws = workbook.getSheetBySheetId(sheet.id)
-          if (!ws) continue
-          for (let index = 0; index < sheet.tables.length; index += 1) {
-            const table = sheet.tables[index]!
-            // Univer's table header is not optional yet: registering a
-            // headerless table injects synthesized "Column N" labels over the
-            // first data row, so skip it (banding still paints).
-            if (table.headerRowCount === 0) continue
-            const tableId = `file-table-${sheet.id}-${index}`
-            const tableName = `Table${index + 1}_${sheet.id.slice(0, 6)}`
-            try {
-              // File column names must reach Univer, or empty header cells
-              // fall back to its locale template ("Column 1" with a space)
-              // where Excel shows the table part's names ("Column1").
-              const columnOptions = table.columns?.length
-                ? {
-                    columns: table.columns.map((name, columnIndex) => ({
-                      id: `${tableId}-col-${columnIndex}`,
-                      displayName: name,
-                    })),
+      return new Promise<void>((resolve, reject) =>
+        requestAnimationFrame(() => {
+          try {
+            withWorkbookInstallation(() => {
+              const workbook = runtime.univerAPI.getActiveWorkbook()
+              if (!workbook) throw new Error('Workbook installation is unavailable.')
+              // Register existing file tables so Univer renders filter dropdowns
+              // and banding. This is visual-only (the journal is empty for file
+              // tables), so failures are swallowed — the data is still usable.
+              const tableInstalls: Promise<unknown>[] = []
+              for (const sheet of selected.sheets) {
+                if (sheet.tables.length === 0) continue
+                const ws = workbook.getSheetBySheetId(sheet.id)
+                if (!ws) continue
+                for (let index = 0; index < sheet.tables.length; index += 1) {
+                  const table = sheet.tables[index]!
+                  // Univer's table header is not optional yet: registering a
+                  // headerless table injects synthesized "Column N" labels over the
+                  // first data row, so skip it (banding still paints).
+                  if (table.headerRowCount === 0) continue
+                  const tableId = `file-table-${sheet.id}-${index}`
+                  const tableName = `Table${index + 1}_${sheet.id.slice(0, 6)}`
+                  try {
+                    // File column names must reach Univer, or empty header cells
+                    // fall back to its locale template ("Column 1" with a space)
+                    // where Excel shows the table part's names ("Column1").
+                    const columnOptions = table.columns?.length
+                      ? {
+                          columns: table.columns.map((name, columnIndex) => ({
+                            id: `${tableId}-col-${columnIndex}`,
+                            displayName: name,
+                          })),
+                        }
+                      : undefined
+                    const added = ws.addTable(
+                      tableName,
+                      table.range,
+                      tableId,
+                      columnOptions as never,
+                    ) as unknown
+                    // Univer paints its own lavender default table theme over the
+                    // cells; file tables carry Excel's real banding in the cell
+                    // fills (applyTableBanding), so mute the theme to plain.
+                    tableInstalls.push(
+                      Promise.resolve(added)
+                        .then(() =>
+                          withWorkbookInstallation(() =>
+                            (
+                              ws as unknown as {
+                                addTableTheme(id: string, theme: { name: string }): unknown
+                              }
+                            ).addTableTheme(tableId, { name: `plain-${tableId}` }),
+                          ),
+                        )
+                        // Theme muting is cosmetic; the table itself is registered.
+                        .catch(() => undefined),
+                    )
+                  } catch {
+                    // Best-effort: skip if Univer rejects (e.g. overlapping ranges)
                   }
-                : undefined
-              const added = ws.addTable(
-                tableName,
-                table.range,
-                tableId,
-                columnOptions as never,
-              ) as unknown
-              // Univer paints its own lavender default table theme over the
-              // cells; file tables carry Excel's real banding in the cell
-              // fills (applyTableBanding), so mute the theme to plain.
-              tableInstalls.push(
-                Promise.resolve(added)
-                  .then(() =>
-                    (
-                      ws as unknown as {
-                        addTableTheme(id: string, theme: { name: string }): unknown
-                      }
-                    ).addTableTheme(tableId, { name: `plain-${tableId}` }),
-                  )
-                  // Theme muting is cosmetic; the table itself is registered.
-                  .catch(() => undefined),
+                }
+              }
+              // Post-save reopen: swap the load-time decoration's undo entries
+              // (table/note/name installs are load artifacts, not edits) for the
+              // pre-save user history carried across the session swap. Table
+              // registration is async and pushes its undo entries (each push also
+              // clears the redo stack) only when its command settles — consume
+              // strictly after every install, or the artifacts would land on top
+              // of the carried history and wipe the carried redos.
+              void Promise.allSettled(tableInstalls).then(() => {
+                if (lazyWorkbookRef.current !== state) return
+                consumePendingUndoCarry(runtime, workbook.getId())
+              })
+              const worksheet = workbook.getActiveSheet()
+              if (!worksheet) throw new Error('Initial worksheet installation is unavailable.')
+              // apply the opening sheet's formula view (sheetView/@showFormulas)
+              applyShowFormulasView(runtime, state, worksheet.getSheetId())
+              queueVisualInstall(
+                runtime,
+                lazyWorkbookRef,
+                visualDisposablesRef,
+                visualInstallTimerRef,
+                chartEditRef,
+                chartVectorRef,
+                shapeEditRef,
               )
-            } catch {
-              // Best-effort: skip if Univer rejects (e.g. overlapping ranges)
-            }
+              // A post-save reinstall lands back where the user was; anything else
+              // (fresh opens) starts at the first sheet's origin. Falls back to the
+              // origin when the stashed sheet no longer exists.
+              const restore = viewRestoreRef.current
+              viewRestoreRef.current = null
+              const restoredSheet = restore ? workbook.getSheetBySheetId(restore.sheetId) : null
+              try {
+                if (restore && restoredSheet) {
+                  workbook.setActiveSheet(restoredSheet)
+                  restoredSheet.getRange(restore.row, restore.column, 1, 1).activate()
+                  // scrollToCell puts its target at the viewport's top-left, so
+                  // scroll to the captured viewport origin — not the selection —
+                  // to reproduce the exact pre-save view.
+                  restoredSheet.scrollToCell(restore.viewRow, restore.viewColumn)
+                } else {
+                  worksheet.scrollToCell(0, 0)
+                }
+              } catch {
+                // A workbook opened during startup (the shell's queued-open nudge)
+                // can land before Univer's Rendered lifecycle registers the scroll
+                // render controller, and the facade then throws a redi
+                // QuantityCheckError. The fresh view is already at the origin, so
+                // skipping the reset is harmless.
+              }
+              // getVisibleRange lags the jump by a frame (same as name-box goto) —
+              // anchor the first stream at the restored cell, not the stale origin.
+              const initialRange = loadVisibleRange(
+                runtime,
+                lazyWorkbookRef,
+                restoredSheet ?? worksheet,
+                setMessage,
+                restore && restoredSheet
+                  ? { row: restore.viewRow, column: restore.viewColumn }
+                  : undefined,
+                recovery,
+              )
+              if (state.formulaMode) {
+                hydrationReads.push(
+                  initialRange.then(() =>
+                    preloadEntireWorkbook(runtime, lazyWorkbookRef, setMessage, recovery),
+                  ),
+                )
+              } else {
+                // Deferred so first paint and initial streaming win the sidecar.
+                setTimeout(() => {
+                  void activateFormulaClosure(runtime, lazyWorkbookRef, setMessage)
+                }, 1500)
+              }
+              void Promise.all([...hydrationReads, initialRange, ...tableInstalls])
+                .then(() => {
+                  if (lazyWorkbookRef.current !== state)
+                    throw new Error('Workbook hydration was replaced.')
+                  window.nexusdeskBrowserHost?.markHydrated(selected.sessionId)
+                  resolve()
+                })
+                .catch((error: unknown) => {
+                  setMessage(error instanceof Error ? error.message : 'Workbook hydration failed.')
+                  reject(error)
+                })
+            })
+          } catch (error) {
+            reject(error)
           }
-        }
-        // Post-save reopen: swap the load-time decoration's undo entries
-        // (table/note/name installs are load artifacts, not edits) for the
-        // pre-save user history carried across the session swap. Table
-        // registration is async and pushes its undo entries (each push also
-        // clears the redo stack) only when its command settles — consume
-        // strictly after every install, or the artifacts would land on top
-        // of the carried history and wipe the carried redos.
-        void Promise.allSettled(tableInstalls).then(() => {
-          if (lazyWorkbookRef.current !== state) return
-          consumePendingUndoCarry(runtime, workbook.getId())
-        })
-        const worksheet = workbook.getActiveSheet()
-        if (!worksheet) return
-        // apply the opening sheet's formula view (sheetView/@showFormulas)
-        applyShowFormulasView(runtime, state, worksheet.getSheetId())
-        queueVisualInstall(
-          runtime,
-          lazyWorkbookRef,
-          visualDisposablesRef,
-          visualInstallTimerRef,
-          chartEditRef,
-          chartVectorRef,
-          shapeEditRef,
-        )
-        // A post-save reinstall lands back where the user was; anything else
-        // (fresh opens) starts at the first sheet's origin. Falls back to the
-        // origin when the stashed sheet no longer exists.
-        const restore = viewRestoreRef.current
-        viewRestoreRef.current = null
-        const restoredSheet = restore ? workbook.getSheetBySheetId(restore.sheetId) : null
-        try {
-          if (restore && restoredSheet) {
-            workbook.setActiveSheet(restoredSheet)
-            restoredSheet.getRange(restore.row, restore.column, 1, 1).activate()
-            // scrollToCell puts its target at the viewport's top-left, so
-            // scroll to the captured viewport origin — not the selection —
-            // to reproduce the exact pre-save view.
-            restoredSheet.scrollToCell(restore.viewRow, restore.viewColumn)
-          } else {
-            worksheet.scrollToCell(0, 0)
-          }
-        } catch {
-          // A workbook opened during startup (the shell's queued-open nudge)
-          // can land before Univer's Rendered lifecycle registers the scroll
-          // render controller, and the facade then throws a redi
-          // QuantityCheckError. The fresh view is already at the origin, so
-          // skipping the reset is harmless.
-        }
-        // getVisibleRange lags the jump by a frame (same as name-box goto) —
-        // anchor the first stream at the restored cell, not the stale origin.
-        const initialRange = loadVisibleRange(
-          runtime,
-          lazyWorkbookRef,
-          restoredSheet ?? worksheet,
-          setMessage,
-          restore && restoredSheet
-            ? { row: restore.viewRow, column: restore.viewColumn }
-            : undefined,
-        )
-        if (state.formulaMode) {
-          hydrationReads.push(preloadEntireWorkbook(runtime, lazyWorkbookRef, setMessage))
-        } else {
-          // Deferred so first paint and initial streaming win the sidecar.
-          setTimeout(() => {
-            void activateFormulaClosure(runtime, lazyWorkbookRef, setMessage)
-          }, 1500)
-        }
-        void Promise.all([...hydrationReads, initialRange, ...tableInstalls])
-          .then(() => {
-            if (lazyWorkbookRef.current === state)
-              window.nexusdeskBrowserHost?.markHydrated(selected.sessionId)
-          })
-          .catch((error: unknown) => {
-            setMessage(error instanceof Error ? error.message : 'Workbook hydration failed.')
-          })
-      })
+        }),
+      )
     }
+    return Promise.reject(new Error('Workbook runtime is unavailable.'))
   }
 
   async function handleInspectWorkbook(): Promise<void> {
@@ -4033,7 +4063,7 @@ export function App(): React.JSX.Element {
         setMessage(t('appOpenCanceled'))
         return
       }
-      openLazyWorkbook(selected)
+      await openLazyWorkbook(selected)
       setMessage(t('appOpened', { name: selected.name }))
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : t('appOpenFailed'))

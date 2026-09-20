@@ -470,6 +470,10 @@ describe('browser host installation', () => {
   })
 
   it('saves an empty restored journal through binary manual promotion and reopens the saved source', async () => {
+    const root = { inert: false }
+    vi.stubGlobal('document', { body: root })
+    let finishBootstrap!: () => void
+    let finishHydration!: () => void
     const bootstrap = browserBootstrap()
     bootstrap.workbook.restoredFromRecovery = true
     bootstrap.workingCopy = {
@@ -492,7 +496,12 @@ describe('browser host installation', () => {
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input)
       calls.push({ url, body: init?.body })
-      if (url.endsWith('/bootstrap')) return Response.json(next)
+      if (url.endsWith('/bootstrap')) {
+        await new Promise<void>((resolve) => {
+          finishBootstrap = resolve
+        })
+        return Response.json(next)
+      }
       if (url.endsWith('/manual-save-uploads')) {
         operationId = JSON.parse(String(init?.body)).operationId
         return Response.json({
@@ -527,17 +536,51 @@ describe('browser host installation', () => {
       fetch: fetcher,
     })
     let opened = ''
+    let beforeCommand: (() => void) | undefined
+    const runtime = {
+      univerAPI: { getActiveWorkbook: () => null },
+      univer: {
+        __getInjector: () => ({
+          get: () => ({
+            beforeCommandExecuted: (listener: () => void) => {
+              beforeCommand = listener
+              return {
+                dispose: () => {
+                  beforeCommand = undefined
+                },
+              }
+            },
+          }),
+        }),
+      },
+    }
     const ctx = {
-      univerRef: { current: null },
+      univerRef: { current: runtime },
       lazyWorkbookRef: { current: { file: bootstrap.workbook, editJournal: createEditJournal() } },
-      openLazyWorkbook: (file: WorkbookFile) => {
+      openLazyWorkbook: async (file: WorkbookFile) => {
         opened = file.sessionId
+        await new Promise<void>((resolve) => {
+          finishHydration = resolve
+        })
+        handle.markHydrated(file.sessionId)
       },
       setMessage: () => {},
       stashViewRestore: () => {},
     } as unknown as SaveContext
     handle.configureSaveContext(() => ctx)
-    await expect(handle.saveWorkingCopy(ctx)).resolves.toMatchObject({ ok: true })
+    handle.markHydrated(bootstrap.workbook.sessionId)
+    const save = handle.saveWorkingCopy(ctx)
+    await vi.waitFor(() => expect(finishBootstrap).toBeDefined())
+    expect(root.inert).toBe(true)
+    expect(() => beforeCommand!()).toThrow(/approved save/i)
+    finishBootstrap()
+    await vi.waitFor(() => expect(finishHydration).toBeDefined())
+    expect(root.inert).toBe(true)
+    expect(() => beforeCommand!()).toThrow(/approved save/i)
+    finishHydration()
+    await expect(save).resolves.toMatchObject({ ok: true })
+    expect(root.inert).toBe(false)
+    expect(beforeCommand).toBeUndefined()
     expect(opened).toBe('reopened')
     expect(calls.some((entry) => entry.url.endsWith('/save-workbook'))).toBe(false)
     expect(
@@ -546,6 +589,7 @@ describe('browser host installation', () => {
         .every((entry) => entry.body instanceof Blob),
     ).toBe(true)
     handle.dispose()
+    vi.unstubAllGlobals()
   })
 
   it('installs both stable browser APIs and owns their complete lifecycle', () => {
@@ -587,6 +631,7 @@ describe('browser host installation', () => {
     const client = new FakeClient()
     let calls = 0
     let reopened = ''
+    let finishRecoveryHydration!: () => void
     const handle = installBrowserHostApi(bootstrap, {
       client,
       target: {},
@@ -608,8 +653,11 @@ describe('browser host installation', () => {
       () =>
         ({
           univerRef: { current: null },
-          openLazyWorkbook: (file: WorkbookFile) => {
+          openLazyWorkbook: async (file: WorkbookFile) => {
             reopened = file.sessionId
+            await new Promise<void>((resolve) => {
+              finishRecoveryHydration = resolve
+            })
           },
           setMessage: () => {},
         }) as unknown as SaveContext,
@@ -627,7 +675,57 @@ describe('browser host installation', () => {
     expect(calls).toBe(2)
     expect(client.sent.filter((frame) => frame.type === 'editor:register')).toHaveLength(0)
     handle.markHydrated('fresh-session')
+    finishRecoveryHydration()
     expect(client.sent.at(-1)).toMatchObject({ type: 'editor:register' })
+    handle.dispose()
+  })
+
+  it('retries failed hydration only three times and never registers partial content', async () => {
+    const bootstrap = browserBootstrap()
+    bootstrap.workingCopy = {
+      documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'cp',
+      workingRevision: 3,
+      savedRevision: 1,
+      dirty: true,
+      recoveryState: 'ready',
+      contentUrl: '/source',
+    }
+    const client = new FakeClient()
+    const fetcher = vi.fn(async () => Response.json(bootstrap))
+    const install = vi.fn(async () => {
+      throw Error('HTTP 503 during hydration')
+    })
+    const message = vi.fn()
+    const handle = installBrowserHostApi(bootstrap, {
+      client,
+      target: {},
+      transport: { request: vi.fn() },
+      fetch: fetcher,
+    })
+    const ctx = {
+      univerRef: { current: null },
+      openLazyWorkbook: install,
+      setMessage: message,
+    } as unknown as SaveContext
+    handle.configureSaveContext(() => ctx)
+    handle.attachEditor(adapterWith())
+    client.emit({
+      type: 'recovery:required',
+      protocolVersion: 1,
+      id: 'recover' as RequestId,
+      documentId,
+      code: 'WORKING_COPY_STALE_SOURCE',
+      message: 'head moved',
+    })
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith(expect.stringContaining('recovery failed')),
+    )
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(install).toHaveBeenCalledTimes(3)
+    expect(client.sent.filter((frame) => frame.type === 'editor:register')).toHaveLength(0)
+    await expect(handle.saveWorkingCopy(ctx)).resolves.toMatchObject({ ok: false })
     handle.dispose()
   })
 

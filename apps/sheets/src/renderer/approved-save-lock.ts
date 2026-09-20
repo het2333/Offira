@@ -2,6 +2,24 @@ import { CustomCommandExecutionError, ICommandService } from '@univerjs/core'
 import type { UniverRuntime } from './univer-state'
 
 const locked = new WeakSet<UniverRuntime>()
+let installationDepth = 0
+
+/** Synchronous trusted file installation only; never hold this across an await. */
+export function enterWorkbookInstallation(): () => void {
+  installationDepth++
+  return () => {
+    installationDepth--
+  }
+}
+
+export function withWorkbookInstallation<T>(install: () => T): T {
+  const leave = enterWorkbookInstallation()
+  try {
+    return install()
+  } finally {
+    leave()
+  }
+}
 
 export function isApprovedSaveLocked(runtime: UniverRuntime | null): boolean {
   return runtime !== null && locked.has(runtime)
@@ -15,6 +33,7 @@ export function lockApprovedSave(runtime: UniverRuntime | null): () => void {
   const wasInert = root?.inert ?? false
   const service = runtime?.univer.__getInjector().get(ICommandService)
   const subscription = service?.beforeCommandExecuted((command) => {
+    if (installationDepth > 0) return
     // Like the calculation veto, remove the dispatch entry before throwing:
     // Univer only balances this stack on its successful execution path.
     const stack = (service as unknown as { _commandExecutionStack?: unknown[] })

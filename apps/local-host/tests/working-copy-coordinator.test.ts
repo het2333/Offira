@@ -68,6 +68,35 @@ async function upload(setup: Awaited<ReturnType<typeof fixture>>, text = 'edited
   return { ...created, parts: [part] }
 }
 
+it('invalidates pending uploads when a same-source renderer changes native sessions', async () => {
+  const s = await fixture()
+  await s.coordinator.register({ ...s.registration, editorSessionId: 'native-A' }, 'http-session')
+  const up = await upload(s)
+  await s.coordinator.register({ ...s.registration, editorSessionId: 'native-B' }, 'http-session')
+  await expect(s.coordinator.commitUpload('doc', 'client', up.uploadId, up.parts))
+    .rejects.toMatchObject({ code: 'WORKING_COPY_STALE_OWNER' })
+})
+
+it('activates a native session only after ownership validation and rolls back failed activation', async () => {
+  const s = await fixture()
+  const activate = vi.fn(async () => {})
+  s.driver.workingCopy!.activateSource = activate
+  await expect(s.coordinator.register({ ...s.registration, clientId: 'other' as never,
+    rendererInstanceId: 'other-renderer' as never, editorSessionId: 'candidate-B' }, 'http-session'))
+    .rejects.toMatchObject({ code: 'WRONG_CLIENT' })
+  expect(activate).not.toHaveBeenCalled()
+  await s.coordinator.register({ ...s.registration, editorSessionId: 'owner-A' }, 'http-session')
+  expect(activate).toHaveBeenCalledWith(s.bootstrap.sourceContentId, 'owner-A')
+  await s.coordinator.detach('doc', 'client')
+  activate.mockRejectedValueOnce(Error('candidate head moved'))
+  await expect(s.coordinator.register({ ...s.registration, clientId: 'other' as never,
+    rendererInstanceId: 'other-renderer' as never, editorSessionId: 'candidate-B' }, 'http-session'))
+    .rejects.toThrow('candidate head moved')
+  await expect(s.coordinator.reserve({ ...s.frame, target: { ...s.frame.target, clientId: 'other' as never } }))
+    .rejects.toThrow()
+  await s.coordinator.register({ ...s.registration, editorSessionId: 'owner-A' }, 'http-session')
+})
+
 async function routedFixture() {
   const s = await fixture()
   const supervisor = new HarnessSupervisor({ entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) })

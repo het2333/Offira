@@ -42,6 +42,71 @@ function emptySaveRequest(): WorkbookSaveRequest {
 }
 
 describe('working copy payload', () => {
+  it('keeps 5000 small rich-text arrays inline within the shared part-count budget', async () => {
+    const request = emptySaveRequest()
+    request.edits = Array.from({ length: 5000 }, (_, row) => ({
+      sheetId: 'sheet-1',
+      row,
+      column: 0,
+      writeValue: true,
+      value: 'Rich',
+      rich: [{ text: 'Rich', bold: true, italic: false, underline: false, strikethrough: false }],
+    }))
+    const payload = encodeWorkbookSaveRequest(request)
+    expect(payload.parts.size).toBeLessThanOrEqual(4096)
+    const restored = decodeWorkbookSaveRequest(
+      new Map(
+        await Promise.all(
+          [...payload.parts].map(
+            async ([id, blob]) => [id, new Uint8Array(await blob.arrayBuffer())] as const,
+          ),
+        ),
+      ),
+    )
+    expect(restored.edits).toEqual(request.edits)
+  })
+
+  it('rejects excessive part counts and invalid part IDs before decoding', () => {
+    expect(() =>
+      decodeWorkbookSaveRequest(
+        new Map(Array.from({ length: 4097 }, (_, i) => ['edits-' + i, new Uint8Array()] as const)),
+      ),
+    ).toThrow(/4096/)
+    expect(() => decodeWorkbookSaveRequest(new Map([['../invalid', new Uint8Array()]]))).toThrow(
+      /part.*id/i,
+    )
+  })
+
+  it('keeps 5000 pivot member tuples inline and round trips their layout', async () => {
+    const request = emptySaveRequest()
+    const area = { startRow: 0, endRow: 5000, startColumn: 0, endColumn: 2 }
+    request.pivotAdditions = [
+      {
+        sheetId: 'sheet-1',
+        sourceSheetId: 'sheet-1',
+        sourceArea: area,
+        location: area,
+        name: 'Pivot',
+        fieldNames: ['Region', 'Amount'],
+        rowFieldIndices: [0],
+        rowItems: Array.from({ length: 5000 }, (_, i) => 'Region-' + i),
+        rowLines: Array.from({ length: 5000 }, (_, i) => ({ t: 'data', members: [i] })),
+        values: [{ fieldIndex: 1, agg: 'sum' }],
+      },
+    ]
+    const payload = encodeWorkbookSaveRequest(request)
+    expect(payload.parts.size).toBeLessThanOrEqual(4096)
+    const restored = decodeWorkbookSaveRequest(
+      new Map(
+        await Promise.all(
+          [...payload.parts].map(
+            async ([id, blob]) => [id, new Uint8Array(await blob.arrayBuffer())] as const,
+          ),
+        ),
+      ),
+    )
+    expect(restored.pivotAdditions[0]?.rowLines).toEqual(request.pivotAdditions[0]?.rowLines)
+  })
   it('refuses new-sheet pivot plans before they can create an unpersistable held operation', () => {
     const journal = createEditJournal()
     journal.sheets.added.set('new', { name: 'New' })

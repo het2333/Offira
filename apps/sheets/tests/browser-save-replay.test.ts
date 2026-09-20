@@ -160,6 +160,49 @@ it('durable historical lookup supersedes absent proposals without executing the 
   s.bridge.dispose()
 })
 
+it('keeps the Save lock until asynchronous reopen and hydration finish', async () => {
+  let locked = false
+  let finish!: () => void
+  const s = setup(undefined, {
+    state: () => ({ documentEpoch: 'epoch' }),
+    lane: createWorkingCopyMutationLane(),
+    lock: () => {
+      locked = true
+      return () => {
+        locked = false
+      }
+    },
+    capture: async () => ({ kind: 'xlsx-save-plan', parts: new Map() }),
+    persistence: {
+      lookup: async () => ({ state: 'not-found' }),
+      checkpoint: async () => ({ workingRevision: 2 }),
+    },
+    committed: () => {},
+    afterSave: () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  })
+  s.bridge.attachEditor({ saveSnapshot: () => 'approved' } as never)
+  s.emit(s.frame('propose_save'))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  const proposal = s.results()[0].result.data
+  s.emit(
+    s.frame(
+      'save_sheet',
+      { snapshotHash: proposal.snapshotHash },
+      { id: 'approval', planHash: proposal.planHash },
+    ),
+  )
+  await vi.waitFor(() => expect(finish).toBeDefined())
+  expect(locked).toBe(true)
+  expect(s.results()).toHaveLength(1)
+  finish()
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(locked).toBe(false)
+  s.bridge.dispose()
+})
+
 it('rejects an approved Save if content changes between validation and acquiring the capture lock', async () => {
   let content = 'approved'
   let writes = 0

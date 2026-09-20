@@ -570,7 +570,8 @@ export async function startLocalHost(
             ? await driver.bootstrap(origin)
             : await driver.execute(action, await readJsonBody(request))
           if (action === 'bootstrap' && driver.workingCopy && workingCopy) {
-            const state = await workingCopy.bootstrap(documentId, origin, sessionId)
+            const nativeSession = (result as { workbook?: { sessionId?: string } }).workbook?.sessionId
+            const state = await workingCopy.bootstrap(documentId, origin, sessionId, nativeSession)
             result = { ...(result as Record<string, unknown>), revision: state.workingRevision, workingCopy: state }
           }
           documents.refreshFromHost(driver.document)

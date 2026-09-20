@@ -8,7 +8,9 @@ export interface WorkingCopyDriverOptions { workingCopyRoot?: string }
 export const defaultWorkingCopyRoot = (): string => resolve(nexusdeskAppDataDirectory(), 'working-copies')
 export interface WorkingCopyDocumentPort {
   store: WorkingCopyStore
-  acquireSource(): Promise<{ sourceContentId: string; bytes: Uint8Array }>
+  acquireSource(editorSessionId?: string): Promise<{ sourceContentId: string; bytes: Uint8Array }>
+  activateSource?(sourceContentId: string, editorSessionId?: string): Promise<void>
+  discardSource?(editorSessionId?: string): Promise<void>
   readSource(sourceContentId: string): Promise<Uint8Array>
   materialize(input: {
     sourceContentId: string

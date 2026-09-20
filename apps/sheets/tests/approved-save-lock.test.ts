@@ -1,5 +1,9 @@
 import { expect, it, vi } from 'vitest'
-import { isApprovedSaveLocked, lockApprovedSave } from '../src/renderer/approved-save-lock'
+import {
+  isApprovedSaveLocked,
+  lockApprovedSave,
+  withWorkbookInstallation,
+} from '../src/renderer/approved-save-lock'
 import type { UniverRuntime } from '../src/renderer/univer-state'
 
 it('vetoes delayed and nested commands, restores editing, and cleans the command stack by identity', () => {
@@ -29,6 +33,9 @@ it('vetoes delayed and nested commands, restores editing, and cleans the command
     stack.push(mutation)
     expect(() => listener!(mutation)).toThrow(/approved save/i)
     expect(stack).toEqual([parent])
+    expect(() => withWorkbookInstallation(() => listener!(mutation))).not.toThrow()
+    // A synchronous installation capability must not escape into later user commands.
+    expect(() => listener!(mutation)).toThrow(/approved save/i)
     expect(() => lockApprovedSave(runtime)).toThrow(/already in progress/)
     release()
     release()

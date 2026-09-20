@@ -35,6 +35,7 @@ export interface BrowserAgentBridge {
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
   setHydrated(state: WorkingCopyBootstrap | null): void
+  setEditorSessionId(sessionId: string | null): void
   dispose(): void
 }
 
@@ -374,24 +375,24 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
             const receipt = await durable.persistence.checkpoint(frame, result, payload)
             receipts.set(frame.target.operationId, receipt)
             durable.committed(receipt)
-          } finally {
-            release()
-          }
-          if (frame.command === 'save_sheet') {
-            try {
-              await durable.afterSave?.()
-            } catch {
-              result = {
-                ...result,
-                warnings: [
-                  ...result.warnings,
-                  {
-                    code: 'SAVED_RELOAD_FAILED',
-                    message: 'The workbook was saved, but reopening failed. Reload to continue.',
-                  },
-                ],
+            if (frame.command === 'save_sheet') {
+              try {
+                await durable.afterSave?.()
+              } catch {
+                result = {
+                  ...result,
+                  warnings: [
+                    ...result.warnings,
+                    {
+                      code: 'SAVED_RELOAD_FAILED',
+                      message: 'The workbook was saved, but reopening failed. Reload to continue.',
+                    },
+                  ],
+                }
               }
             }
+          } finally {
+            release()
           }
         }
         if (
@@ -482,6 +483,9 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
     },
     setHydrated(state) {
       registration.setHydrated(state)
+    },
+    setEditorSessionId(sessionId) {
+      registration.setEditorSessionId(sessionId)
     },
     dispose() {
       disposed = true

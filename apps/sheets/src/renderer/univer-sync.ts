@@ -31,6 +31,8 @@ import { SheetSkeletonManagerService } from '@univerjs/sheets-ui'
 import { CFValueType, type IValueConfig } from '@univerjs/preset-sheets-conditional-formatting'
 
 import { CENTER_ACROSS_END_KEY } from './center-continuous'
+import { enterWorkbookInstallation } from './approved-save-lock'
+import { readIndexedWorkingCopyRange } from './working-copy-hydration'
 import { notifyCfStreamWindow } from './cf-formula-fold'
 import {
   THRESHOLD_RANGE_CELL_CAP,
@@ -212,10 +214,12 @@ export function loadSnapshotIntoUniver(
   // A rebuild is a load, not an edit: suppress undo entries so the fresh
   // demo workbook starts with an empty stack (same convention as file opens)
   // and the QAT undo falls through to the adapter's revision history.
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     loadSnapshotIntoUniverInner(runtime, snapshot, workbookId, workbookName)
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -1096,6 +1100,7 @@ export function applyDefinedNames(
   const ordered = [...groups.values()].flatMap((list) =>
     [...list].sort((a, b) => rank(a) - rank(b)),
   )
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     for (const defined of ordered) {
@@ -1128,6 +1133,7 @@ export function applyDefinedNames(
       }
     }
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -1136,10 +1142,12 @@ export function applyWorkbookNotes(runtime: UniverRuntime | null, file: Workbook
   const workbook = runtime?.univerAPI.getActiveWorkbook()
   if (!workbook) return
   // Installing the file's own notes must not mark their sheets note-dirty.
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     applyWorkbookNotesInner(workbook, file)
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -1241,6 +1249,7 @@ export async function loadVisibleRange(
   worksheet: UniverWorksheet,
   setMessage: (message: string) => void,
   viewportStart?: { row: number; column: number },
+  recovery = false,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   if (!state) return
@@ -1282,8 +1291,20 @@ export async function loadVisibleRange(
     screenRowCount,
     screenColumnCount,
   )
-  await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
-  await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range)
+  await loadRange(
+    runtime,
+    lazyWorkbookRef,
+    worksheet,
+    range,
+    setMessage,
+    recovery,
+    false,
+    0,
+    null,
+    false,
+    recovery,
+  )
+  await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range, recovery)
   await extendWindowPastHiddenRows(
     runtime,
     lazyWorkbookRef,
@@ -1291,6 +1312,7 @@ export async function loadVisibleRange(
     range,
     setMessage,
     screenRowCount,
+    recovery,
   )
 }
 
@@ -1308,6 +1330,7 @@ async function extendWindowPastHiddenRows(
   range: IRange,
   setMessage: (message: string) => void,
   screenRowCount: number,
+  recovery = false,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   if (!state) return
@@ -1344,8 +1367,20 @@ async function extendWindowPastHiddenRows(
     const nextEnd = Math.min(maxEndRow, window.endRow + (window.endRow - window.startRow + 1))
     if (nextEnd <= window.endRow) return
     window = { ...window, endRow: nextEnd }
-    await loadRange(runtime, lazyWorkbookRef, worksheet, window, setMessage)
-    await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, window)
+    await loadRange(
+      runtime,
+      lazyWorkbookRef,
+      worksheet,
+      window,
+      setMessage,
+      recovery,
+      false,
+      0,
+      null,
+      false,
+      recovery,
+    )
+    await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, window, recovery)
   }
 }
 
@@ -2438,11 +2473,13 @@ async function runFormulaRecalc(
     state.recalc.follow.set(sheetId, { anchorRow: viewportStartRow, complete: windowComplete })
     const loaded = state.loadedRanges.get(sheetId)
     if (loaded && overlay.size > 0) {
+      const leaveInstallation = enterWorkbookInstallation()
       journalSuppression.active = true
       loadAutoHeightSuppression.active = true
       try {
         applyPinnedOverlay(worksheet, overlay, undefined, loaded)
       } finally {
+        leaveInstallation()
         journalSuppression.active = false
         loadAutoHeightSuppression.active = false
       }
@@ -2509,6 +2546,7 @@ async function loadFrozenColumnStrip(
   worksheet: UniverWorksheet,
   sheet: WorkbookFile['sheets'][number],
   viewportRange: IRange,
+  recovery = false,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   const frozenColumns = sheet.freeze?.frozenColumns ?? 0
@@ -2522,14 +2560,17 @@ async function loadFrozenColumnStrip(
     endColumn: frozenColumns - 1,
   }
   const stripKey = `${sheetId}:${stripRange.startRow}:${stripRange.endRow}`
-  if (state.frozenStripKeys.get(sheetId) === stripKey) return
+  if (!recovery && state.frozenStripKeys.get(sheetId) === stripKey) return
   state.frozenStripKeys.set(sheetId, stripKey)
   try {
     const mapped = await readSheetRangeMapped(state, sheetId, stripRange, sheet)
     if (lazyWorkbookRef.current !== state || !mapped) {
       state.frozenStripKeys.delete(sheetId)
+      if (recovery) throw new Error('Frozen strip hydration was superseded.')
       return
     }
+    if (recovery && !mapped.raw.indexingComplete)
+      throw new Error('Frozen strip indexing is incomplete.')
     const availableEndRow =
       mapped.indexedThroughScreen === null
         ? null
@@ -2577,8 +2618,9 @@ async function loadFrozenColumnStrip(
     )
     measureWrapAutoFitRows(worksheet, stripQualifying)
     trackPreIndexMeasuredRows(`file-${state.file.sha256}:${sheetId}`, stripQualifying)
-  } catch {
+  } catch (error) {
     state.frozenStripKeys.delete(sheetId)
+    if (recovery) throw error
   }
 }
 
@@ -2682,11 +2724,13 @@ async function remeasureWrapRowsAcrossSheet(
   const pinned = state.closure.pinned.get(sheetId)
   const pinnedKeys = pinned?.size ? new Set(pinned.keys()) : undefined
   const suppressed = (run: () => void): void => {
+    const leaveInstallation = enterWorkbookInstallation()
     journalSuppression.active = true
     loadAutoHeightSuppression.active = true
     try {
       keepActiveSheet(worksheet, run)
     } finally {
+      leaveInstallation()
       journalSuppression.active = false
       loadAutoHeightSuppression.active = false
     }
@@ -2791,6 +2835,7 @@ async function loadRange(
   waitStalls = 0,
   lastIndexedRow: number | null = null,
   bulk = false,
+  recovery = false,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   if (!state) return
@@ -2818,8 +2863,21 @@ async function loadRange(
   try {
     const sheetMeta = lazySheetMeta(state, sheetId)
     if (!sheetMeta) return
-    const mapped = await readSheetRangeMapped(state, sheetId, range, sheetMeta)
+    const read = () => readSheetRangeMapped(state, sheetId, range, sheetMeta)
+    const mapped = recovery
+      ? (
+          await readIndexedWorkingCopyRange(
+            async () => {
+              const value = await read()
+              if (!value) throw new Error('Recovery range is not backed by the source.')
+              return { indexingComplete: value.raw.indexingComplete, value }
+            },
+            () => lazyWorkbookRef.current === state,
+          )
+        ).value
+      : await read()
     if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
+      if (recovery) throw new Error('Recovery range installation was superseded.')
       return
     }
     if (!mapped) {
@@ -3087,6 +3145,7 @@ async function loadRange(
     if (lazyWorkbookRef.current === state && isActiveSheet(runtime, sheetId)) {
       setMessage(error instanceof Error ? error.message : t('appLoadRangeFailed'))
     }
+    if (recovery) throw error
   } finally {
     if (state.loadingKeys.get(sheetId) === requestKey) {
       state.loadingKeys.delete(sheetId)
@@ -3403,6 +3462,7 @@ export function applyRowProperties(
     applied = new Set()
     state.appliedRowKeys.set(sheetId, applied)
   }
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   loadAutoHeightSuppression.active = true
   try {
@@ -3538,6 +3598,7 @@ export function applyRowProperties(
       }
     }
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
     loadAutoHeightSuppression.active = false
   }
@@ -3583,6 +3644,7 @@ function applyMerges(
     applied = new Set()
     state.appliedMerges.set(sheetId, applied)
   }
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   // .merge() re-selects each merged range (AddMergeRedoSelectionsOperation),
   // so a file load would leave a phantom selection highlight on whichever
@@ -3614,6 +3676,7 @@ function applyMerges(
       }
     }
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
   if (appliedAny && activeBefore) {
@@ -3775,6 +3838,7 @@ function patchWorksheetRange(
     .getSheet?.()
     ?.getSheetId?.()
   if (streamSheetId) notifyCfStreamWindow(streamSheetId, range.startRow, range.endRow)
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   // Installing file content must keep every row at its stored height — Excel
   // does not re-measure on open — while leaving rows in auto mode for edits.
@@ -3808,6 +3872,7 @@ function patchWorksheetRange(
       if (journal) applyJournalOverlay(worksheet, journal, range)
     })
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
     loadAutoHeightSuppression.active = false
   }
@@ -4399,6 +4464,7 @@ export function resetStaleWrapAutoHeights(
     stale.push({ row, autoHeight: undefined })
   }
   if (stale.length === 0) return
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     runtime.univerAPI.syncExecuteCommand('sheet.mutation.set-worksheet-row-auto-height', {
@@ -4407,6 +4473,7 @@ export function resetStaleWrapAutoHeights(
       rowsAutoHeightInfo: stale,
     })
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -4431,6 +4498,7 @@ export function measureWrapAutoFitRows(
     return
   }
   const before = keepTaller ? readAutoHeights(worksheet, rowsToMeasure) : new Map<number, number>()
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     let start = rowsToMeasure[0] as number
@@ -4446,6 +4514,7 @@ export function measureWrapAutoFitRows(
     }
     worksheet.setRowAutoHeight(start, previous - start + 1)
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
   if (before.size > 0) restoreTallerAutoHeights(worksheet, before)
@@ -4478,6 +4547,7 @@ function restoreTallerAutoHeights(worksheet: UniverWorksheet, before: Map<number
     if ((after.get(row) ?? 0) < autoHeight) taller.push({ row, autoHeight })
   }
   if (taller.length === 0) return
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     runtime.univerAPI.syncExecuteCommand('sheet.mutation.set-worksheet-row-auto-height', {
@@ -4486,6 +4556,7 @@ function restoreTallerAutoHeights(worksheet: UniverWorksheet, before: Map<number
       rowsAutoHeightInfo: taller,
     })
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -5341,13 +5412,21 @@ export async function preloadEntireWorkbook(
   runtime: UniverRuntime,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
   setMessage: (message: string) => void,
+  recovery = false,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   const workbook = runtime.univerAPI.getActiveWorkbook()
   if (!state || !workbook) return
   state.flags.preloadRunning = true
   try {
-    await preloadEntireWorkbookInner(runtime, state, workbook, lazyWorkbookRef, setMessage)
+    await preloadEntireWorkbookInner(
+      runtime,
+      state,
+      workbook,
+      lazyWorkbookRef,
+      setMessage,
+      recovery,
+    )
   } finally {
     state.flags.preloadRunning = false
   }
@@ -5359,6 +5438,7 @@ async function preloadEntireWorkbookInner(
   workbook: NonNullable<ReturnType<UniverRuntime['univerAPI']['getActiveWorkbook']>>,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
   setMessage: (message: string) => void,
+  recovery = false,
 ): Promise<void> {
   for (const sheet of state.file.sheets) {
     const worksheet = workbook.getSheetBySheetId(sheet.id)
@@ -5376,11 +5456,15 @@ async function preloadEntireWorkbookInner(
       }
       let result
       try {
-        result = await window.desktopApi.readWorkbookRange({
-          sessionId: state.file.sessionId,
-          sheetId,
-          range,
-        })
+        const read = () =>
+          window.desktopApi.readWorkbookRange({
+            sessionId: state.file.sessionId,
+            sheetId,
+            range,
+          })
+        result = recovery
+          ? await readIndexedWorkingCopyRange(read, () => lazyWorkbookRef.current === state)
+          : await read()
         let guard = 0
         while (
           !result.indexingComplete &&
@@ -5395,7 +5479,8 @@ async function preloadEntireWorkbookInner(
             range,
           })
         }
-      } catch {
+      } catch (error) {
+        if (recovery) throw error
         return
       }
       if (lazyWorkbookRef.current !== state) return
@@ -5598,6 +5683,7 @@ function applySheetFilter(
     range,
   })
   // Installing the file's own filter must not mark the sheet filter-dirty.
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     worksheet
@@ -5614,6 +5700,7 @@ function applySheetFilter(
   } catch {
     // A pre-existing filter is fine.
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -6152,6 +6239,7 @@ function applyDataValidations(
   if (state.appliedDvSheets.has(sheetId)) return
   state.appliedDvSheets.add(sheetId)
   const unitId = `file-${state.file.sha256}`
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     for (const [index, rule] of rules.entries()) {
@@ -6168,6 +6256,7 @@ function applyDataValidations(
       }
     }
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
@@ -6348,6 +6437,7 @@ async function applyConditionalRules(
       prepared.push(rule)
     }
   }
+  const leaveInstallation = enterWorkbookInstallation()
   journalSuppression.active = true
   try {
     for (const rule of prepared) {
@@ -6359,6 +6449,7 @@ async function applyConditionalRules(
       }
     }
   } finally {
+    leaveInstallation()
     journalSuppression.active = false
   }
 }
