@@ -1,4 +1,21 @@
 import { HostError, type EditorKind, type ShellDocumentSummary } from '@nexusdesk/office-host'
+import type { CheckpointPayloadKind } from '@nexusdesk/protocol'
+import type { WorkingCopyStore } from './working-copy-store'
+import { resolve } from 'node:path'
+import { nexusdeskAppDataDirectory } from './app-data'
+
+export interface WorkingCopyDriverOptions { workingCopyRoot?: string }
+export const defaultWorkingCopyRoot = (): string => resolve(nexusdeskAppDataDirectory(), 'working-copies')
+export interface WorkingCopyDocumentPort {
+  store: WorkingCopyStore
+  acquireSource(): Promise<{ sourceContentId: string; bytes: Uint8Array }>
+  readSource(sourceContentId: string): Promise<Uint8Array>
+  materialize(input: {
+    sourceContentId: string
+    payloadKind: CheckpointPayloadKind
+    parts: ReadonlyMap<string, Uint8Array>
+  }): Promise<Uint8Array>
+}
 
 export interface LocalDocument {
   documentId: string
@@ -10,6 +27,7 @@ export interface LocalDocument {
 
 export interface LocalDocumentDriver {
   readonly document: LocalDocument
+  readonly workingCopy?: WorkingCopyDocumentPort
   bootstrap(origin: string): Promise<unknown>
   execute(action: string, payload: unknown): Promise<unknown>
   readContent?(): Promise<{ bytes: Uint8Array; contentType: string }>

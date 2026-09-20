@@ -34,6 +34,7 @@ import { createSheetsTools } from './sheets-tools'
 import { createSlidesTools } from './slides-tools'
 import {
   PROTOCOL_VERSION,
+  validateRuntimeEditorResponse,
   type HarnessDurableEvent,
   type HarnessStreamChunk,
   type RuntimeRequestFrame,
@@ -314,6 +315,7 @@ function createEditorToolBridge(
       if (reply.type !== 'editor:result' || reply.target.operationId !== operationId) {
         throw new Error(`${editorType} editor returned a mismatched operation result`)
       }
+      validateRuntimeEditorResponse(reply)
       target.revision = reply.currentRevision
       return reply.result
     },

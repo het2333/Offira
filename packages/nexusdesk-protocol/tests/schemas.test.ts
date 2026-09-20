@@ -12,6 +12,25 @@ const mutationTarget = {
 }
 
 describe('parseClientFrame', () => {
+  it('accepts durable registration, exact lookup and bounded persistence receipts', () => {
+    const registration = { type: 'editor:register', protocolVersion: 1, id: 'register',
+      clientId: 'client-1', rendererInstanceId: 'renderer-1', documentId: 'document-1',
+      editorType: 'docs', revision: 2, documentEpoch: 'epoch-1', sourceContentId: 'a'.repeat(64),
+      restoredCheckpointId: 'checkpoint-1' }
+    expect(parseClientFrame(registration)).toEqual(registration)
+    const lookup = { type: 'operation:lookup', protocolVersion: 1, id: 'lookup', operationId: 'op',
+      documentId: 'document-1', documentEpoch: 'epoch-1', requestFingerprint: 'b'.repeat(64) }
+    expect(parseClientFrame(lookup)).toEqual(lookup)
+    expect(() => parseClientFrame({ ...lookup, documentEpoch: undefined })).toThrow()
+    expect(() => parseClientFrame({ ...registration, sourceContentId: undefined })).toThrow()
+    const result = { type: 'editor:result', protocolVersion: 1, id: 'result', target: mutationTarget,
+      result: { ok: true, summary: 'applied', warnings: [] }, persistence: {
+        documentEpoch: 'epoch-1', operationId: 'operation-1', requestFingerprint: 'b'.repeat(64),
+        checkpointId: 'checkpoint-1', blobHash: 'a'.repeat(64), workingRevision: 2, savedRevision: 1, dirty: true } }
+    expect(parseClientFrame(result)).toEqual(result)
+    expect(() => parseClientFrame({ ...result, persistence: { ...result.persistence, path: '/tmp/private' } })).toThrow()
+  })
+
   it('requires a non-empty renderer instance on editor registration', () => {
     const frame = {
       type: 'editor:register' as const,

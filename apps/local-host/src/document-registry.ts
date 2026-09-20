@@ -13,6 +13,7 @@ export type DocumentRegistryErrorCode =
   | 'WRONG_RENDERER'
   | 'STALE_REVISION'
   | 'NON_MONOTONIC_REVISION'
+  | 'DURABLE_REVISION_REQUIRED'
 
 export class DocumentRegistryError extends Error {
   constructor(readonly code: DocumentRegistryErrorCode, message: string) {
@@ -27,6 +28,9 @@ export interface DocumentRegistration {
   rendererInstanceId?: RendererInstanceId
   editorType: string
   revision: Revision
+  documentEpoch?: string
+  sourceContentId?: string
+  restoredCheckpointId?: string | null
 }
 
 export interface AuthorizedDocument {
@@ -58,12 +62,14 @@ export interface DocumentOwnerCheck {
 /** Owns the authoritative browser client and revision for every open document. */
 export class DocumentRegistry {
   private documents = new Map<DocumentId, DocumentRecord>()
+  private readonly workingCopyHeads = new Map<string, { documentEpoch: string; checkpointId: string | null; workingRevision: number }>()
 
   constructor(documents: readonly AuthorizedDocument[] = []) {
     this.initialize(documents)
   }
 
   initialize(documents: readonly AuthorizedDocument[]): void {
+    this.workingCopyHeads.clear()
     const initialized = new Map<DocumentId, DocumentRecord>()
     for (const document of documents) {
       const documentId = document.documentId as DocumentId
@@ -78,6 +84,10 @@ export class DocumentRegistry {
       })
     }
     this.documents = initialized
+  }
+
+  setWorkingCopyHead(documentId: string, head: { documentEpoch: string; checkpointId: string | null; workingRevision: number }): void {
+    this.workingCopyHeads.set(documentId, { ...head })
   }
 
   refreshFromHost(
@@ -145,6 +155,11 @@ export class DocumentRegistry {
         `document ${registration.documentId} requires editor ${current.editorType}`,
       )
     }
+    const head = this.workingCopyHeads.get(registration.documentId)
+    if (head && (registration.documentEpoch !== head.documentEpoch || !registration.sourceContentId ||
+        registration.restoredCheckpointId !== head.checkpointId || registration.revision !== head.workingRevision)) {
+      throw new DocumentRegistryError('STALE_REVISION', 'Hydrate the current durable document head before registering.')
+    }
     if (current.revision !== registration.revision) {
       throw new DocumentRegistryError(
         'STALE_REVISION',
@@ -208,6 +223,9 @@ export class DocumentRegistry {
       throw new DocumentRegistryError('WRONG_CLIENT', `document ${update.documentId} belongs to another browser client`)
     }
     if (update.revision === record.revision) return record
+    if (this.workingCopyHeads.has(update.documentId)) {
+      throw new DocumentRegistryError('DURABLE_REVISION_REQUIRED', 'Only Host checkpoint publication can advance the durable revision.')
+    }
     if (update.revision !== record.revision + 1) {
       throw new DocumentRegistryError(
         'NON_MONOTONIC_REVISION',

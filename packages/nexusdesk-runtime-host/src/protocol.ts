@@ -11,10 +11,23 @@ import type {
 } from '@nexusdesk/protocol'
 
 export { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+import { parseAgentToolResult, persistenceReferenceSchema } from '@nexusdesk/protocol'
 
 export interface RuntimeEditorResponseFrame extends EditorResponseFrame {
   /** Host-authoritative revision after the editor request reached a terminal state. */
   currentRevision: Revision
+}
+
+/** Preserve old editor replies while checking small durable receipts from opted-in drivers. */
+export function validateRuntimeEditorResponse(frame: RuntimeEditorResponseFrame): RuntimeEditorResponseFrame {
+  parseAgentToolResult(frame.result)
+  if (!Number.isSafeInteger(frame.currentRevision) || frame.currentRevision < 0) throw Error('Invalid Host revision.')
+  if (frame.persistence) {
+    const receipt = persistenceReferenceSchema.parse(frame.persistence)
+    if (receipt.operationId !== frame.target.operationId || !frame.result.ok) throw Error('Persistence operation does not match its successful result.')
+    if (receipt.workingRevision > frame.currentRevision) throw Error('Host revision is behind its persistence receipt.')
+  }
+  return frame
 }
 
 interface RuntimeFrameBase {

@@ -1,4 +1,4 @@
-import type { AgentToolResult, EditorRequestFrame } from '@nexusdesk/protocol'
+import { persistenceReferenceSchema, canonicalOperationJson, type PersistenceReference, type AgentToolResult, type EditorRequestFrame } from '@nexusdesk/protocol'
 
 export const EDITOR_JOURNAL_LIMIT = 128
 export const EDITOR_JOURNAL_MAX_BYTES = 64 * 1024
@@ -79,14 +79,16 @@ function canonical(value: unknown): string {
 }
 
 /** A fixed-size receipt identity: legal large arguments never consume the receipt budget. */
-export async function editorRequestFingerprint(frame: EditorRequestFrame): Promise<string> {
-  const payload = canonical({
+export async function editorRequestFingerprint(frame: EditorRequestFrame, documentEpoch?: string): Promise<string> {
+  const input = {
     documentId: frame.target.documentId,
     editorType: frame.target.editorType,
     command: frame.command,
     arguments: frame.arguments,
     planHash: frame.approval?.planHash,
-  })
+  }
+  const payload = documentEpoch === undefined ? canonical(input) :
+    canonicalOperationJson({ ...input, planHash: input.planHash ?? '', documentEpoch })
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
@@ -94,6 +96,7 @@ export async function editorRequestFingerprint(frame: EditorRequestFrame): Promi
 export interface EditorJournalRecord {
   fingerprint: string
   result: AgentToolResult
+  persistence?: PersistenceReference
 }
 type JournalStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 interface IndexEntry {
@@ -108,7 +111,10 @@ interface MemoryEntry {
 }
 
 /** Fixed-lifetime, bounded receipts. Storage errors never change an executed operation's result. */
-export function createEditorResultJournal(storage: JournalStorage | undefined, documentId: string) {
+export function createEditorResultJournal(storage: JournalStorage | undefined, documentId: string, options: { requirePersistence?: boolean } = {}) {
+  const accepted = (record: EditorJournalRecord): boolean => !options.requirePersistence ||
+    (record.result.ok && persistenceReferenceSchema.safeParse(record.persistence).success &&
+      record.persistence?.requestFingerprint === record.fingerprint)
   const memory = new Map<string, MemoryEntry>()
   let memoryBytes = 0
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -206,6 +212,7 @@ export function createEditorResultJournal(storage: JournalStorage | undefined, d
     byteLength(indexKey + JSON.stringify(index))
 
   const write = (operationId: string, record: EditorJournalRecord): void => {
+    if (!accepted(record) || (record.persistence && record.persistence.operationId !== operationId)) return
     if (operationId.length > 256) return
     const expiresAt = Date.now() + EDITOR_JOURNAL_TTL_MS
     const raw = JSON.stringify({ ...record, expiresAt })
@@ -244,8 +251,9 @@ export function createEditorResultJournal(storage: JournalStorage | undefined, d
       cleanup()
       const cached = memory.get(operationId)
       if (cached) {
-        const { fingerprint, result } = JSON.parse(cached.raw) as EditorJournalRecord
-        return { fingerprint, result }
+        const { fingerprint, result, persistence } = JSON.parse(cached.raw) as EditorJournalRecord
+        const record = { fingerprint, result, ...(persistence ? { persistence } : {}) }
+        return accepted(record) ? record : undefined
       }
       try {
         const entry = readIndex()?.find(
@@ -273,7 +281,8 @@ export function createEditorResultJournal(storage: JournalStorage | undefined, d
           bytes: byteLength(prefix + operationId + raw),
         })
         schedule()
-        return { fingerprint: record.fingerprint, result: record.result }
+        if (!accepted(record) || (record.persistence && record.persistence.operationId !== operationId)) return undefined
+        return { fingerprint: record.fingerprint, result: record.result, ...(record.persistence ? { persistence: record.persistence } : {}) }
       } catch {
         remove(prefix + operationId)
         return undefined

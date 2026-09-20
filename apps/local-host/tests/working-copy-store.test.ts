@@ -67,6 +67,38 @@ async function saveFixture() {
 }
 
 describe('Host crash-safe working-copy promotion', () => {
+  it('retains an immutable initial source through checkpoint, promotion and restart', async () => {
+    const { store, request, config } = await fixture()
+    expect(typeof store.acquireSource).toBe('function')
+    const source = await store.acquireSource()
+    expect(source.sourceContentId).toBe(hash(encode('saved original')))
+    const checkpoint = await store.commitCheckpoint(request())
+    await store.promoteWorkingCopy({ documentEpoch: checkpoint.documentEpoch, expectedSavedRevision: 1,
+      expectedWorkingRevision: 2, checkpointId: checkpoint.checkpointId, operationId: 'save-source',
+      requestFingerprint: 'save-source', planHash: 'save-source', result: { ok: true, summary: 'Saved', warnings: [] } })
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.readSource(source.sourceContentId)).toEqual(encode('saved original'))
+    expect((await reopened.acquireSource()).bytes).toEqual(encode('manual and agent edits'))
+    await expect(reopened.readSource('f'.repeat(64))).rejects.toMatchObject({ code: 'WORKING_COPY_INVALID_CHECKPOINT' })
+  })
+
+  it('publishes and validates the original operation binding atomically with its terminal', async () => {
+    const { store, request, config, initial } = await fixture()
+    expect(typeof store.lookupOperationBinding).toBe('function')
+    const source = await store.acquireSource()
+    const binding = { requestFingerprint: 'exact-request-1', planHash: 'approved-plan-1',
+      documentEpoch: initial.documentEpoch, sourceContentId: source.sourceContentId,
+      fromWorkingRevision: 1, fromSavedRevision: 1, command: 'apply_ops' }
+    await store.commitCheckpoint(request(undefined, { binding }))
+    const reopened = await createWorkingCopyStore(config)
+    expect(await reopened.lookupOperationBinding('operation-1')).toEqual(binding)
+    const path = await manifestPath(config.rootDirectory)
+    const manifest = JSON.parse(await fs.readFile(path, 'utf8'))
+    manifest.operations['operation-1'].binding.planHash = 'unapproved'
+    await fs.writeFile(path, JSON.stringify(manifest))
+    await expect(createWorkingCopyStore(config)).rejects.toMatchObject({ code: 'WORKING_COPY_RECOVERY_INVALID' })
+  })
+
   it('saves exactly the approved head, clears dirty, and retains both terminals through restart', async () => {
     const { store, config, authorizedPath, checkpoint, save } = await saveFixture()
     const receipt = await store.promoteWorkingCopy(save)

@@ -14,6 +14,8 @@ import { WebSocket, WebSocketServer } from 'ws'
 
 import { acceptWebSocketOrigin } from './origin-policy'
 import { DocumentRegistry, type AuthorizedDocument } from './document-registry'
+import type { WorkingCopyCoordinator } from './working-copy-coordinator'
+import { WorkingCopyCoordinatorError } from './working-copy-coordinator'
 
 const MAX_FRAME_BYTES = 1024 * 1024
 
@@ -22,11 +24,13 @@ export interface WsSessionOptions {
   hasSession(sessionId: string): boolean
   documents: DocumentRegistry
   authorizedDocument(documentId: DocumentId): AuthorizedDocument | undefined
-  onFrame?: (frame: ClientFrame, clientId: ClientId) => void
+  workingCopy?: WorkingCopyCoordinator
+  onFrame?: (frame: ClientFrame, clientId: ClientId) => void | Promise<void>
   onDisconnect?: (clientId: ClientId) => void
 }
 
 export interface WsSessionServer {
+  assertSession(clientId: string, sessionId: string): void
   send(clientId: ClientId, frame: AgentServerFrame): void
   broadcastShellChanged(): void
   close(): Promise<void>
@@ -54,6 +58,7 @@ export function installWsSessionServer(
 ): WsSessionServer {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
   const clients = new Map<ClientId, WebSocket>()
+  const clientSessions = new Map<string, string>()
   let shellSequence = 0
 
   server.on('upgrade', (request, socket, head) => {
@@ -76,9 +81,11 @@ export function installWsSessionServer(
     })
   })
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, request) => {
     const clientId = randomUUID() as ClientId
     clients.set(clientId, socket)
+    clientSessions.set(clientId, sessionCookie(request)!)
+    let queue = Promise.resolve()
     socket.send(
       JSON.stringify({
         type: 'server:ready',
@@ -91,11 +98,22 @@ export function installWsSessionServer(
         socket.close(1008, 'binary frames are not supported')
         return
       }
-      try {
-        const frame = parseClientFrame(JSON.parse(data.toString()))
+      let frame: ClientFrame
+      try { frame = parseClientFrame(JSON.parse(data.toString())) } catch {
+        socket.close(1008, 'invalid client frame')
+        return
+      }
+      queue = queue.then(async () => {
         switch (frame.type) {
           case 'editor:register': {
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            if (options.workingCopy?.enabled(frame.documentId)) {
+              await options.workingCopy.register(frame, clientSessions.get(clientId)!)
+              socket.send(JSON.stringify({ type: 'editor:registered', protocolVersion: 1, id: frame.id,
+                documentId: frame.documentId, revision: frame.revision, documentEpoch: frame.documentEpoch,
+                sourceContentId: frame.sourceContentId }))
+              break
+            }
             const authorized = options.authorizedDocument(frame.documentId)
             if (authorized !== undefined) {
               options.documents.refreshFromHost(authorized, frame.rendererInstanceId)
@@ -105,11 +123,15 @@ export function installWsSessionServer(
           }
           case 'editor:revision':
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            if (options.workingCopy?.enabled(frame.documentId)) {
+              throw new WorkingCopyCoordinatorError('DURABLE_REVISION_REQUIRED', 'Only a durable checkpoint can advance this document revision.')
+            }
             options.documents.commitRevision(frame)
             break
           case 'editor:detach':
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
-            options.documents.detach(frame)
+            if (options.workingCopy?.enabled(frame.documentId)) await options.workingCopy.detach(frame.documentId, clientId)
+            else options.documents.detach(frame)
             break
           case 'editor:result':
             if (frame.target.clientId !== clientId) throw new Error('client identity mismatch')
@@ -117,19 +139,34 @@ export function installWsSessionServer(
           default:
             break
         }
-        options.onFrame?.(frame, clientId as ClientId)
-      } catch {
-        socket.close(1008, 'invalid client frame')
-      }
+        await options.onFrame?.(frame, clientId)
+      }).catch((error: unknown) => {
+        const documentId = 'documentId' in frame ? frame.documentId : frame.type === 'editor:result' ? frame.target.documentId : undefined
+        let durable = false
+        try { durable = documentId !== undefined && options.workingCopy?.enabled(documentId) === true } catch { /* Unknown document. */ }
+        if (durable) {
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'recovery:required', protocolVersion: 1,
+            id: frame.id, documentId, code: (error as { code?: string })?.code ?? 'WORKING_COPY_RECOVERY_REQUIRED',
+            message: error instanceof Error ? error.message : 'Working-copy recovery is required.' }))
+        } else socket.close(1008, 'invalid client frame')
+      })
     })
     socket.once('close', () => {
       clients.delete(clientId)
-      options.documents.detachClient(clientId as ClientId)
-      options.onDisconnect?.(clientId as ClientId)
+      clientSessions.delete(clientId)
+      void queue.then(() => options.workingCopy?.disconnect(clientId)).finally(() => {
+        options.documents.detachClient(clientId)
+        options.onDisconnect?.(clientId)
+      }).catch(() => undefined)
     })
   })
 
   return {
+    assertSession(clientId, sessionId) {
+      if (clientSessions.get(clientId) !== sessionId || clients.get(clientId as ClientId)?.readyState !== WebSocket.OPEN) {
+        throw new WorkingCopyCoordinatorError('FILE_NOT_AUTHORIZED', 'HTTP request must use its own authenticated websocket client.')
+      }
+    },
     send(clientId, frame) {
       const client = clients.get(clientId)
       if (client?.readyState !== WebSocket.OPEN)

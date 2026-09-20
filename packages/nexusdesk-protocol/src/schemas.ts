@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { AgentToolResult, JsonValue } from './editor'
 import type { ClientFrame } from './frames'
 import { PROTOCOL_VERSION } from './frames'
+import { persistenceReferenceSchema } from './working-copy'
 
 const nonEmptyString = z.string().min(1)
 const revisionSchema = z.number().int().nonnegative()
@@ -119,6 +120,9 @@ const clientFrameSchema = z.discriminatedUnion('type', [
       documentId: nonEmptyString,
       editorType: nonEmptyString,
       revision: revisionSchema,
+      documentEpoch: nonEmptyString.optional(),
+      sourceContentId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      restoredCheckpointId: nonEmptyString.nullable().optional(),
     })
     .strict(),
   z
@@ -147,6 +151,7 @@ const clientFrameSchema = z.discriminatedUnion('type', [
       id: nonEmptyString,
       target: mutationTargetSchema,
       result: agentToolResultSchema,
+      persistence: persistenceReferenceSchema.optional(),
     })
     .strict(),
   z
@@ -155,9 +160,20 @@ const clientFrameSchema = z.discriminatedUnion('type', [
       type: z.literal('operation:lookup'),
       id: nonEmptyString,
       operationId: nonEmptyString,
+      documentId: nonEmptyString.optional(),
+      documentEpoch: nonEmptyString.optional(),
+      requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     })
     .strict(),
-])
+]).superRefine((frame, context) => {
+  const fields = frame.type === 'editor:register'
+    ? [frame.documentEpoch, frame.sourceContentId, frame.restoredCheckpointId]
+    : frame.type === 'operation:lookup'
+      ? [frame.documentId, frame.documentEpoch, frame.requestFingerprint] : []
+  if (fields.some((field) => field !== undefined) && fields.some((field) => field === undefined)) {
+    context.addIssue({ code: 'custom', message: 'Working-copy identity fields must be supplied together.' })
+  }
+})
 
 /** Parse one untrusted browser frame and reject unknown fields. */
 export function parseClientFrame(value: unknown): ClientFrame {

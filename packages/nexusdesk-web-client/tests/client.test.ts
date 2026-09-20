@@ -88,6 +88,27 @@ function expectConnectionLost(action: () => void): void {
 }
 
 describe('NexusClient', () => {
+  it('waits for hydration and Host registration confirmation, ignoring volatile revision updates', () => {
+    const { client, sockets } = createHarness()
+    client.connect(); sockets[0]!.serverReady('client-1' as ClientId)
+    const registration = registerEditor(client, { documentId, editorType: 'docs', revision, workingCopy: true })
+    expect(sockets[0]!.sent).toEqual([])
+    expect(registration.attached).toBe(false)
+    registration.setHydrated({ documentEpoch: 'epoch', sourceContentId: 'a'.repeat(64), checkpointId: 'checkpoint',
+      workingRevision: 4, savedRevision: 1, dirty: true, recoveryState: 'ready', contentUrl: '/source' })
+    const frame = JSON.parse(sockets[0]!.sent[0]!)
+    expect(frame).toMatchObject({ type: 'editor:register', revision: 4, restoredCheckpointId: 'checkpoint' })
+    registration.updateRevision(99 as Revision)
+    expect(sockets[0]!.sent).toHaveLength(1)
+    expect(registration.attached).toBe(false)
+    sockets[0]!.emit('message', { data: JSON.stringify({ type: 'editor:registered', protocolVersion: 1,
+      id: frame.id, documentId, revision: 4, documentEpoch: 'epoch', sourceContentId: 'a'.repeat(64) }) })
+    expect(registration.attached).toBe(true)
+    registration.setHydrated(null)
+    expect(registration.attached).toBe(false)
+    registration.dispose()
+  })
+
   it('installs one listener per connection and correlates replies by request id', async () => {
     const { client, sockets } = createHarness()
     client.connect()

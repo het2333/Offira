@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +8,7 @@ import { WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 import { DocumentDriverRegistry, type LocalDocumentDriver } from '../src/document-driver'
 import { startLocalHost, type RunningLocalHost } from '../src/server'
+import { createWorkingCopyStore } from '../src/working-copy-store'
 
 let running: RunningLocalHost | undefined
 let temporaryDirectory: string | undefined
@@ -26,6 +27,77 @@ async function authenticatedHeaders(): Promise<{ cookie: string }> {
 }
 
 describe('startLocalHost HTTP bootstrap', () => {
+  it('authenticates binary uploads against the websocket owner and publishes a durable lookup before acknowledging apply', async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), 'server-checkpoint-'))
+    const path = join(temporaryDirectory, 'source.xlsx')
+    await writeFile(path, 'original')
+    const store = await createWorkingCopyStore({ rootDirectory: join(temporaryDirectory, 'recovery'),
+      authorizedPath: path, documentId: 'sheet', editorType: 'sheets' })
+    const driver: LocalDocumentDriver = { document: { documentId: 'sheet', editorType: 'sheets', title: 'Sheet', revision: 1 },
+      bootstrap: async () => ({ kind: 'sheets' }), execute: async () => ({}), close: async () => {},
+      workingCopy: { store, acquireSource: () => store.acquireSource(), readSource: (id) => store.readSource(id),
+        materialize: async ({ parts }) => parts.get('document')! } }
+    let unsafeWrites = 0
+    driver.writeContent = async () => { unsafeWrites++; throw Error('Unsafe content write reached driver') }
+    driver.execute = async () => { unsafeWrites++; return {} }
+    running = await startLocalHost({ documentDrivers: new DocumentDriverRegistry([driver]),
+      runtimeCommand: { entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) } })
+    const headers = await authenticatedHeaders()
+    const bootstrap = await (await fetch(running.origin + '/api/documents/sheet/bootstrap', { headers })).json()
+    expect(bootstrap.workingCopy).toMatchObject({ workingRevision: 1, dirty: false, contentUrl: expect.stringContaining('/sources/') })
+    const source = await fetch(bootstrap.workingCopy.contentUrl, { headers })
+    expect(await source.text()).toBe('original')
+    const socket = new WebSocket(running.origin.replace('http:', 'ws:') + '/ws', { headers: { Cookie: headers.cookie, Origin: running.origin } })
+    const frames: any[] = []
+    socket.on('message', (data) => frames.push(JSON.parse(data.toString())))
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'server:ready')).toBe(true))
+    const clientId = frames.find((frame) => frame.type === 'server:ready').clientId
+    const send = (frame: object) => socket.send(JSON.stringify({ protocolVersion: 1, ...frame }))
+    send({ type: 'editor:register', id: 'register', clientId, documentId: 'sheet', editorType: 'sheets',
+      rendererInstanceId: 'renderer', revision: 1, documentEpoch: bootstrap.workingCopy.documentEpoch,
+      sourceContentId: bootstrap.workingCopy.sourceContentId, restoredCheckpointId: null })
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'editor:registered')).toBe(true))
+    send({ type: 'agent:start', id: 'start', sessionId: 'turn', documentId: 'sheet', prompt: 'editor-wait' })
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'approval:request')).toBe(true))
+    send({ type: 'approval:response', id: 'editor-approval-1', outcome: 'allowed-once' })
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'editor:request')).toBe(true))
+    const frame = frames.find((frame) => frame.type === 'editor:request')
+    const result = { ok: true, summary: 'Applied', warnings: [] }
+    const metadata = { schemaVersion: 1, requestId: frame.id, clientId, documentEpoch: bootstrap.workingCopy.documentEpoch,
+      operationId: frame.target.operationId, expectedWorkingRevision: 1, expectedSavedRevision: 1,
+      sourceContentId: bootstrap.workingCopy.sourceContentId, planHash: frame.approval.planHash,
+      result, payloadKind: 'xlsx-save-plan' }
+    const base = running.origin + '/api/documents/sheet/checkpoint-uploads'
+    const jsonHeaders = { ...headers, 'Content-Type': 'application/json', 'X-NexusDesk-Client-Id': clientId }
+    const wrong = await fetch(base, { method: 'POST', headers: { ...jsonHeaders, 'X-NexusDesk-Client-Id': 'other' }, body: JSON.stringify(metadata) })
+    expect(wrong.status).toBe(403)
+    const created = await (await fetch(base, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(metadata) })).json()
+    expect(created.requestFingerprint).toMatch(/^[a-f0-9]{64}$/)
+    const raw = new Uint8Array(2_000_001).fill(65)
+    const part = await (await fetch(base + '/' + created.uploadId + '/parts/document', { method: 'PUT',
+      headers: { ...jsonHeaders, 'Content-Type': 'application/octet-stream' }, body: raw })).json()
+    const commit = await fetch(base + '/' + created.uploadId + '/commit', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ parts: [part] }) })
+    expect(commit.status).toBe(200)
+    const terminal = await commit.json()
+    expect(terminal.persistence).toMatchObject({ dirty: true, workingRevision: 2 })
+    expect(await readFile(path, 'utf8')).toBe('original')
+    const lookup = await fetch(running.origin + '/api/documents/sheet/operations/lookup', { method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ documentEpoch: bootstrap.workingCopy.documentEpoch, operationId: frame.target.operationId, requestFingerprint: created.requestFingerprint }) })
+    expect(await lookup.json()).toMatchObject({ state: 'committed', persistence: terminal.persistence })
+    send({ type: 'editor:result', id: frame.id, target: frame.target, result, persistence: terminal.persistence })
+    await vi.waitFor(() => expect(frames.some((value) => value.event?.type === 'test/editor-result')).toBe(true))
+    send({ type: 'editor:revision', id: 'volatile', clientId, documentId: 'sheet', revision: 3 })
+    await vi.waitFor(() => expect(frames.some((value) => value.type === 'recovery:required')).toBe(true))
+    expect(socket.readyState).toBe(WebSocket.OPEN)
+    const unsafe = await fetch(running.origin + '/api/documents/sheet/content', { method: 'PUT',
+      headers: { ...jsonHeaders, 'Content-Type': 'application/octet-stream', 'If-Match': '2' }, body: 'bypass' })
+    expect(unsafe.status).toBe(409)
+    const unsafeAction = await fetch(running.origin + '/api/documents/sheet/save-workbook', { method: 'POST', headers: jsonHeaders, body: '{}' })
+    expect(unsafeAction.status).toBe(409)
+    expect(unsafeWrites).toBe(0)
+    socket.close()
+  })
+
   it('exchanges the launch token once and redirects without it', async () => {
     running = await startLocalHost()
 

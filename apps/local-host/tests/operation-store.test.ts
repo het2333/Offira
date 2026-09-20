@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentToolResult, ClientId, DocumentId, OperationId, Revision } from '@nexusdesk/protocol'
 import { DocumentRegistry } from '../src/document-registry'
 import { OperationStore, OperationStoreError } from '../src/operation-store'
+import * as operationModule from '../src/operation-store'
 
 const operationId = 'operation-1' as OperationId
 const result: AgentToolResult = {
@@ -23,6 +24,17 @@ function storeErrorCode(run: () => unknown): string | undefined {
 }
 
 describe('OperationStore', () => {
+  it('shares canonical fingerprints for epoch and approved-plan-bound requests', () => {
+    expect(typeof operationModule.operationRequestFingerprint).toBe('function')
+    const payload = { documentId: 'doc', documentEpoch: 'epoch', editorType: 'docs',
+      command: 'apply_ops', arguments: { z: 2, a: 1 }, planHash: 'approved' }
+    const fingerprint = operationModule.operationRequestFingerprint(payload)
+    expect(fingerprint).toMatch(/^[a-f0-9]{64}$/)
+    expect(operationModule.operationRequestFingerprint({ ...payload, arguments: { a: 1, z: 2 } })).toBe(fingerprint)
+    expect(operationModule.operationRequestFingerprint({ ...payload, documentEpoch: 'new' })).not.toBe(fingerprint)
+    expect(operationModule.operationRequestFingerprint({ ...payload, planHash: 'other' })).not.toBe(fingerprint)
+  })
+
   it('returns the existing reservation for the same canonical payload', () => {
     const store = new OperationStore()
     const first = store.reserve(operationId, { command: 'apply', args: { b: 2, a: 1 } })

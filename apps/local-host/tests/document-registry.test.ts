@@ -28,6 +28,17 @@ function registryErrorCode(run: () => unknown): string | undefined {
 }
 
 describe('DocumentRegistry', () => {
+  it('checks durable hydration identity and prevents browser edit counters advancing the durable revision', () => {
+    const documents = registry()
+    expect(typeof documents.setWorkingCopyHead).toBe('function')
+    documents.setWorkingCopyHead(documentId, { documentEpoch: 'epoch', checkpointId: 'head', workingRevision: 4 })
+    expect(() => documents.register({ documentId, clientId, editorType: 'sheets', revision })).toThrow(/hydrate/i)
+    documents.register({ documentId, clientId, editorType: 'sheets', revision, documentEpoch: 'epoch',
+      sourceContentId: 'a'.repeat(64), restoredCheckpointId: 'head' })
+    expect(registryErrorCode(() => documents.commitRevision({ documentId, clientId, revision: 5 as Revision }))).toBe('DURABLE_REVISION_REQUIRED')
+    expect(documents.assertClient(documentId, clientId).revision).toBe(4)
+  })
+
   it('accepts only the registered browser client at the current revision', () => {
     const documents = registry()
     documents.register({ documentId, clientId, editorType: 'sheets', revision })

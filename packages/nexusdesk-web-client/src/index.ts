@@ -1,6 +1,7 @@
 export * from './agent-api'
 export * from './client'
 export * from './editor-registration'
+export * from './working-copy'
 export {
   BoundedEditorCache,
   createEditorResultJournal,

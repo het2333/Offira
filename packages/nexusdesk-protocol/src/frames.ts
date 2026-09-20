@@ -1,4 +1,5 @@
 import type { AgentApprovalProposal, AgentToolResult, JsonValue } from './editor'
+import type { PersistenceReference, WorkingCopyLookup } from './working-copy'
 import type {
   ClientId,
   DocumentId,
@@ -48,6 +49,9 @@ export interface EditorRegisterFrame extends FrameBase {
   documentId: DocumentId
   editorType: string
   revision: Revision
+  documentEpoch?: string
+  sourceContentId?: string
+  restoredCheckpointId?: string | null
 }
 
 export interface EditorRevisionFrame extends FrameBase {
@@ -70,12 +74,16 @@ export interface EditorResponseFrame extends FrameBase {
   id: RequestId
   target: MutationTarget
   result: AgentToolResult
+  persistence?: PersistenceReference
 }
 
 export interface OperationLookupFrame extends FrameBase {
   type: 'operation:lookup'
   id: RequestId
   operationId: OperationId
+  documentId?: DocumentId
+  documentEpoch?: string
+  requestFingerprint?: string
 }
 
 export type ClientFrame =
@@ -131,6 +139,25 @@ export interface OperationResultFrame extends FrameBase {
   id: RequestId
   operationId: OperationId
   result: AgentToolResult
+  state?: WorkingCopyLookup['state']
+  persistence?: PersistenceReference
+}
+
+export interface EditorRegisteredFrame extends FrameBase {
+  type: 'editor:registered'
+  id: RequestId
+  documentId: DocumentId
+  revision: Revision
+  documentEpoch: string
+  sourceContentId: string
+}
+
+export interface RecoveryRequiredFrame extends FrameBase {
+  type: 'recovery:required'
+  id: RequestId
+  documentId?: DocumentId
+  code: string
+  message: string
 }
 
 export type AgentServerFrame =
@@ -140,3 +167,5 @@ export type AgentServerFrame =
   | ApprovalRequestFrame
   | EditorRequestFrame
   | OperationResultFrame
+  | EditorRegisteredFrame
+  | RecoveryRequiredFrame

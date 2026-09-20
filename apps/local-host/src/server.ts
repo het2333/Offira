@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { extname, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-import { PROTOCOL_VERSION } from '@nexusdesk/protocol'
+import { PROTOCOL_VERSION, checkpointMetadataSchema, checkpointCommitSchema, workingCopyLookupSchema, manualSaveMetadataSchema } from '@nexusdesk/protocol'
 import {
   HostError,
   activateTabRequestSchema,
@@ -28,6 +28,9 @@ import { OperationStore } from './operation-store'
 import { acceptHttpOrigin } from './origin-policy'
 import { ShellState } from './shell-state'
 import { installWsSessionServer } from './ws-session'
+import { WorkingCopyCoordinator, WorkingCopyCoordinatorError } from './working-copy-coordinator'
+import { WorkingCopyStoreError } from './working-copy-store'
+import { CheckpointUploadError } from './checkpoint-upload-store'
 
 export interface RunningLocalHost {
   readonly origin: string
@@ -59,6 +62,14 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 }
 
 function sendHostError(response: ServerResponse, error: unknown): void {
+  if (error instanceof WorkingCopyStoreError || error instanceof WorkingCopyCoordinatorError || error instanceof CheckpointUploadError) {
+    const status = error.code === 'FILE_NOT_AUTHORIZED' || error.code === 'OPERATION_NOT_AUTHORIZED' ? 403 :
+      error.code === 'CONTENT_TOO_LARGE' ? 413 : error.code === 'UPLOAD_NOT_FOUND' ? 404 :
+      error.code === 'UPLOAD_LIMIT' ? 429 : 409
+    sendJson(response, status, { code: error.code, message: error.message, retryable: false,
+      recoveryState: error.code === 'WORKING_COPY_OUTCOME_UNKNOWN' ? 'unknown' : 'required' })
+    return
+  }
   if (error instanceof HostError) {
     const status =
       error.code === 'FILE_NOT_AUTHORIZED'
@@ -166,13 +177,13 @@ function sendFile(
   response.end(file.body)
 }
 
-async function readJsonBody(request: import('node:http').IncomingMessage): Promise<unknown> {
+async function readJsonBody(request: import('node:http').IncomingMessage, limit = 2_000_000): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.byteLength
-    if (size > 2_000_000) throw new Error('request body is too large')
+    if (size > limit) throw new HostError('CONTENT_TOO_LARGE', 'Request body is too large.', false)
     chunks.push(buffer)
   }
   return chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8'))
@@ -193,6 +204,8 @@ export async function startLocalHost(
       ? hostDocuments.get(documentId)
       : options.documentDrivers.list().find((document) => document.documentId === documentId)
   documents.initialize(localDocuments)
+  const workingCopy = options.documentDrivers === undefined ? undefined :
+    new WorkingCopyCoordinator({ drivers: options.documentDrivers, documents })
   const shellDocuments = localDocuments.map(
     ({ documentId, title, editorType, revision }) =>
       ({ documentId, title, editorType, revision }) as ShellDocumentSummary,
@@ -220,6 +233,7 @@ export async function startLocalHost(
           supervisor,
           documents,
           operations: new OperationStore(),
+          workingCopy,
           sendToClient: (clientId, frame) => wsSessions.send(clientId, frame),
         })
       : undefined
@@ -361,6 +375,51 @@ export async function startLocalHost(
         return
       }
       const previewMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/preview$/)
+      const workingCopyMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/(checkpoint-uploads(?:\/([^/]+)(?:\/parts\/([^/]+)|\/commit))?|manual-save-uploads|operations\/lookup|sources\/([a-f0-9]{64})\/content)$/)
+      if (workingCopyMatch !== null) {
+        try {
+          const documentId = decodeURIComponent(workingCopyMatch[1]!)
+          if (!workingCopy?.enabled(documentId)) throw new HostError('UNSUPPORTED_CAPABILITY', 'Working-copy persistence is unavailable.', false)
+          const action = workingCopyMatch[2]!
+          if (action.startsWith('sources/')) {
+            if (!requireMethod(request, response, 'GET')) return
+            const bytes = await workingCopy.readSource(documentId, sessionId, workingCopyMatch[5]!)
+            response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.byteLength, 'Cache-Control': 'no-store' })
+            response.end(bytes)
+            return
+          }
+          const header = request.headers['x-nexusdesk-client-id']
+          const clientId = typeof header === 'string' ? header : ''
+          wsSessions.assertSession(clientId, sessionId)
+          if (action === 'manual-save-uploads') {
+            if (!requireMethod(request, response, 'POST')) return
+            sendJson(response, 200, await workingCopy.beginManualUpload(documentId, clientId,
+              manualSaveMetadataSchema.parse(await readJsonBody(request, 262_144))))
+          } else if (action === 'checkpoint-uploads') {
+            if (!requireMethod(request, response, 'POST')) return
+            const metadata = checkpointMetadataSchema.parse(await readJsonBody(request, 262_144))
+            if (metadata.clientId !== clientId) throw new WorkingCopyCoordinatorError('FILE_NOT_AUTHORIZED', 'Upload client does not match its authenticated socket.')
+            sendJson(response, 200, await workingCopy.beginUpload(documentId, clientId, metadata))
+          } else if (action === 'operations/lookup') {
+            if (!requireMethod(request, response, 'POST')) return
+            sendJson(response, 200, await workingCopy.lookup(documentId, clientId, workingCopyLookupSchema.parse(await readJsonBody(request, 262_144))))
+          } else if (workingCopyMatch[4]) {
+            if (request.method !== 'PUT' || request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') {
+              throw new HostError('INVALID_REQUEST', 'Checkpoint parts require PUT application/octet-stream.', false)
+            }
+            sendJson(response, 200, await workingCopy.putPart(documentId, clientId, decodeURIComponent(workingCopyMatch[3]!),
+              decodeURIComponent(workingCopyMatch[4]), request))
+          } else {
+            if (!requireMethod(request, response, 'POST')) return
+            const input = checkpointCommitSchema.parse(await readJsonBody(request, 262_144))
+            const committed = await workingCopy.commitUpload(documentId, clientId, decodeURIComponent(workingCopyMatch[3]!), input.parts)
+            // Delivery failure cannot change a committed mutation into a failed terminal.
+            await agentRouter?.notifyWorkingCopyCommit(documentId, committed.persistence.operationId).catch(() => undefined)
+            sendJson(response, 200, committed)
+          }
+        } catch (error) { sendHostError(response, error) }
+        return
+      }
       if (previewMatch !== null) {
         if (!requireContentMethod(request, response)) return
         const documentId = decodeURIComponent(previewMatch[1]!)
@@ -420,6 +479,9 @@ export async function startLocalHost(
             })
             response.end(content.bytes)
             return
+          }
+          if (driver.workingCopy) {
+            throw new WorkingCopyCoordinatorError('WORKING_COPY_SAVE_REQUIRED', 'Use an authenticated manual or approved Agent checkpoint save for this document.')
           }
           if (driver.writeContent === undefined) {
             throw new HostError(
@@ -501,13 +563,21 @@ export async function startLocalHost(
         try {
           if (!requireMethod(request, response, action === 'bootstrap' ? 'GET' : 'POST')) return
           const driver = options.documentDrivers.require(documentId)
-          const result = action === 'bootstrap'
+          if (driver.workingCopy && ['save', 'save-workbook', 'modify-pages'].includes(action)) {
+            throw new WorkingCopyCoordinatorError('WORKING_COPY_SAVE_REQUIRED', 'This write must use the working-copy coordinator.')
+          }
+          let result = action === 'bootstrap'
             ? await driver.bootstrap(origin)
             : await driver.execute(action, await readJsonBody(request))
+          if (action === 'bootstrap' && driver.workingCopy && workingCopy) {
+            const state = await workingCopy.bootstrap(documentId, origin, sessionId)
+            result = { ...(result as Record<string, unknown>), revision: state.workingRevision, workingCopy: state }
+          }
           documents.refreshFromHost(driver.document)
           sendJson(response, 200, result)
         } catch (error: unknown) {
-          if (error instanceof HostError || error instanceof SyntaxError) {
+          if (error instanceof HostError || error instanceof SyntaxError ||
+              error instanceof WorkingCopyStoreError || error instanceof WorkingCopyCoordinatorError) {
             sendHostError(response, error)
           } else {
             sendJson(response, 400, {
@@ -578,6 +648,7 @@ export async function startLocalHost(
     hasSession: (sessionId) => sessions.has(sessionId),
     documents,
     authorizedDocument,
+    workingCopy,
     onFrame: (frame, clientId) => agentRouter?.handleClientFrame(frame, clientId),
     onDisconnect: (clientId) => agentRouter?.disconnectClient(clientId),
   })
@@ -603,6 +674,7 @@ export async function startLocalHost(
     close: () =>
       (closing ??= (async () => {
         await wsSessions.close()
+        await workingCopy?.close()
         ownedRouter?.dispose()
         await supervisor?.shutdown()
         await options.documentDrivers?.close()

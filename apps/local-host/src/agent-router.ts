@@ -7,6 +7,7 @@ import type {
   ClientId,
   DocumentId,
   EditorRequestFrame,
+  EditorResponseFrame,
   MutationTarget,
   OperationId,
   RequestId,
@@ -17,6 +18,7 @@ import type { RuntimeResponseFrame } from '@nexusdesk/runtime-host/protocol'
 import { DocumentRegistry } from './document-registry'
 import { HarnessSupervisor } from './harness-supervisor'
 import { OperationStore } from './operation-store'
+import { WorkingCopyCoordinator, isWorkingCopyMutation } from './working-copy-coordinator'
 
 interface SessionOwner {
   clientId: ClientId
@@ -28,6 +30,7 @@ interface ApprovalOwner extends SessionOwner {
   timer: NodeJS.Timeout
   planHash?: string
   operationId?: OperationId
+  toolName?: string
 }
 
 interface EditorOperationOwner {
@@ -46,6 +49,7 @@ export interface AgentRouterOptions {
   supervisor: HarnessSupervisor
   documents: DocumentRegistry
   operations: OperationStore
+  workingCopy?: WorkingCopyCoordinator
   sendToClient(clientId: ClientId, frame: AgentServerFrame): void
   approvalTimeoutMs?: number
 }
@@ -62,11 +66,7 @@ export class AgentRouter {
 
   constructor(private readonly options: AgentRouterOptions) {
     this.offFrame = options.supervisor.onFrame((frame) => {
-      try {
-        this.routeRuntimeFrame(frame)
-      } catch (error: unknown) {
-        this.rejectRuntimeFrame(frame, error)
-      }
+      void this.handleRuntimeFrame(frame)
     })
     this.offExit = options.supervisor.onExit((exit) => {
       const affected = new Set(exit.activeSessions)
@@ -83,7 +83,27 @@ export class AgentRouter {
     })
   }
 
-  handleClientFrame(frame: ClientFrame, clientId: ClientId): void {
+  handleClientFrame(frame: ClientFrame, clientId: ClientId): void | Promise<void> {
+    if (frame.type === 'editor:register' && this.options.workingCopy?.enabled(frame.documentId)) {
+      return this.recoverWorkingCopyOperations(frame.documentId, clientId)
+    }
+    if (frame.type === 'editor:result' && this.options.workingCopy?.enabled(frame.target.documentId)) {
+      const pending = this.editorOperations.get(frame.target.operationId)
+      if (pending && isWorkingCopyMutation(pending.command)) return this.handleWorkingCopyResult(frame, clientId)
+    }
+    if (frame.type === 'operation:lookup' && frame.documentId && this.options.workingCopy?.enabled(frame.documentId)) {
+      return (async () => {
+        if (!frame.documentEpoch || !frame.requestFingerprint) throw Error('Durable lookup requires its epoch and fingerprint.')
+        const lookup = await this.options.workingCopy!.lookup(frame.documentId!, clientId, {
+          documentEpoch: frame.documentEpoch, operationId: frame.operationId, requestFingerprint: frame.requestFingerprint,
+        })
+        this.options.sendToClient(clientId, { type: 'operation:result', protocolVersion: 1, id: frame.id,
+          operationId: frame.operationId, state: lookup.state,
+          ...(lookup.state === 'committed' ? { persistence: lookup.persistence } : {}),
+          result: lookup.state === 'committed' ? lookup.result :
+            { ok: false, summary: 'Operation outcome requires recovery.', warnings: [{ code: 'WORKING_COPY_OUTCOME_UNKNOWN', message: lookup.state }] } })
+      })()
+    }
     if (frame.type === 'editor:register') {
       for (const [operationId, operation] of this.editorOperations) {
         if (operation.target.documentId !== frame.documentId) continue
@@ -215,7 +235,7 @@ export class AgentRouter {
     }
   }
 
-  routeRuntimeFrame(frame: RuntimeResponseFrame): void {
+  routeRuntimeFrame(frame: RuntimeResponseFrame): void | Promise<void> {
     if (frame.type === 'agent:event') {
       const owner = this.sessions.get(frame.sessionId)
       if (owner !== undefined) this.options.sendToClient(owner.clientId, frame)
@@ -245,6 +265,7 @@ export class AgentRouter {
         ...owner,
         sessionId: frame.sessionId,
         timer,
+        toolName: frame.toolName,
         ...(frame.proposal === undefined ? {} : { planHash: frame.proposal.planHash }),
         ...(frame.proposal?.operationId === undefined
           ? {}
@@ -254,12 +275,30 @@ export class AgentRouter {
       return
     }
     if (frame.type === 'editor:request') {
+      if (this.options.workingCopy?.enabled(frame.target.documentId) && isWorkingCopyMutation(frame.command)) {
+        return this.routeWorkingCopyRequest(frame)
+      }
       this.routeEditorRequest(frame)
     }
   }
 
   hasApproval(id: string): boolean {
     return this.approvals.has(id)
+  }
+
+  async handleRuntimeFrame(frame: RuntimeResponseFrame): Promise<void> {
+    try { await this.routeRuntimeFrame(frame) } catch (error) {
+      try { this.rejectRuntimeFrame(frame, error) } catch {
+        // A failed delivery remains in editorOperations, or in the durable ledger for later lookup.
+      }
+    }
+  }
+
+  async notifyWorkingCopyCommit(documentId: string, operationId: string): Promise<void> {
+    const owner = this.editorOperations.get(operationId as OperationId)
+    if (!owner || owner.target.documentId !== documentId || !this.options.workingCopy) return
+    const terminal = await this.options.workingCopy.lookupRequest(owner.request)
+    if (terminal?.state === 'committed') this.deliverWorkingCopy(owner, terminal)
   }
 
   disconnectClient(clientId: ClientId): void {
@@ -301,6 +340,83 @@ export class AgentRouter {
       throw new Error(`client ${clientId} does not own session ${sessionId}`)
     }
     return owner
+  }
+
+  private async routeWorkingCopyRequest(frame: EditorRequestFrame): Promise<void> {
+    const owner = this.assertSessionOwner(frame.target.sessionId, frame.target.clientId)
+    if (owner.documentId !== frame.target.documentId) throw Error('Runtime request does not match its document.')
+    this.options.documents.assertClient(frame.target.documentId, owner.clientId)
+    // Durable replay precedes target revision checks; a historical receipt must never move the head back.
+    const replay = await this.options.workingCopy!.lookupRequest(frame)
+    if (replay?.state === 'committed') {
+      this.options.supervisor.respondEditor({ type: 'editor:result', protocolVersion: 1, id: frame.id,
+        target: frame.target, result: replay.result, persistence: replay.persistence,
+        currentRevision: this.options.documents.assertClient(frame.target.documentId, owner.clientId).revision })
+      return
+    }
+    this.options.documents.assertOwner({ documentId: frame.target.documentId, clientId: owner.clientId, revision: frame.target.revision })
+    const authorization = frame.approval
+    const granted = authorization && this.grantedApprovals.get(authorization.id)
+    if (!authorization || !granted || granted.sessionId !== frame.target.sessionId ||
+        granted.documentId !== frame.target.documentId || granted.clientId !== frame.target.clientId ||
+        granted.planHash !== authorization.planHash ||
+        (granted.operationId !== undefined && granted.operationId !== frame.target.operationId)) {
+      throw Error('Working-copy mutation has no matching one-time approval.')
+    }
+    this.grantedApprovals.delete(authorization.id)
+    const fingerprint = await this.options.workingCopy!.reserve(frame, { inPlaceRewrite: granted.toolName === 'modify_pdf_pages' })
+    this.options.operations.reserve(frame.target.operationId, { requestFingerprint: fingerprint })
+    this.editorOperations.set(frame.target.operationId, { clientId: owner.clientId, requestId: frame.id,
+      target: frame.target, command: frame.command, request: frame })
+    this.options.sendToClient(owner.clientId, frame)
+  }
+
+  private async handleWorkingCopyResult(frame: EditorResponseFrame, clientId: ClientId): Promise<void> {
+    const owner = this.editorOperations.get(frame.target.operationId)
+    if (!owner || owner.clientId !== clientId || owner.requestId !== frame.id || !sameTarget(owner.target, frame.target)) {
+      throw Error('Renderer does not own this operation result.')
+    }
+    this.options.documents.assertClient(frame.target.documentId, clientId)
+    const committed = await this.options.workingCopy!.lookupRequest(owner.request)
+    if (committed?.state !== 'committed' || !frame.persistence ||
+        !isDeepStrictEqual(frame.persistence, committed.persistence) || !isDeepStrictEqual(frame.result, committed.result)) {
+      this.options.sendToClient(clientId, { type: 'recovery:required', protocolVersion: 1, id: frame.id,
+        documentId: frame.target.documentId, code: 'WORKING_COPY_OUTCOME_UNKNOWN',
+        message: 'No verified durable terminal matches this result. Preserve the operation and query its outcome.' })
+      return
+    }
+    this.deliverWorkingCopy(owner, committed)
+  }
+
+  private deliverWorkingCopy(owner: EditorOperationOwner, committed: Extract<Awaited<ReturnType<WorkingCopyCoordinator['lookup']>>, { state: 'committed' }>): void {
+    if (this.options.operations.lookup(owner.target.operationId)?.state === 'reserved') {
+      this.options.operations.commit(owner.target.operationId, committed.result)
+    }
+    this.options.supervisor.respondEditor({ type: 'editor:result', protocolVersion: 1, id: owner.requestId,
+      target: owner.target, result: committed.result, persistence: committed.persistence,
+      currentRevision: this.options.documents.assertClient(owner.target.documentId, owner.clientId).revision })
+    // A failed transport leaves the pending delivery intact. The Store remains the authority.
+    this.deliveredEditorResults.set(owner.requestId, { ...owner, result: committed.result })
+    this.editorOperations.delete(owner.target.operationId)
+  }
+
+  private async recoverWorkingCopyOperations(documentId: DocumentId, clientId: ClientId): Promise<void> {
+    for (const operation of this.editorOperations.values()) {
+      if (operation.target.documentId !== documentId || !isWorkingCopyMutation(operation.command)) continue
+      operation.clientId = clientId
+      operation.target = { ...operation.target, clientId }
+      operation.request = { ...operation.request, target: operation.target }
+      const session = this.sessions.get(operation.target.sessionId)
+      if (session) session.clientId = clientId
+      const terminal = await this.options.workingCopy!.lookupRequest(operation.request)
+      if (terminal?.state === 'committed') this.deliverWorkingCopy(operation, terminal)
+      else {
+        this.options.supervisor.respondEditor({ type: 'editor:result', protocolVersion: 1, id: operation.requestId,
+          target: operation.target, currentRevision: this.options.documents.assertClient(documentId, clientId).revision,
+          result: { ok: false, summary: 'The previous renderer did not publish a verified checkpoint. Restore and propose again.',
+            warnings: [{ code: 'WORKING_COPY_RECOVERY_REQUIRED', message: 'Do not replay the previous mutation.' }] } })
+      }
+    }
   }
 
   private clearApprovals(): void {
