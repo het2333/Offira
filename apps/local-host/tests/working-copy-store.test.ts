@@ -171,20 +171,23 @@ describe('Host crash-safe working-copy promotion', () => {
     await expect(store.promoteWorkingCopy({ ...save, requestFingerprint: 'other' })).rejects.toMatchObject({ code: 'OPERATION_ID_COLLISION' })
   })
 
-  it('converges saved revision to the approved content after several checkpoints and subsequent saves', async () => {
+  it('advances saved revision independently of working revision after several checkpoints and subsequent saves', async () => {
     const { store, config, request, save } = await saveFixture()
     const second = await store.commitCheckpoint(request('second', {
       operationId: 'apply-2', requestFingerprint: 'apply-2', expectedWorkingRevision: 2,
     }))
     const firstSave = await store.promoteWorkingCopy({ ...save, expectedWorkingRevision: 3, checkpointId: second.checkpointId })
-    expect(firstSave).toMatchObject({ fromSavedRevision: 1, savedRevision: 3, workingRevision: 3 })
-    const third = await store.commitCheckpoint(request('third', {
-      operationId: 'apply-3', requestFingerprint: 'apply-3', expectedWorkingRevision: 3, expectedSavedRevision: 3,
+    expect(firstSave).toMatchObject({ fromSavedRevision: 1, savedRevision: 2, workingRevision: 3 })
+    const saved = await createWorkingCopyStore(config)
+    expect(await saved.getStatus()).toMatchObject({ savedRevision: 2, workingRevision: 3, dirty: false, head: null })
+    const third = await saved.commitCheckpoint(request('third', {
+      operationId: 'apply-3', requestFingerprint: 'apply-3', expectedWorkingRevision: 3, expectedSavedRevision: 2,
     }))
+    expect(third).toMatchObject({ savedRevision: 2, workingRevision: 4, dirty: true })
     await store.promoteWorkingCopy({ ...save, operationId: 'save-2', requestFingerprint: 'save-2',
-      expectedWorkingRevision: 4, expectedSavedRevision: 3, checkpointId: third.checkpointId })
+      expectedWorkingRevision: 4, expectedSavedRevision: 2, checkpointId: third.checkpointId })
     const reopened = await createWorkingCopyStore(config)
-    expect(await reopened.getStatus()).toMatchObject({ savedRevision: 4, workingRevision: 4, dirty: false })
+    expect(await reopened.getStatus()).toMatchObject({ savedRevision: 3, workingRevision: 4, dirty: false })
     expect(await reopened.lookupTerminal('save-1', 'save-request-1')).toEqual(firstSave)
     expect(await reopened.readWorkingBytes()).toEqual(encode('third'))
   })

@@ -35,7 +35,7 @@ export interface CheckpointReceipt extends WorkingCopyHead {
 
 export interface SaveReceipt extends Omit<CheckpointReceipt, 'dirty'> {
   dirty: false
-  /** Save adopts the checkpoint's content revision; it does not create another edit revision. */
+  /** Save advances the original-file version once without changing the checkpoint's working revision. */
   fromSavedRevision: number
 }
 
@@ -315,8 +315,8 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
     if (value.dirty === true) {
       if (value.workingRevision !== value.fromWorkingRevision + 1 || value.savedRevision > value.fromWorkingRevision) return false
     } else if (value.dirty === false) {
-      if (value.workingRevision !== value.fromWorkingRevision || value.savedRevision !== value.workingRevision ||
-          !isRevision(value.fromSavedRevision) || value.fromSavedRevision >= value.savedRevision) return false
+      if (value.workingRevision !== value.fromWorkingRevision || !isRevision(value.fromSavedRevision) ||
+          value.savedRevision !== value.fromSavedRevision + 1) return false
     } else return false
     boundedResult(value.result, maxResultByteLength)
     return true
@@ -353,8 +353,9 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         }
       }
       if (manifest.head === null) {
-        if (manifest.dirty || manifest.workingRevision !== manifest.savedRevision ||
-            (operations.length > 0 && !operations.some(([, receipt]) => !receipt.dirty && receipt.savedRevision === manifest.savedRevision))) throw new Error('Invalid empty head')
+        if (manifest.dirty || (operations.length === 0 ? manifest.workingRevision !== manifest.savedRevision :
+          !operations.some(([, receipt]) => !receipt.dirty && receipt.savedRevision === manifest.savedRevision &&
+            receipt.workingRevision === manifest.workingRevision))) throw new Error('Invalid empty head')
       } else {
         const latest = operations.find(([, receipt]) => receipt.dirty && receipt.checkpointId === manifest.head!.checkpointId)?.[1]
         if (!manifest.dirty || latest === undefined || latest.workingRevision !== manifest.workingRevision ||
@@ -509,7 +510,7 @@ export async function createWorkingCopyStore(options: WorkingCopyStoreOptions): 
         const receipt: SaveReceipt = { ...manifest.head, state: 'committed', documentEpoch: manifest.documentEpoch,
           operationId: input.operationId, requestFingerprint: input.requestFingerprint, planHash: input.planHash,
           fromWorkingRevision: manifest.workingRevision, workingRevision: manifest.workingRevision,
-          fromSavedRevision: manifest.savedRevision, savedRevision: manifest.workingRevision,
+          fromSavedRevision: manifest.savedRevision, savedRevision: manifest.savedRevision + 1,
           dirty: false, result: input.result }
         const temporaryName = `.nexusdesk-save-${randomUUID()}.tmp`
         const temporaryPath = join(dirname(authorizedPath), temporaryName)
