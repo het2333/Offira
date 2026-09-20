@@ -1,6 +1,6 @@
-import { createHash, randomBytes } from 'node:crypto'
-import { open, readFile, rename, stat, unlink } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { basename, resolve } from 'node:path'
 
 import { HostError, shellDocumentSummarySchema } from '@nexusdesk/office-host'
 import { PDFDocument } from 'pdf-lib'
@@ -11,14 +11,21 @@ import {
   insertBlankPageBytes,
   setPageSizeBytes,
   cropPagesBytes,
+  readStaticFormFills,
 } from '../../pdf/src/main/save-pdf'
 import { listPageImages, renderImagePng } from '../../pdf/src/main/image-edit'
 import {
   PDF_WEB_CAPABILITIES,
   parsePdfPageModification,
 } from '../../pdf/src/shared/web-capabilities'
-import type { PageImageRef, SavePdfRequest } from '../../pdf/src/shared/ipc'
-import type { LocalDocumentDriver } from './document-driver'
+import type { SavePdfRequest } from '../../pdf/src/shared/ipc'
+import {
+  defaultWorkingCopyRoot,
+  type WorkingCopyDriverOptions,
+  type LocalDocumentDriver,
+} from './document-driver'
+import { createWorkingCopyStore } from './working-copy-store'
+import { decodePdfWorkingCopy, pdfSaveHasEdits } from '../../pdf/src/shared/working-copy'
 
 const PDF_CONTENT_TYPE = 'application/pdf'
 const MAX_PDF_BYTES = 512 * 1024 * 1024
@@ -43,40 +50,6 @@ async function validatePdf(bytes: Uint8Array): Promise<void> {
       'The supplied content is not a supported PDF document.',
       false,
     )
-  }
-}
-
-async function fsyncDirectory(path: string): Promise<void> {
-  let directory: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    directory = await open(path, 'r')
-    await directory.sync()
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EISDIR') throw error
-  } finally {
-    await directory?.close().catch(() => undefined)
-  }
-}
-
-async function atomicReplace(path: string, bytes: Uint8Array): Promise<void> {
-  const temporaryPath = join(
-    dirname(path),
-    `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`,
-  )
-  let handle: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    handle = await open(temporaryPath, 'wx', 0o600)
-    await handle.writeFile(bytes)
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await rename(temporaryPath, path)
-    await fsyncDirectory(dirname(path))
-  } catch (error: unknown) {
-    await handle?.close().catch(() => undefined)
-    await unlink(temporaryPath).catch(() => undefined)
-    throw error
   }
 }
 
@@ -133,7 +106,7 @@ function assertCompleteSave(result: Awaited<ReturnType<PdfSaveApplicator>>): voi
 /** Create one authorized, revisioned driver for a renderer-owned PDF working copy. */
 export async function createPdfDocumentDriver(
   path: string,
-  options: { applySaveRequest?: PdfSaveApplicator } = {},
+  options: WorkingCopyDriverOptions & { applySaveRequest?: PdfSaveApplicator } = {},
 ): Promise<LocalDocumentDriver> {
   const authorizedPath = resolve(path)
   await validatePdf(new Uint8Array(await readFile(authorizedPath)))
@@ -144,7 +117,56 @@ export async function createPdfDocumentDriver(
     revision: 1,
     path: authorizedPath,
   }
+  const store = await createWorkingCopyStore({
+    rootDirectory: options.workingCopyRoot ?? defaultWorkingCopyRoot(),
+    authorizedPath,
+    documentId: document.documentId,
+    editorType: 'pdf',
+  })
+  document.revision = (await store.getStatus()).workingRevision
+  const sourceBytes = async (payload: unknown) => {
+    const sourceContentId = (payload as { sourceContentId?: unknown } | null)?.sourceContentId
+    if (sourceContentId !== undefined) {
+      if (typeof sourceContentId !== 'string')
+        throw new HostError('INVALID_REQUEST', 'Invalid PDF source', false)
+      return store.readSource(sourceContentId)
+    }
+    return store.readWorkingBytes()
+  }
   let writeQueue: Promise<void> = Promise.resolve()
+  // Compatibility for trusted Host callers. HTTP mutations are rejected by the
+  // server gate and must use the owner/approval coordinator. Even these direct
+  // writes use Store promotion so they cannot invalidate its baseline.
+  const persistTrustedSave = async (bytes: Uint8Array, expectedRevision: number) => {
+    const status = await store.getStatus()
+    if (status.workingRevision !== expectedRevision)
+      throw new HostError('REVISION_CONFLICT', 'PDF working copy changed before saving.', false)
+    const operationId = 'host-pdf-save-' + randomUUID()
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const result = { ok: true, summary: 'Saved PDF', warnings: [] }
+    const prepared = await store.commitCheckpoint({
+      documentEpoch: status.documentEpoch,
+      expectedWorkingRevision: status.workingRevision,
+      expectedSavedRevision: status.savedRevision,
+      operationId: operationId + ':prepare',
+      requestFingerprint: digest,
+      planHash: digest,
+      payloadHash: digest,
+      payloadByteLength: bytes.byteLength,
+      bytes,
+      result,
+    })
+    await store.promoteWorkingCopy({
+      documentEpoch: status.documentEpoch,
+      expectedWorkingRevision: prepared.workingRevision,
+      expectedSavedRevision: prepared.savedRevision,
+      checkpointId: prepared.checkpointId,
+      operationId,
+      requestFingerprint: digest,
+      planHash: digest,
+      result,
+    })
+  }
 
   const write = <T>(expectedRevision: number, operation: () => Promise<T>): Promise<T> => {
     const result = writeQueue.then(async () => {
@@ -156,8 +178,7 @@ export async function createPdfDocumentDriver(
         )
       }
       const value = await operation()
-      await stat(authorizedPath)
-      document.revision += 1
+      document.revision = (await store.getStatus()).workingRevision
       return value
     })
     writeQueue = result.then(
@@ -169,6 +190,36 @@ export async function createPdfDocumentDriver(
 
   const driver: LocalDocumentDriver = {
     document,
+    workingCopy: {
+      store,
+      acquireSource: () => store.acquireSource(),
+      readSource: (id) => store.readSource(id),
+      async materialize({ sourceContentId, payloadKind, parts }) {
+        if (payloadKind !== 'pdf-save-plan')
+          throw new HostError('INVALID_REQUEST', 'Expected a PDF save plan', false)
+        const { request: decoded, modification } = decodePdfWorkingCopy(parts)
+        const request = saveRequest(decoded)
+        const source = await store.readSource(sourceContentId)
+        let bytes = source
+        if (pdfSaveHasEdits(request)) {
+          const result = await (options.applySaveRequest ?? applySaveRequest)(source, request)
+          assertCompleteSave(result)
+          bytes = result.bytes
+        }
+        if (modification) {
+          const parsed = await PDFDocument.load(bytes, { updateMetadata: false })
+          const op = parsePdfPageModification(modification, parsed.getPageCount())
+          bytes =
+            op.action === 'insertBlankPage'
+              ? await insertBlankPageBytes(bytes, op.afterPageIndex)
+              : op.action === 'setPageSize'
+                ? await setPageSizeBytes(bytes, op.width, op.height)
+                : await cropPagesBytes(bytes, op.pages, op.rect)
+        }
+        await validatePdf(bytes)
+        return bytes
+      },
+    },
     async bootstrap(origin) {
       return {
         documentId: document.documentId,
@@ -182,8 +233,10 @@ export async function createPdfDocumentDriver(
       }
     },
     async execute(action, payload) {
+      if (action === 'list-static-form-fills')
+        return { fills: await readStaticFormFills(await sourceBytes(payload)) }
       if (action === 'list-page-images') {
-        return { images: await listPageImages(new Uint8Array(await readFile(authorizedPath))) }
+        return { images: await listPageImages(await sourceBytes(payload)) }
       }
       if (action === 'page-image-png') {
         const p = payload as {
@@ -212,7 +265,7 @@ export async function createPdfDocumentDriver(
         }
         return {
           png: await renderImagePng(
-            new Uint8Array(await readFile(authorizedPath)),
+            await sourceBytes(payload),
             Number(p.pageIndex),
             p.rect as [number, number, number, number],
             Number(p.scale ?? 1),
@@ -243,7 +296,7 @@ export async function createPdfDocumentDriver(
                 ? await setPageSizeBytes(bytes, op.width, op.height)
                 : await cropPagesBytes(bytes, op.pages, op.rect)
           await validatePdf(result)
-          await atomicReplace(authorizedPath, result)
+          await persistTrustedSave(result, Number(body.expectedRevision))
         })
         return { document: shellDocumentSummarySchema.parse(document) }
       }
@@ -269,7 +322,7 @@ export async function createPdfDocumentDriver(
           request,
         )
         assertCompleteSave(applied)
-        await atomicReplace(authorizedPath, applied.bytes)
+        await persistTrustedSave(applied.bytes, body.expectedRevision as number)
         return applied
       })
       return {
@@ -281,14 +334,14 @@ export async function createPdfDocumentDriver(
     },
     async readContent() {
       return {
-        bytes: new Uint8Array(await readFile(authorizedPath)),
+        bytes: await store.readWorkingBytes(),
         contentType: PDF_CONTENT_TYPE,
       }
     },
     writeContent(bytes, expectedRevision) {
       return write(expectedRevision, async () => {
         await validatePdf(bytes)
-        await atomicReplace(authorizedPath, bytes)
+        await persistTrustedSave(bytes, expectedRevision)
       }).then(() => shellDocumentSummarySchema.parse(document))
     },
     async close() {},

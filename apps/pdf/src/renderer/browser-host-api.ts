@@ -1,9 +1,21 @@
 import { defaultAiSettings } from '@genoffice/ai-provider/browser'
 import { DEFAULT_AI_PANEL_PREFS, type AiPanelPrefs } from '@genoffice/ui'
-import type { DocumentId, Revision } from '@nexusdesk/protocol'
-import { assertPdfWebPayload } from '@nexusdesk/protocol'
+import type {
+  DocumentId,
+  Revision,
+  WorkingCopyBootstrap,
+  PersistenceReference,
+} from '@nexusdesk/protocol'
+import { assertPdfWebPayload, workingCopyBootstrapSchema } from '@nexusdesk/protocol'
 import type { PdfCapabilities, PdfPageModification } from '../shared/web-capabilities'
-import { createNexusClient, type AgentApi, type NexusClient } from '@nexusdesk/web-client'
+import {
+  createNexusClient,
+  createBrowserWorkingCopyPersistence,
+  createWorkingCopyMutationLane,
+  type AgentApi,
+  type NexusClient,
+} from '@nexusdesk/web-client'
+import { capturePdfWorkingCopy } from './agent/pdf-working-copy'
 
 import type {
   ImageEditFailure,
@@ -12,6 +24,7 @@ import type {
   SavePdfRequest,
   TextEditFailure,
   TextInsertFailure,
+  StaticFormFillRecord,
   UiTheme,
 } from '../shared/ipc'
 import {
@@ -29,6 +42,7 @@ export interface PdfBrowserBootstrap {
   theme: UiTheme
   contentUrl: string
   capabilities: PdfCapabilities
+  workingCopy?: WorkingCopyBootstrap
 }
 
 export interface PdfBrowserWriteResult {
@@ -46,6 +60,7 @@ export interface PdfBrowserWriteResult {
 export interface PdfBrowserTransport {
   readContent(): Promise<Uint8Array>
   listPageImages(): Promise<PageImageRef[]>
+  listStaticFormFills?(): Promise<StaticFormFillRecord[]>
   save(request: SavePdfRequest, expectedRevision: number): Promise<PdfBrowserWriteResult>
   modifyPages(
     modification: PdfPageModification,
@@ -61,6 +76,8 @@ export interface PdfBrowserTransport {
 export interface PdfBrowserHostState {
   document: PdfBrowserBootstrap
   updateRevision(revision: number): void
+  saveWorkingCopy?(request: SavePdfRequest, modification?: PdfPageModification): Promise<void>
+  readonly reloadError?: string
 }
 
 export class PdfWebUnavailableError extends Error {
@@ -124,6 +141,8 @@ export async function loadPdfBrowserBootstrap(
   ) {
     throw new Error('Local Host returned an invalid PDF bootstrap')
   }
+  if (value.workingCopy !== undefined)
+    value.workingCopy = workingCopyBootstrapSchema.parse(value.workingCopy)
   return value as PdfBrowserBootstrap
 }
 
@@ -145,6 +164,14 @@ export function createHttpPdfBrowserTransport(
     return response.json()
   }
   return {
+    async listStaticFormFills() {
+      const value = (await post(
+        'list-static-form-fills',
+        bootstrap.workingCopy ? { sourceContentId: bootstrap.workingCopy.sourceContentId } : {},
+      )) as { fills?: StaticFormFillRecord[] }
+      if (!Array.isArray(value.fills)) throw new Error('Invalid PDF static form data')
+      return value.fills
+    },
     async modifyPages(modification, expectedRevision) {
       const value = (await post('modify-pages', {
         modification,
@@ -160,20 +187,36 @@ export function createHttpPdfBrowserTransport(
       return value
     },
     async pageImagePng(request) {
-      const value = (await post('page-image-png', request)) as { png: unknown }
+      const value = (await post('page-image-png', {
+        ...request,
+        ...(bootstrap.workingCopy
+          ? { sourceContentId: bootstrap.workingCopy.sourceContentId }
+          : {}),
+      })) as { png: unknown }
       if (value.png !== null && typeof value.png !== 'string')
         throw new Error('Invalid PDF image preview')
       return value.png
     },
     async readContent() {
-      const response = await fetchImpl(bootstrap.contentUrl, { credentials: 'same-origin' })
+      const response = await fetchImpl(bootstrap.workingCopy?.contentUrl ?? bootstrap.contentUrl, {
+        credentials: 'same-origin',
+      })
       if (!response.ok) throw await hostError(response)
       return new Uint8Array(await response.arrayBuffer())
     },
     async listPageImages() {
       const response = await fetchImpl(
         `/api/documents/${encodeURIComponent(bootstrap.documentId)}/list-page-images`,
-        { method: 'POST', credentials: 'same-origin' },
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          ...(bootstrap.workingCopy
+            ? {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sourceContentId: bootstrap.workingCopy.sourceContentId }),
+              }
+            : {}),
+        },
       )
       if (!response.ok) throw await hostError(response)
       const value = (await response.json()) as { images?: unknown }
@@ -225,6 +268,13 @@ export function createPdfBrowserApi(
         error: 'Page rewriting requires the Host-authorized PDF capability.',
       }
     try {
+      if (state.saveWorkingCopy) {
+        await state.saveWorkingCopy(
+          { path, markups: [], drawings: [], formValues: [], stamps: [] },
+          modification,
+        )
+        return { ok: true as const }
+      }
       const result = await transport.modifyPages(modification, state.document.revision)
       state.document.revision = result.document.revision
       state.updateRevision(result.document.revision)
@@ -250,6 +300,7 @@ export function createPdfBrowserApi(
     async readFile(candidate) {
       if (candidate !== path)
         throw new PdfWebUnavailableError('reading an arbitrary filesystem path')
+      if (state.reloadError) throw new Error(state.reloadError)
       return toArrayBuffer(await transport.readContent())
     },
     async save(request) {
@@ -257,6 +308,10 @@ export function createPdfBrowserApi(
         return { ok: false, error: 'Web PDF can save only the Host-authorized document.' }
       }
       try {
+        if (state.saveWorkingCopy) {
+          await state.saveWorkingCopy(request)
+          return { ok: true }
+        }
         const result = await transport.save(request, state.document.revision)
         state.document.revision = result.document.revision
         state.updateRevision(result.document.revision)
@@ -287,7 +342,7 @@ export function createPdfBrowserApi(
     // machine fonts that the browser cannot inspect.
     canDrawText: async (text) => text.length > 0 && /^[\x20-\x7e\r\n]*$/.test(text),
     listPageImages: () => transport.listPageImages(),
-    listStaticFormFills: async () => [],
+    listStaticFormFills: () => transport.listStaticFormFills?.() ?? Promise.resolve([]),
     ocrPage: async () => null,
     pageImagePng: ({ path: candidate, pageIndex, rect, scale }) => {
       if (candidate !== path || !state.document.capabilities.imageEditing)
@@ -342,6 +397,14 @@ export interface PdfBrowserHostHandle {
   readonly bridge: PdfBrowserAgentBridge
   attachEditor(adapter: PdfEditorAdapter): () => void
   updateRevision(revision: number): void
+  readonly recoveryDirty: boolean
+  readonly hydrated: boolean
+  readonly busy: boolean
+  readonly reloadError: string | undefined
+  setHydrated(sourceContentId?: string): void
+  rebase(): Promise<void>
+  onWorkingCopyState(listener: () => void): () => void
+  runMutation<T>(task: () => Promise<T>): Promise<T>
   dispose(): void
 }
 
@@ -355,6 +418,7 @@ export interface InstallPdfBrowserHostOptions {
   client?: NexusClient
   target?: PdfBrowserHostTarget
   transport?: PdfBrowserTransport
+  fetch?: typeof fetch
 }
 
 export function installPdfBrowserHostApi(
@@ -363,19 +427,179 @@ export function installPdfBrowserHostApi(
 ): PdfBrowserHostHandle {
   const target = options.target ?? (window as unknown as PdfBrowserHostTarget)
   const client = options.client ?? createNexusClient({ url: bootstrap.websocketUrl })
+  const lane = createWorkingCopyMutationLane()
+  let recoveryDirty = bootstrap.workingCopy?.dirty ?? false
+  let hydrated = !bootstrap.workingCopy
+  let rebasing = false
+  let busy = false
+  let reloadError: string | undefined
+  const listeners = new Set<() => void>()
+  const publish = () => {
+    for (const listener of listeners) listener()
+  }
+  const runMutation = <T>(task: () => Promise<T>): Promise<T> =>
+    lane.run(async () => {
+      busy = true
+      publish()
+      try {
+        return await task()
+      } finally {
+        busy = false
+        publish()
+      }
+    })
+  const persistence = bootstrap.workingCopy
+    ? createBrowserWorkingCopyPersistence({
+        documentId: bootstrap.documentId,
+        origin: '',
+        state: () => (hydrated ? (bootstrap.workingCopy ?? null) : null),
+        clientId: () => client.clientId,
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      })
+    : undefined
+  const didPersist = (receipt: PersistenceReference) => {
+    if (!bootstrap.workingCopy || receipt.workingRevision < bootstrap.workingCopy.workingRevision)
+      return
+    bootstrap.workingCopy = {
+      ...bootstrap.workingCopy,
+      workingRevision: receipt.workingRevision,
+      savedRevision: receipt.savedRevision,
+      checkpointId: receipt.checkpointId,
+      dirty: receipt.dirty,
+    }
+    bootstrap.revision = receipt.workingRevision
+    recoveryDirty = true
+    publish()
+  }
   const bridge = createPdfBrowserAgentBridge({
     client,
     documentId: bootstrap.documentId as DocumentId,
     revision: bootstrap.revision as Revision,
+    ...(persistence
+      ? {
+          workingCopy: {
+            state: () => bootstrap.workingCopy ?? null,
+            persistence,
+            didPersist,
+            run: runMutation,
+          },
+        }
+      : {}),
   })
   let disposed = false
+  let currentAdapter: PdfEditorAdapter | undefined
+  let recoveryAttempts = 0
+  let recovering = false
+  let recoveryRequested = false
+  const recover = () => {
+    if (disposed || recovering || !recoveryRequested || !currentAdapter?.restoreWorkingCopy) return
+    const restore = currentAdapter.restoreWorkingCopy
+    recovering = true
+    void runMutation(async () => {
+      while (!disposed && recoveryRequested && recoveryAttempts < 3) {
+        recoveryAttempts++
+        try {
+          await handle.rebase()
+          await restore()
+          recoveryRequested = false
+          return
+        } catch {
+          /* A bounded bootstrap/load retry leaves its source gated. */
+        }
+      }
+      hydrated = false
+      reloadError = 'PDF recovery could not load the current source. Refresh to retry.'
+      bridge.setHydrated(null)
+      publish()
+    }).finally(() => {
+      recovering = false
+    })
+  }
+  const unsubscribeRecovery = client.onFrame((frame) => {
+    if (
+      !bootstrap.workingCopy ||
+      !('documentId' in frame) ||
+      frame.documentId !== bootstrap.documentId
+    )
+      return
+    if (
+      frame.type === 'editor:registered' &&
+      frame.sourceContentId === bootstrap.workingCopy.sourceContentId &&
+      frame.revision === bootstrap.workingCopy.workingRevision
+    ) {
+      recoveryAttempts = 0
+      publish()
+    }
+    if (frame.type === 'recovery:required') {
+      hydrated = false
+      bridge.setHydrated(null)
+      recoveryRequested = true
+      publish()
+      recover()
+    }
+  })
   const handle: PdfBrowserHostHandle = {
     document: bootstrap,
     capabilities: bootstrap.capabilities,
     pdfApi: undefined as never,
     bridge,
+    get recoveryDirty() {
+      return recoveryDirty
+    },
+    get hydrated() {
+      return hydrated
+    },
+    get busy() {
+      return busy || (!!bootstrap.workingCopy && (!hydrated || !bridge.client().attached))
+    },
+    get reloadError() {
+      return reloadError
+    },
+    runMutation,
+    onWorkingCopyState(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    setHydrated(sourceContentId) {
+      if (
+        hydrated ||
+        reloadError ||
+        rebasing ||
+        sourceContentId !== bootstrap.workingCopy?.sourceContentId
+      )
+        return
+      hydrated = true
+      recoveryDirty = bootstrap.workingCopy?.dirty ?? false
+      bridge.setHydrated(bootstrap.workingCopy ?? null)
+      publish()
+    },
+    async rebase() {
+      if (!bootstrap.workingCopy) return
+      hydrated = false
+      rebasing = true
+      bridge.setHydrated(null)
+      publish()
+      try {
+        const next = await loadPdfBrowserBootstrap(bootstrap.documentId, options.fetch)
+        Object.assign(bootstrap, next)
+        reloadError = undefined
+      } catch (error) {
+        reloadError = error instanceof Error ? error.message : 'PDF saved; reload failed'
+        throw error
+      } finally {
+        rebasing = false
+      }
+    },
     attachEditor(adapter) {
-      return bridge.attachEditor(adapter)
+      currentAdapter = adapter
+      const detach = bridge.attachEditor(adapter)
+      recover()
+      return () => {
+        if (currentAdapter === adapter) currentAdapter = undefined
+        detach()
+      }
     },
     updateRevision(revision) {
       bootstrap.revision = revision
@@ -385,6 +609,8 @@ export function installPdfBrowserHostApi(
       if (disposed) return
       disposed = true
       bridge.dispose()
+      unsubscribeRecovery()
+      listeners.clear()
       client.close()
       if (target.pdfApi === handle.pdfApi) delete target.pdfApi
       if (target.agentApi === bridge.agentApi) delete target.agentApi
@@ -392,8 +618,36 @@ export function installPdfBrowserHostApi(
     },
   }
   const pdfApi = createPdfBrowserApi(
-    handle,
-    options.transport ?? createHttpPdfBrowserTransport(bootstrap),
+    {
+      document: bootstrap,
+      updateRevision: handle.updateRevision,
+      get reloadError() {
+        return reloadError
+      },
+      ...(persistence
+        ? {
+            saveWorkingCopy: async (
+              request: SavePdfRequest,
+              modification?: PdfPageModification,
+            ) => {
+              await runMutation(async () => {
+                assertPdfWebPayload({ request, expectedRevision: bootstrap.revision })
+                const receipt = await persistence.saveManual(
+                  'pdf-save-' + crypto.randomUUID(),
+                  capturePdfWorkingCopy(request, modification),
+                )
+                didPersist(receipt)
+                try {
+                  await handle.rebase()
+                } catch {
+                  /* The durable save succeeded; readFile reports the separate reload failure. */
+                }
+              })
+            },
+          }
+        : {}),
+    },
+    options.transport ?? createHttpPdfBrowserTransport(bootstrap, options.fetch),
   )
   Object.defineProperty(handle, 'pdfApi', { value: pdfApi })
   target.pdfApi = pdfApi

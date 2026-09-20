@@ -6,6 +6,7 @@ import {
   createHttpPdfBrowserTransport,
   createPdfBrowserApi,
   loadPdfBrowserBootstrap,
+  installPdfBrowserHostApi,
 } from '../src/renderer/browser-host-api'
 
 const bootstrap = {
@@ -20,6 +21,373 @@ const bootstrap = {
 }
 
 describe('PDF Local Web browser adapter', () => {
+  it('retains the recovery loader across a transient bootstrap error and renderer detachment', async () => {
+    const frames = new Set<(frame: any) => void>()
+    const client = {
+      state: 'ready',
+      clientId: 'client',
+      connect() {},
+      close() {},
+      send() {},
+      onFrame(listener: (frame: any) => void) {
+        frames.add(listener)
+        return () => frames.delete(listener)
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 4,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      dirty: false,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    let bootstraps = 0
+    let loads = 0
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, workingCopy },
+      {
+        client: client as never,
+        target: {},
+        fetch: async () => {
+          if (++bootstraps === 1) throw Error('temporary connection failure')
+          return Response.json({ ...bootstrap, workingCopy })
+        },
+      },
+    )
+    const detach = handle.attachEditor({
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi.fn(),
+      proposeSave: vi.fn(),
+      apply: vi.fn(),
+      save: vi.fn(),
+      restoreWorkingCopy: async () => {
+        loads++
+        handle.setHydrated(workingCopy.sourceContentId)
+      },
+    })
+    handle.onWorkingCopyState(() => {
+      if (handle.reloadError) detach()
+    })
+    handle.setHydrated(workingCopy.sourceContentId)
+    for (const listener of frames)
+      listener({
+        type: 'recovery:required',
+        documentId: 'pdf-1',
+        code: 'REVISION_CONFLICT',
+        message: 'stale',
+      })
+    await vi.waitFor(() => expect(loads).toBe(1))
+    expect(bootstraps).toBe(2)
+    expect(handle.reloadError).toBeUndefined()
+    handle.dispose()
+  })
+  it('automatically rehydrates a stale source and stops after three unsuccessful recoveries', async () => {
+    const sent: any[] = []
+    const frames = new Set<(frame: any) => void>()
+    const client = {
+      state: 'ready',
+      clientId: 'client',
+      connect() {},
+      close() {},
+      send(frame: unknown) {
+        sent.push(frame)
+      },
+      onFrame(listener: (frame: any) => void) {
+        frames.add(listener)
+        return () => frames.delete(listener)
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 4,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      dirty: false,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    let loads = 0
+    let bootstraps = 0
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, workingCopy },
+      {
+        client: client as never,
+        target: {},
+        fetch: async () => {
+          bootstraps++
+          return Response.json({
+            ...bootstrap,
+            workingCopy: { ...workingCopy, sourceContentId: 'b'.repeat(64) },
+          })
+        },
+      },
+    )
+    handle.attachEditor({
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi.fn(),
+      proposeSave: vi.fn(),
+      apply: vi.fn(),
+      save: vi.fn(),
+      restoreWorkingCopy: async () => {
+        loads++
+        handle.setHydrated('b'.repeat(64))
+      },
+    })
+    handle.setHydrated('a'.repeat(64))
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      for (const listener of frames)
+        listener({
+          type: 'recovery:required',
+          documentId: 'pdf-1',
+          code: 'REVISION_CONFLICT',
+          message: 'Head changed',
+        })
+      await vi.waitFor(() => expect(bootstraps).toBe(Math.min(attempt, 3)))
+      if (attempt < 4) await vi.waitFor(() => expect(loads).toBe(attempt))
+    }
+    expect(handle.reloadError).toMatch(/recovery|refresh/i)
+    expect(handle.hydrated).toBe(false)
+    handle.dispose()
+  })
+  it('gates registration on hydration and saves a recovered empty pending snapshot through promotion', async () => {
+    const sent: any[] = []
+    const client = {
+      state: 'ready',
+      clientId: 'client-1',
+      connect() {},
+      close() {},
+      send(frame: unknown) {
+        sent.push(frame)
+      },
+      onFrame() {
+        return () => {}
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 5,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'checkpoint',
+      dirty: true,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    const calls: string[] = []
+    const fetcher: typeof fetch = async (url, init) => {
+      calls.push(String(url))
+      if (String(url).endsWith('/bootstrap'))
+        return Response.json({
+          ...bootstrap,
+          revision: 5,
+          workingCopy: { ...workingCopy, savedRevision: 5, dirty: false },
+        })
+      if (String(url).endsWith('/manual-save-uploads'))
+        return Response.json({
+          uploadId: 'upload',
+          operationId: 'manual-save',
+          requestFingerprint: 'f'.repeat(64),
+        })
+      if (init?.method === 'PUT')
+        return Response.json({ partId: 'manifest', sha256: 'a'.repeat(64), byteLength: 10 })
+      return Response.json({
+        persistence: {
+          documentEpoch: 'epoch',
+          operationId: 'manual-save',
+          requestFingerprint: 'f'.repeat(64),
+          checkpointId: 'checkpoint',
+          blobHash: 'a'.repeat(64),
+          workingRevision: 5,
+          savedRevision: 5,
+          dirty: false,
+        },
+      })
+    }
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, revision: 5, workingCopy },
+      { client: client as never, target: {}, fetch: fetcher },
+    )
+    expect(sent).toHaveLength(0)
+    expect(handle.recoveryDirty).toBe(true)
+    handle.setHydrated(workingCopy.sourceContentId)
+    expect(sent[0]).toMatchObject({
+      type: 'editor:register',
+      sourceContentId: workingCopy.sourceContentId,
+      restoredCheckpointId: 'checkpoint',
+    })
+    expect(
+      await handle.pdfApi.save({
+        path: 'nexusdesk://pdf-1',
+        markups: [],
+        drawings: [],
+        formValues: [],
+        stamps: [],
+      }),
+    ).toMatchObject({ ok: true })
+    expect(calls.some((url) => url.endsWith('/manual-save-uploads'))).toBe(true)
+    expect(calls.some((url) => url.endsWith('/save'))).toBe(false)
+    expect(handle.recoveryDirty).toBe(true)
+    handle.setHydrated(workingCopy.sourceContentId)
+    expect(handle.recoveryDirty).toBe(false)
+    handle.dispose()
+  })
+  it('does not register an old loaded PDF while a new bootstrap is still loading', async () => {
+    const sent: unknown[] = []
+    const client = {
+      state: 'ready',
+      clientId: 'client',
+      connect() {},
+      close() {},
+      send(frame: unknown) {
+        sent.push(frame)
+      },
+      onFrame() {
+        return () => {}
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 4,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      dirty: false,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    let finish!: (response: Response) => void
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, workingCopy },
+      {
+        client: client as never,
+        target: {},
+        fetch: async () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      },
+    )
+    handle.setHydrated(workingCopy.sourceContentId)
+    const rebase = handle.rebase()
+    handle.setHydrated(workingCopy.sourceContentId)
+    expect(sent).toHaveLength(1)
+    finish(
+      Response.json({
+        ...bootstrap,
+        workingCopy: { ...workingCopy, sourceContentId: 'b'.repeat(64) },
+      }),
+    )
+    await rebase
+    handle.setHydrated(workingCopy.sourceContentId)
+    expect(sent).toHaveLength(1)
+    handle.setHydrated('b'.repeat(64))
+    expect(sent).toHaveLength(2)
+    handle.dispose()
+  })
+  it('keeps the editor busy until the Host confirms the hydrated source', () => {
+    const sent: any[] = []
+    const frames = new Set<(frame: any) => void>()
+    const client = {
+      state: 'ready',
+      clientId: 'client',
+      connect() {},
+      close() {},
+      send(frame: unknown) {
+        sent.push(frame)
+      },
+      onFrame(listener: (frame: any) => void) {
+        frames.add(listener)
+        return () => frames.delete(listener)
+      },
+      onState() {
+        return () => {}
+      },
+    }
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 4,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: null,
+      dirty: false,
+      recoveryState: 'ready' as const,
+      contentUrl: '/source',
+    }
+    const handle = installPdfBrowserHostApi(
+      { ...bootstrap, workingCopy },
+      { client: client as never, target: {} },
+    )
+    handle.attachEditor({
+      snapshot: vi.fn(),
+      read: vi.fn(),
+      propose: vi.fn(),
+      proposeSave: vi.fn(),
+      apply: vi.fn(),
+      save: vi.fn(),
+    })
+    handle.setHydrated(workingCopy.sourceContentId)
+    expect(handle.busy).toBe(true)
+    for (const listener of frames)
+      listener({
+        type: 'editor:registered',
+        id: sent[0].id,
+        documentId: 'pdf-1',
+        documentEpoch: 'epoch',
+        sourceContentId: workingCopy.sourceContentId,
+        revision: 4,
+      })
+    expect(handle.busy).toBe(false)
+    handle.dispose()
+  })
+  it('reads PDF bytes and image references from the same immutable source after recovery', async () => {
+    const workingCopy = {
+      documentEpoch: 'epoch',
+      workingRevision: 5,
+      savedRevision: 4,
+      sourceContentId: 'a'.repeat(64),
+      checkpointId: 'checkpoint',
+      dirty: true,
+      recoveryState: 'ready' as const,
+      contentUrl: '/api/documents/pdf-1/sources/' + 'a'.repeat(64) + '/content',
+    }
+    const calls: [string, RequestInit | undefined][] = []
+    const transport = createHttpPdfBrowserTransport(
+      { ...bootstrap, workingCopy },
+      async (url, init) => {
+        calls.push([String(url), init])
+        if (String(url).endsWith('/content')) return new Response(Uint8Array.from([1, 2]))
+        return Response.json(
+          String(url).endsWith('list-page-images') ? { images: [] } : { png: null },
+        )
+      },
+    )
+    await transport.readContent()
+    await transport.listPageImages()
+    await transport.pageImagePng({ pageIndex: 0, rect: [0, 0, 10, 10] })
+    expect(calls[0]?.[0]).toBe(workingCopy.contentUrl)
+    expect(JSON.parse(calls[1]?.[1]?.body as string)).toEqual({ sourceContentId: 'a'.repeat(64) })
+    expect(JSON.parse(calls[2]?.[1]?.body as string)).toMatchObject({
+      sourceContentId: 'a'.repeat(64),
+    })
+  })
   it('rejects oversized save envelopes before HTTP dispatch', async () => {
     const fetcher = vi.fn()
     const transport = createHttpPdfBrowserTransport(bootstrap, fetcher)

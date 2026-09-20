@@ -1,4 +1,9 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  buildPdfSaveRequest,
+  capturePdfWorkingCopy,
+  pdfSavedSnapshot,
+} from './agent/pdf-working-copy'
 import { handlePdfControl, type ControlRequest } from './control'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 // legacy build: the modern build relies on new APIs like Math.sumPrecise that the current
@@ -301,9 +306,24 @@ type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm'
 
 export default function App() {
   const capabilities = pdfCapabilities(window.nexusdeskPdfHost?.capabilities)
+  const [recoveryDirty, setRecoveryDirty] = useState(
+    window.nexusdeskPdfHost?.recoveryDirty ?? false,
+  )
+  const [workingCopyBusy, setWorkingCopyBusy] = useState(window.nexusdeskPdfHost?.busy ?? false)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  useEffect(
+    () =>
+      window.nexusdeskPdfHost?.onWorkingCopyState(() => {
+        setRecoveryDirty(window.nexusdeskPdfHost?.recoveryDirty ?? false)
+        setWorkingCopyBusy(window.nexusdeskPdfHost?.busy ?? false)
+        if (window.nexusdeskPdfHost?.reloadError) setStatus('error')
+      }),
+    [],
+  )
   const { lang, t } = useI18n()
   const collapse = useRibbonCollapse('genoffice-pdf-ribbon-collapsed')
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
+  const loadedSourceRef = useRef<string | undefined>(undefined)
   const [filePath, setFilePath] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'password' | 'ready'>(
     'loading',
@@ -978,6 +998,7 @@ export default function App() {
       saved?: SavedSnapshot,
       waitForPageNos: number[] = [],
     ) => {
+      const loadedSource = window.nexusdeskPdfHost?.document.workingCopy?.sourceContentId
       const data = await window.pdfApi.readFile(path)
       const bytes = new Uint8Array(data)
       setFormHasXfa(hasXfaMarker(bytes))
@@ -1249,6 +1270,7 @@ export default function App() {
         })
       // pdfjs-dist 6.x removed PDFDocumentProxy.destroy(); go through the loading task
       if (previous) void previous.loadingTask.destroy()
+      loadedSourceRef.current = loadedSource
       return loaded.numPages
     },
     [],
@@ -1648,6 +1670,7 @@ export default function App() {
   }, [imageEdits, savedStaticFormFills])
 
   const ordinaryDirty =
+    recoveryDirty ||
     markups.length > 0 ||
     annotDeletes.length > 0 ||
     noteEdits.length > 0 ||
@@ -3136,16 +3159,17 @@ export default function App() {
       so save paths can include a just-folded draft that React state hasn't flushed yet. */
   const commitTextDraft = (): LocalTextEdit[] => {
     const d = textDraft
-    if (!d) return textEdits
-    const merged = mergeTextDraft(textEdits, d)
+    const current = textEditsRef.current
+    if (!d) return current
+    const merged = mergeTextDraft(current, d)
     if (merged === 'overflow') {
       // Keep the editor open so the user can shorten the text (or Escape out)
       showNotice(t('textBlockOverflow'))
-      return textEdits
+      return current
     }
     setTextDraft(null)
-    if (!merged) return textEdits
-    applyEditOps(textEditListOps(textEdits, merged))
+    if (!merged) return current
+    applyEditOps(textEditListOps(current, merged))
     // New edits append; re-opened ones keep their id
     const committed = d.editId ? merged.find((e) => e.id === d.editId) : merged[merged.length - 1]
     if (committed) validateTextEdit(committed)
@@ -3243,7 +3267,7 @@ export default function App() {
     origIdx: number,
     block: TextBlock,
     d: [number, number],
-    edits: LocalTextEdit[] = textEdits,
+    edits: LocalTextEdit[] = textEditsRef.current,
   ): LocalTextEdit | null => {
     const plan = planBlockMove(origIdx, block, d, edits)
     if (plan === 'overflow') {
@@ -3358,49 +3382,16 @@ export default function App() {
     noteFlush?: { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] },
     state: EditSnapshot = snapshot(),
   ) => {
-    const {
-      markups,
-      annotDeletes,
-      noteEdits,
-      drawings,
-      textInserts,
-      imageEdits,
-      stampCfg,
-      formEdits,
-      rotations,
-      deleted,
-      order,
-      metadata,
-    } = state
-    return {
-      markups: markups.map(({ id: _id, ...rest }) => rest),
-      annotDeletes: annotDeletes.map((d): AnnotDeleteInput => ({
-        pageIndex: d.annot.pageIndex,
-        objNum: d.annot.objNum,
-        subtype: d.annot.type,
-        rect: d.annot.rect,
-        // A note thread's comments all share the root's rect; contents disambiguates
-        ...(d.annot.type === 'note' ? { contents: d.annot.contents } : {}),
-      })),
-      noteEdits: (noteFlush?.noteEdits ?? noteEdits).map((e): NoteEditInput => ({
-        pageIndex: e.annot.pageIndex,
-        objNum: e.annot.objNum,
-        rect: e.annot.rect,
-        oldContents: e.annot.contents,
-        contents: e.contents,
-      })),
-      drawings: (noteFlush?.drawings ?? drawings).map((d) => d.input),
-      textEdits: edits.map((e) => e.input),
-      textInserts: textInserts.map((insert) => insert.input),
-      imageEdits: imageEdits.map((e) => e.input),
-      staticFormFills,
-      stamps: stampCfg ? renderStamps(stampCfg, visList) : [],
-      formValues: [...formEdits.values()],
-      rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
-      deletedPages: [...deleted],
-      ...(order ? { pageOrder: visList } : {}),
-      ...(metadata ? { metadata } : {}),
-    }
+    const { path: _path, ...payload } = buildPdfSaveRequest(
+      { ...state, textEdits: edits, ...(noteFlush ?? {}) },
+      {
+        path: filePath,
+        pageCount: sizes.length,
+        savedStaticFormFills,
+        renderStamps,
+      },
+    )
+    return payload
   }
 
   // Check the exact future save envelope both before approval and before changing
@@ -3510,6 +3501,10 @@ export default function App() {
         })
       } catch {
         /* Save already succeeded; a reload failure doesn't block (takes effect on next open) */
+        if (window.nexusdeskPdfHost?.document.workingCopy) {
+          setRecoveryError('PDF saved; reload failed. Refresh to restore the saved document.')
+          setStatus('error')
+        }
       }
       // Content-derived naming (docs/sheets analog): a shell-created blank still
       // carrying its untitled name takes its file name from the topmost text this
@@ -3549,7 +3544,12 @@ export default function App() {
   // follow-up writes only what is still pending (usually nothing) instead of
   // re-applying the previous payload.
   useEffect(() => {
-    if (queuedSavesRef.current.length === 0 || saveInFlightRef.current !== null) return
+    if (
+      queuedSavesRef.current.length === 0 ||
+      saveInFlightRef.current !== null ||
+      window.nexusdeskPdfHost?.busy
+    )
+      return
     const queued = queuedSavesRef.current
     queuedSavesRef.current = []
     // One explicit request makes the whole drained batch explicit (autosave opt-in)
@@ -3696,6 +3696,7 @@ export default function App() {
   // toolbar button / File ▸ Save) is what opts this file into unattended writes.
   useAutosave(
     () =>
+      !window.nexusdeskPdfHost?.document.workingCopy &&
       savedOnceRef.current &&
       ordinaryDirty &&
       saveInFlightRef.current === null &&
@@ -4850,7 +4851,7 @@ export default function App() {
       typed text). Returns the arrays the save must write — the setState calls here
       won't be visible to the caller's closure. */
   const commitNoteEdit = (): { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] } => {
-    const unchanged = { drawings, noteEdits }
+    const unchanged = { drawings: drawingsRef.current, noteEdits: noteEditsRef.current }
     const draft = noteEditDraft
     if (!draft) return unchanged
     setNoteEditDraft(null)
@@ -5492,7 +5493,7 @@ export default function App() {
   // exposes pdf.js, PDFium, Electron, or React state objects to Harness.
   useEffect(() => {
     const browserHost = window.nexusdeskPdfHost
-    if (!browserHost) return
+    if (!browserHost || !doc || status !== 'ready') return
     const failure = (code: string, message: string) => ({
       ok: false as const,
       summary: message,
@@ -5825,7 +5826,8 @@ export default function App() {
         },
       }))
     }
-    return browserHost.attachEditor({
+    let savedWorkingCopySnapshot: SavedSnapshot | undefined
+    const detach = browserHost.attachEditor({
       async read(arguments_): Promise<AgentToolResult> {
         if (arguments_.include === 'annotations') {
           const execution = await executePdfTool({ ...aiApi, confirmFileOp: async () => false }, {
@@ -5943,9 +5945,29 @@ export default function App() {
         if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
           return failure('APPROVAL_INVALID', 'The PDF operation is not bound to a live approval.')
         }
+        // Drafts were included in the exact proposal hash. Fold them synchronously
+        // before reducing the approved operation, then capture the ref post-state.
+        if (textDraft && mergeTextDraft(textEditsRef.current, textDraft) === 'overflow')
+          return failure('PDF_DRAFT_INVALID', 'Finish the overflowing text draft before applying.')
+        commitTextDraft()
+        commitNoteEdit()
         const first = plan.operations[0] as Record<string, unknown> | undefined
         if (plan.operations.length === 1 && first?.op === 'modify_pdf_pages') {
           const modification = parsePdfPageModification(first, visList.length)
+          if (browserHost.document.workingCopy) {
+            savedWorkingCopySnapshot = pdfSavedSnapshot(snapshot(), sizes.length, modification)
+            return {
+              ok: true,
+              summary: `Completed ${modification.action}.`,
+              warnings: [],
+              changes: { targets: ['current PDF'], count: 1 },
+              verification: { passed: true, issues: [] },
+              workingCopy: capturePdfWorkingCopy(
+                { path: filePath, ...editsPayload() },
+                modification,
+              ),
+            }
+          }
           const result =
             modification.action === 'insertBlankPage'
               ? await insertBlankPageAt(modification.afterPageIndex)
@@ -5973,6 +5995,9 @@ export default function App() {
           warnings: [],
           changes: { targets: targetsFor(applied.ops), count: applied.ops.length },
           verification: { passed: true, issues: [] },
+          ...(browserHost.document.workingCopy
+            ? { workingCopy: capturePdfWorkingCopy({ path: filePath, ...editsPayload() }) }
+            : {}),
         }
       },
       async save(plan: PdfEditPlan & { approvalId: string }) {
@@ -5985,6 +6010,20 @@ export default function App() {
         if (!browserHost.bridge.consumeApproval(plan.approvalId, plan.planHash)) {
           return failure('APPROVAL_INVALID', 'The PDF save is not bound to a live approval.')
         }
+        if (browserHost.document.workingCopy) {
+          if (textDraft && mergeTextDraft(textEditsRef.current, textDraft) === 'overflow')
+            return failure('PDF_DRAFT_INVALID', 'Finish the overflowing text draft before saving.')
+          commitTextDraft()
+          commitNoteEdit()
+          savedWorkingCopySnapshot = pdfSavedSnapshot(snapshot(), sizes.length)
+          return {
+            ok: true,
+            summary: 'Saved the current PDF in place.',
+            warnings: [],
+            verification: { passed: true, issues: [] },
+            workingCopy: capturePdfWorkingCopy({ path: filePath, ...editsPayload() }),
+          }
+        }
         const saved = await save()
         return saved
           ? {
@@ -5995,7 +6034,25 @@ export default function App() {
             }
           : failure('PDF_SAVE_FAILED', 'The Local Host rejected the PDF save.')
       },
+      async persisted(receipt) {
+        if (receipt.dirty) return
+        try {
+          await browserHost.rebase()
+          await loadDoc(filePath, doc, savedWorkingCopySnapshot)
+        } catch (error) {
+          setRecoveryError('PDF saved; reload failed. Refresh to restore the saved document.')
+          setStatus('error')
+          throw error
+        }
+      },
+      async restoreWorkingCopy() {
+        await loadDoc(filePath, doc)
+        setRecoveryError(null)
+        setStatus('ready')
+      },
     })
+    browserHost.setHydrated(loadedSourceRef.current)
+    return detach
   })
 
   /**
@@ -6117,6 +6174,10 @@ export default function App() {
   // Shortcuts: ⌘S/⌘F/⌘P/⌘±/⌘0 + page navigation (only ⌘ combos kept while an input control is focused)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (window.nexusdeskPdfHost?.busy) {
+        e.preventDefault()
+        return
+      }
       const target = e.target as HTMLElement | null
       const inEditable =
         !!target &&
@@ -6282,7 +6343,11 @@ export default function App() {
     return (
       <div className="app">
         <div className="pdf-placeholder">
-          {status === 'loading' ? t('loading') : status === 'error' ? t('loadError') : t('noFile')}
+          {status === 'loading'
+            ? t('loading')
+            : status === 'error'
+              ? (recoveryError ?? window.nexusdeskPdfHost?.reloadError ?? t('loadError'))
+              : t('noFile')}
         </div>
       </div>
     )
@@ -6583,7 +6648,7 @@ export default function App() {
   )
 
   return (
-    <div className="app">
+    <div className="app" inert={workingCopyBusy}>
       <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
         <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
           <button

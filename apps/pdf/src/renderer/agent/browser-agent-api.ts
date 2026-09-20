@@ -7,12 +7,20 @@ import {
   type EditorRequestFrame,
   type JsonValue,
   type Revision,
+  type PersistenceReference,
+  type WorkingCopyBootstrap,
 } from '@nexusdesk/protocol'
 import {
   createAgentApi,
   registerEditor,
   type AgentApi,
   type NexusClient,
+  BoundedEditorCache,
+  createEditorResultJournal,
+  editorRequestFingerprint,
+  createWorkingCopyMutationLane,
+  type BrowserWorkingCopyPayload,
+  type BrowserWorkingCopyPersistence,
 } from '@nexusdesk/web-client'
 
 export interface PdfEditPlan {
@@ -32,9 +40,13 @@ export interface PdfEditorAdapter {
     snapshotHash: string,
   ): Promise<Omit<PdfEditPlan, 'operations' | 'snapshotHash'> & { operations?: JsonValue[] }>
   proposeSave(): Promise<Omit<PdfEditPlan, 'operations'>>
-  apply(plan: PdfEditPlan & { approvalId: string }): Promise<AgentToolResult>
-  save(plan: PdfEditPlan & { approvalId: string }): Promise<AgentToolResult>
+  apply(plan: PdfEditPlan & { approvalId: string }): Promise<PdfMutationResult>
+  save(plan: PdfEditPlan & { approvalId: string }): Promise<PdfMutationResult>
+  persisted?(receipt: PersistenceReference): Promise<void>
+  restoreWorkingCopy?(): Promise<void>
 }
+
+export type PdfMutationResult = AgentToolResult & { workingCopy?: BrowserWorkingCopyPayload }
 
 export interface PdfBrowserAgentBridge {
   readonly agentApi: AgentApi
@@ -42,6 +54,7 @@ export interface PdfBrowserAgentBridge {
   client(): { clientId: ClientId | undefined; attached: boolean }
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
+  setHydrated(state: WorkingCopyBootstrap | null): void
   dispose(): void
 }
 
@@ -50,11 +63,18 @@ export interface PdfBrowserAgentBridgeOptions {
   documentId: DocumentId
   revision: Revision
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+  workingCopy?: {
+    state(): WorkingCopyBootstrap | null
+    persistence: BrowserWorkingCopyPersistence
+    didPersist?(receipt: PersistenceReference): void
+    run?<T>(task: () => Promise<T>): Promise<T>
+  }
 }
 
 interface JournalRecord {
   fingerprint: string
   result: AgentToolResult
+  persistence?: PersistenceReference
 }
 
 function failure(code: string, message: string): AgentToolResult {
@@ -99,45 +119,53 @@ export function createPdfBrowserAgentBridge(
 ): PdfBrowserAgentBridge {
   let adapter: PdfEditorAdapter | undefined
   const approvals = new Map<string, string>()
-  const proposals = new Map<string, PdfEditPlan>()
-  const saveProposals = new Map<string, PdfEditPlan>()
-  const inFlight = new Map<string, { fingerprint: string; result: Promise<AgentToolResult> }>()
+  const proposals = new BoundedEditorCache<string, PdfEditPlan>()
+  const saveProposals = new BoundedEditorCache<string, PdfEditPlan>()
+  const inFlight = new Map<string, { fingerprint: string; result: Promise<JournalRecord> }>()
+  const uncertain = new Map<string, string>()
   const storage = options.storage ?? defaultStorage()
+  const journal = createEditorResultJournal(storage, options.documentId, {
+    requirePersistence: !!options.workingCopy,
+  })
+  const run = options.workingCopy?.run ?? createWorkingCopyMutationLane().run
   const registration = registerEditor(options.client, {
     documentId: options.documentId,
     editorType: 'pdf',
     revision: options.revision,
+    workingCopy: !!options.workingCopy,
   })
 
-  const sendResult = (frame: EditorRequestFrame, result: AgentToolResult): void => {
+  const sendResult = (frame: EditorRequestFrame, record: JournalRecord): void => {
     options.client.send({
       type: 'editor:result',
       protocolVersion: PROTOCOL_VERSION,
       id: frame.id,
       target: frame.target,
-      result,
+      result: record.result,
+      ...(record.persistence ? { persistence: record.persistence } : {}),
     })
   }
-  const deliver = (frame: EditorRequestFrame, result: AgentToolResult): void => {
+  const deliver = (frame: EditorRequestFrame, record: JournalRecord): void => {
     try {
-      sendResult(frame, result)
+      sendResult(frame, record)
     } catch {
       // The result journal is replayed when the editor reconnects.
     }
   }
 
-  const execute = async (frame: EditorRequestFrame): Promise<AgentToolResult> => {
-    if (adapter === undefined) return failure('EDITOR_NOT_READY', 'the PDF editor is not ready')
+  const execute = async (frame: EditorRequestFrame): Promise<PdfMutationResult> => {
+    const editor = adapter
+    if (editor === undefined) return failure('EDITOR_NOT_READY', 'the PDF editor is not ready')
     if (frame.command === 'read_pdf') {
-      return adapter.read(frame.arguments as Record<string, JsonValue>)
+      return editor.read(frame.arguments as Record<string, JsonValue>)
     }
     if (frame.command === 'propose_ops') {
       const args = frame.arguments as { ops?: unknown }
       if (!Array.isArray(args.ops))
         return failure('INVALID_REQUEST', 'PDF operations must be an array')
       const operations = args.ops as JsonValue[]
-      const snapshotHash = await adapter.snapshot()
-      const proposed = await adapter.propose(operations, snapshotHash)
+      const snapshotHash = await editor.snapshot()
+      const proposed = await editor.propose(operations, snapshotHash)
       const plan: PdfEditPlan = {
         ...proposed,
         snapshotHash,
@@ -166,7 +194,7 @@ export function createPdfBrowserAgentBridge(
       ) {
         return failure('APPROVAL_INVALID', 'apply request is not bound to a proposed PDF plan')
       }
-      if ((await adapter.snapshot()) !== plan.snapshotHash) {
+      if ((await editor.snapshot()) !== plan.snapshotHash) {
         proposals.delete(frame.target.operationId)
         return failure(
           'STALE_PLAN',
@@ -175,14 +203,14 @@ export function createPdfBrowserAgentBridge(
       }
       approvals.set(frame.approval.id, plan.planHash)
       try {
-        return await adapter.apply({ ...plan, approvalId: frame.approval.id })
+        return await editor.apply({ ...plan, approvalId: frame.approval.id })
       } finally {
         approvals.delete(frame.approval.id)
         proposals.delete(frame.target.operationId)
       }
     }
     if (frame.command === 'propose_save') {
-      const plan: PdfEditPlan = { ...(await adapter.proposeSave()), operations: [] }
+      const plan: PdfEditPlan = { ...(await editor.proposeSave()), operations: [] }
       saveProposals.set(frame.target.operationId, plan)
       return {
         ok: true,
@@ -206,7 +234,7 @@ export function createPdfBrowserAgentBridge(
       ) {
         return failure('APPROVAL_INVALID', 'save request is not bound to a proposed PDF save')
       }
-      if ((await adapter.snapshot()) !== plan.snapshotHash) {
+      if ((await editor.snapshot()) !== plan.snapshotHash) {
         saveProposals.delete(frame.target.operationId)
         return failure(
           'STALE_PLAN',
@@ -215,7 +243,7 @@ export function createPdfBrowserAgentBridge(
       }
       approvals.set(frame.approval.id, plan.planHash)
       try {
-        return await adapter.save({ ...plan, approvalId: frame.approval.id })
+        return await editor.save({ ...plan, approvalId: frame.approval.id })
       } finally {
         approvals.delete(frame.approval.id)
         saveProposals.delete(frame.target.operationId)
@@ -224,73 +252,131 @@ export function createPdfBrowserAgentBridge(
     return failure('UNAVAILABLE_IN_WEB', `the command ${frame.command} is unavailable in Web PDF`)
   }
 
-  const journalKey = (operationId: string): string =>
-    `nexusdesk:editor-result:${options.documentId}:${operationId}`
-  const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
-    if (
-      storage === undefined ||
-      frame.command === 'propose_ops' ||
-      frame.command === 'propose_save'
-    )
-      return undefined
-    const raw = storage.getItem(journalKey(frame.target.operationId))
-    if (raw === null) return undefined
-    try {
-      const record = JSON.parse(raw) as JournalRecord
-      if (record.fingerprint !== requestFingerprint(frame)) {
-        return failure('OPERATION_ID_COLLISION', 'operation id is bound to different PDF arguments')
-      }
-      return record.result
-    } catch {
-      storage.removeItem(journalKey(frame.target.operationId))
-      return undefined
-    }
-  }
-  const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
-    if (
-      storage === undefined ||
-      frame.command === 'propose_ops' ||
-      frame.command === 'propose_save'
-    )
-      return
-    storage.setItem(
-      journalKey(frame.target.operationId),
-      JSON.stringify({
-        fingerprint: requestFingerprint(frame),
-        result,
-      } satisfies JournalRecord),
-    )
-  }
   const unsubscribe = options.client.onFrame((frame) => {
     if (frame.type !== 'editor:request') return
     const mutation = frame.command === 'apply_ops' || frame.command === 'save_pdf'
     const running = mutation ? inFlight.get(frame.target.operationId) : undefined
     if (running) {
       if (running.fingerprint !== requestFingerprint(frame)) {
-        deliver(
-          frame,
-          failure('OPERATION_ID_COLLISION', 'operation id is bound to different PDF arguments'),
-        )
+        deliver(frame, {
+          fingerprint: requestFingerprint(frame),
+          result: failure(
+            'OPERATION_ID_COLLISION',
+            'operation id is bound to different PDF arguments',
+          ),
+        })
       } else {
         void running.result.then((result) => deliver(frame, result))
       }
       return
     }
-    const replayed = replay(frame)
-    if (replayed !== undefined) return deliver(frame, replayed)
-    const resultPromise = (async () => {
-      let result: AgentToolResult
-      try {
-        result = await execute(frame)
-      } catch (error: unknown) {
-        result = failure(
-          error instanceof PdfPayloadTooLargeError ? error.code : 'EDITOR_REQUEST_FAILED',
-          errorMessage(error),
+    // The microtask starts only after the in-flight slot exists, including storage/lookup errors.
+    const resultPromise = Promise.resolve().then(() =>
+      run(async (): Promise<JournalRecord> => {
+        const fingerprint = await editorRequestFingerprint(
+          frame,
+          options.workingCopy?.state()?.documentEpoch,
         )
-      }
-      remember(frame, result)
-      return result
-    })()
+        try {
+          if (mutation) {
+            const prior = journal.read(frame.target.operationId)
+            if (prior && prior.fingerprint !== fingerprint)
+              return {
+                fingerprint,
+                result: failure(
+                  'OPERATION_ID_COLLISION',
+                  'operation id is bound to different PDF arguments',
+                ),
+              }
+            if (options.workingCopy) {
+              const recovered = await options.workingCopy.persistence.lookup(
+                frame.target.operationId,
+                fingerprint,
+              )
+              if (recovered.state === 'committed') {
+                if (uncertain.delete(frame.target.operationId)) {
+                  options.workingCopy.didPersist?.(recovered.persistence)
+                  if (recovered.persistence.dirty)
+                    registration.setHydrated(options.workingCopy.state())
+                  try {
+                    await adapter?.persisted?.(recovered.persistence)
+                  } catch {
+                    recovered.result = {
+                      ...recovered.result,
+                      warnings: [
+                        ...recovered.result.warnings,
+                        {
+                          code: 'PDF_RELOAD_FAILED',
+                          message:
+                            'PDF saved; reload failed. Refresh to restore the saved document.',
+                        },
+                      ],
+                    }
+                    registration.setHydrated(null)
+                  }
+                }
+                return { fingerprint, result: recovered.result, persistence: recovered.persistence }
+              }
+              if (uncertain.size)
+                return {
+                  fingerprint,
+                  result: failure(
+                    'WORKING_COPY_OUTCOME_UNKNOWN',
+                    'Restore and query this PDF operation before continuing.',
+                  ),
+                }
+            } else if (prior) return prior
+          }
+          const executingAdapter = adapter
+          const { workingCopy, ...result } = await execute(frame)
+          let persistence: PersistenceReference | undefined
+          if (mutation && result.ok && options.workingCopy) {
+            if (!workingCopy) throw Error('The PDF editor did not capture its applied post-state.')
+            uncertain.set(frame.target.operationId, fingerprint)
+            persistence = await options.workingCopy.persistence.checkpoint(
+              frame,
+              result,
+              workingCopy,
+            )
+            uncertain.delete(frame.target.operationId)
+            options.workingCopy.didPersist?.(persistence)
+            if (persistence.dirty) registration.setHydrated(options.workingCopy.state())
+            // A durable save stays successful even if the browser cannot reopen it.
+            try {
+              await executingAdapter?.persisted?.(persistence)
+            } catch {
+              result.warnings = [
+                ...result.warnings,
+                {
+                  code: 'PDF_RELOAD_FAILED',
+                  message: 'PDF saved; reload failed. Refresh to restore the saved document.',
+                },
+              ]
+              registration.setHydrated(null)
+            }
+          }
+          const record: JournalRecord = {
+            fingerprint,
+            result,
+            ...(persistence ? { persistence } : {}),
+          }
+          if (mutation) journal.write(frame.target.operationId, record)
+          return record
+        } catch (error: unknown) {
+          return {
+            fingerprint,
+            result: failure(
+              error instanceof PdfPayloadTooLargeError
+                ? error.code
+                : typeof (error as { code?: unknown })?.code === 'string'
+                  ? (error as { code: string }).code
+                  : 'EDITOR_REQUEST_FAILED',
+              errorMessage(error),
+            ),
+          }
+        }
+      }),
+    )
     if (mutation)
       inFlight.set(frame.target.operationId, {
         fingerprint: requestFingerprint(frame),
@@ -311,7 +397,10 @@ export function createPdfBrowserAgentBridge(
       }
     },
     client() {
-      return { clientId: options.client.clientId, attached: options.client.state === 'ready' }
+      return {
+        clientId: options.client.clientId,
+        attached: adapter !== undefined && registration.attached,
+      }
     },
     consumeApproval(approvalId, planHash) {
       if (approvals.get(approvalId) !== planHash) return false
@@ -321,11 +410,15 @@ export function createPdfBrowserAgentBridge(
     updateRevision(revision) {
       registration.updateRevision(revision)
     },
+    setHydrated(state) {
+      registration.setHydrated(state)
+    },
     dispose() {
       approvals.clear()
       proposals.clear()
       saveProposals.clear()
       adapter = undefined
+      journal.clearMemory()
       unsubscribe()
       registration.dispose()
     },
