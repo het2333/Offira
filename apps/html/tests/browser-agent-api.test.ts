@@ -78,7 +78,11 @@ describe('HTML browser Agent bridge', () => {
     sendSave('wrong', { id: 'approval-wrong', planHash: 'other-plan' })
     sendSave('valid', { id: 'approval-1', planHash: 'save-current-html-in-place' })
     sendSave('replayed', { id: 'approval-1', planHash: 'save-current-html-in-place' })
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() =>
+      expect(
+        client.sent.filter((frame) => (frame as { type?: string }).type === 'editor:result'),
+      ).toHaveLength(4),
+    )
 
     expect(save).not.toHaveBeenCalled()
     expect(client.sent).toContainEqual(
@@ -101,5 +105,6 @@ describe('HTML browser Agent bridge', () => {
         }),
       }),
     )
+    bridge.dispose()
   })
 })

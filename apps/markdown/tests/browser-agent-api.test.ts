@@ -55,15 +55,13 @@ describe('Markdown browser Agent bridge', () => {
       }),
       snapshot: vi.fn(),
       read: vi.fn(),
-      propose: vi
-        .fn()
-        .mockResolvedValue({
-          planHash: 'plan-1',
-          summary: 'Apply.',
-          warnings: [],
-          operations: [{ op: 'replaceText' }],
-          target: {},
-        }),
+      propose: vi.fn().mockResolvedValue({
+        planHash: 'plan-1',
+        summary: 'Apply.',
+        warnings: [],
+        operations: [{ op: 'replaceText' }],
+        target: {},
+      }),
       apply,
       verify: vi.fn(),
       undo: vi.fn(),
@@ -89,8 +87,13 @@ describe('Markdown browser Agent bridge', () => {
     } as never
     // An apply without a proposal must not reach the editor.
     ;(client.frames.push as never)(frame)
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() =>
+      expect(
+        client.sent.filter((frame) => (frame as { type?: string }).type === 'editor:result'),
+      ).toHaveLength(1),
+    )
     expect(apply).not.toHaveBeenCalled()
+    bridge.dispose()
   })
 
   it('rejects missing, unrelated, and legacy constant save approvals without a proposal', async () => {
@@ -141,7 +144,11 @@ describe('Markdown browser Agent bridge', () => {
     sendSave('wrong', { id: 'approval-wrong', planHash: 'other-plan' })
     sendSave('valid', { id: 'approval-1', planHash: 'save-current-markdown-in-place' })
     sendSave('replayed', { id: 'approval-1', planHash: 'save-current-markdown-in-place' })
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() =>
+      expect(
+        client.sent.filter((frame) => (frame as { type?: string }).type === 'editor:result'),
+      ).toHaveLength(4),
+    )
 
     expect(save).not.toHaveBeenCalled()
     expect(client.sent).toContainEqual(
@@ -164,5 +171,6 @@ describe('Markdown browser Agent bridge', () => {
         }),
       }),
     )
+    bridge.dispose()
   })
 })

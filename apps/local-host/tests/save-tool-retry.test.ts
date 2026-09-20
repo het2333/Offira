@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import type { AgentServerFrame, AgentToolResult, EditorRequestFrame } from '@nexusdesk/protocol'
 import { AgentRouter } from '../src/agent-router'
 import { DocumentRegistry } from '../src/document-registry'
@@ -8,6 +8,100 @@ import { createDocsTools } from '../../../packages/nexusdesk-runtime-host/src/do
 import { createSheetsTools } from '../../../packages/nexusdesk-runtime-host/src/sheets-tools'
 import { createMarkdownTools } from '../../../packages/nexusdesk-runtime-host/src/markdown-tools'
 import { createHtmlTools } from '../../../packages/nexusdesk-runtime-host/src/html-tools'
+
+it.each(['rejected', 'cancelled', 'unavailable', 'agent-cancel', 'timeout'] as const)(
+  'releases browser proposal data when approval/turn ends with %s',
+  (outcome) => {
+    vi.useFakeTimers()
+    const sent: AgentServerFrame[] = []
+    const documentId = 'doc' as never,
+      clientId = 'client' as never,
+      sessionId = 'session' as never
+    const documents = new DocumentRegistry([{ documentId, editorType: 'docs', revision: 1 }])
+    documents.register({ documentId, clientId, editorType: 'docs', revision: 1 as never })
+    const supervisor = {
+      onFrame: () => () => {},
+      onExit: () => () => {},
+      startTurn() {},
+      cancelTurn() {},
+      respondApproval() {},
+      respondEditor() {},
+    } as unknown as HarnessSupervisor
+    const router = new AgentRouter({
+      documents,
+      supervisor,
+      operations: new OperationStore(),
+      approvalTimeoutMs: 1,
+      sendToClient: (_client, frame) => sent.push(frame),
+    })
+    try {
+      router.handleClientFrame(
+        {
+          type: 'agent:start',
+          protocolVersion: 1,
+          id: 'start' as never,
+          sessionId,
+          documentId,
+          prompt: 'save',
+        },
+        clientId,
+      )
+      router.routeRuntimeFrame({
+        type: 'editor:request',
+        protocolVersion: 1,
+        id: 'proposal' as never,
+        target: {
+          documentId,
+          clientId,
+          sessionId,
+          editorType: 'docs',
+          revision: 1 as never,
+          operationId: 'operation-1' as never,
+        },
+        command: 'propose_save',
+        arguments: {},
+      })
+      router.routeRuntimeFrame({
+        type: 'approval:request',
+        protocolVersion: 1,
+        id: 'approval' as never,
+        sessionId,
+        toolName: 'save_document',
+        proposal: {
+          operationId: 'operation-1',
+          planHash: 'hash',
+          summary: 'save',
+          targets: [],
+          warnings: [],
+        },
+      })
+      if (outcome === 'agent-cancel')
+        router.handleClientFrame(
+          { type: 'agent:cancel', protocolVersion: 1, id: 'cancel' as never, sessionId },
+          clientId,
+        )
+      else if (outcome === 'timeout') vi.advanceTimersByTime(2)
+      else
+        router.handleClientFrame(
+          { type: 'approval:response', protocolVersion: 1, id: 'approval' as never, outcome },
+          clientId,
+        )
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: 'agent:event',
+          sessionId,
+          event: expect.objectContaining({
+            type: 'editor:proposal-released',
+            data: expect.objectContaining({ operationId: 'operation-1' }),
+          }),
+        }),
+      )
+    } finally {
+      router.dispose()
+      vi.useRealTimers()
+    }
+  },
+)
 
 it.each([
   ['docs', 'save_document', createDocsTools],

@@ -1,4 +1,8 @@
-import { BoundedEditorCache, createEditorResultJournal } from '@nexusdesk/web-client'
+import {
+  BoundedEditorCache,
+  createEditorResultJournal,
+  editorRequestFingerprint,
+} from '@nexusdesk/web-client'
 import {
   PROTOCOL_VERSION,
   type AgentToolResult,
@@ -48,16 +52,6 @@ function canonical(value: unknown): string {
     .join(',')}}`
 }
 
-function requestFingerprint(frame: EditorRequestFrame): string {
-  return canonical({
-    documentId: frame.target.documentId,
-    editorType: frame.target.editorType,
-    command: frame.command,
-    arguments: frame.arguments,
-    planHash: frame.approval?.planHash,
-  })
-}
-
 function defaultStorage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | undefined {
   try {
     return globalThis.sessionStorage
@@ -70,6 +64,10 @@ export function createDocsBrowserAgentBridge(
   options: DocsBrowserAgentBridgeOptions,
 ): DocsBrowserAgentBridge {
   let adapter: EditorAdapter | undefined
+  let disposed = false
+  // Serialize only fingerprint/registration, not execution, to preserve first-arrival ownership.
+  let requestQueue: Promise<void> = Promise.resolve()
+  const releasedProposals = new BoundedEditorCache<string, boolean>()
   const terminalResults = new Map<
     string,
     { fingerprint: string; result: Promise<AgentToolResult> }
@@ -222,24 +220,36 @@ export function createDocsBrowserAgentBridge(
     return failure('UNAVAILABLE_IN_WEB', `the command ${frame.command} is unavailable in Web Docs`)
   }
 
-  const replay = (frame: EditorRequestFrame): AgentToolResult | undefined => {
+  const replay = (frame: EditorRequestFrame, fingerprint: string): AgentToolResult | undefined => {
     if (frame.command.startsWith('propose_')) return undefined
     const record = journal.read(frame.target.operationId)
     if (!record) return undefined
-    return record.fingerprint === requestFingerprint(frame)
+    return record.fingerprint === fingerprint
       ? record.result
       : failure('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments')
   }
-  const remember = (frame: EditorRequestFrame, result: AgentToolResult): void => {
+  const remember = (
+    frame: EditorRequestFrame,
+    result: AgentToolResult,
+    fingerprint: string,
+  ): void => {
     if (!frame.command.startsWith('propose_'))
-      journal.write(frame.target.operationId, { fingerprint: requestFingerprint(frame), result })
+      journal.write(frame.target.operationId, { fingerprint, result })
   }
-  const unsubscribe = options.client.onFrame((frame) => {
-    if (frame.type !== 'editor:request') return
+  const releaseProposal = (operationId: string): void => {
+    saveProposals.delete(operationId)
+    proposals.delete(operationId)
+
+    releasedProposals.set(operationId, true)
+  }
+  const handleRequest = async (frame: EditorRequestFrame): Promise<void> => {
+    if (disposed) return
+    const fingerprint = await editorRequestFingerprint(frame)
+    if (disposed) return
     const terminal = !frame.command.startsWith('propose_')
     const running = terminal ? terminalResults.get(frame.target.operationId) : undefined
     if (running) {
-      if (running.fingerprint !== requestFingerprint(frame)) {
+      if (running.fingerprint !== fingerprint) {
         deliverResult(
           frame,
           failure('OPERATION_ID_COLLISION', 'operation id is bound to different editor arguments'),
@@ -249,9 +259,13 @@ export function createDocsBrowserAgentBridge(
       }
       return
     }
-    const replayed = replay(frame)
+    const replayed = replay(frame, fingerprint)
     if (replayed !== undefined) {
       deliverResult(frame, replayed)
+      return
+    }
+    if (releasedProposals.has(frame.target.operationId)) {
+      deliverResult(frame, failure('APPROVAL_INVALID', 'the proposal was released'))
       return
     }
     // Schedule execution after the shared promise is registered, including synchronous failures.
@@ -259,6 +273,15 @@ export function createDocsBrowserAgentBridge(
       let result: AgentToolResult
       try {
         result = await execute(frame)
+        if (
+          frame.command.startsWith('propose_') &&
+          (disposed || releasedProposals.has(frame.target.operationId))
+        ) {
+          saveProposals.delete(frame.target.operationId)
+          proposals.delete(frame.target.operationId)
+
+          result = failure('APPROVAL_INVALID', 'the proposal was released')
+        }
       } catch (error) {
         result = failure(
           'EDITOR_REQUEST_FAILED',
@@ -266,7 +289,7 @@ export function createDocsBrowserAgentBridge(
         )
       }
       try {
-        remember(frame, result)
+        remember(frame, result, fingerprint)
       } catch {
         /* The in-memory result remains authoritative if storage is unavailable. */
       }
@@ -274,7 +297,7 @@ export function createDocsBrowserAgentBridge(
     })
     if (terminal)
       terminalResults.set(frame.target.operationId, {
-        fingerprint: requestFingerprint(frame),
+        fingerprint,
         result: resultPromise,
       })
     void resultPromise.then((result) => {
@@ -282,6 +305,32 @@ export function createDocsBrowserAgentBridge(
         terminalResults.delete(frame.target.operationId)
       deliverResult(frame, result)
     })
+  }
+  const unsubscribe = options.client.onFrame((frame) => {
+    if (disposed) return
+    if (frame.type === 'agent:event' && frame.event.type === 'editor:proposal-released') {
+      const data = frame.event.data
+      if (
+        data &&
+        typeof data === 'object' &&
+        !Array.isArray(data) &&
+        typeof data.operationId === 'string'
+      )
+        releaseProposal(data.operationId)
+      return
+    }
+    if (frame.type === 'editor:request')
+      requestQueue = requestQueue
+        .then(() => handleRequest(frame))
+        .catch((error: unknown) =>
+          deliverResult(
+            frame,
+            failure(
+              'EDITOR_REQUEST_FAILED',
+              error instanceof Error ? error.message : String(error),
+            ),
+          ),
+        )
   })
 
   return {
@@ -304,6 +353,8 @@ export function createDocsBrowserAgentBridge(
       registration.updateRevision(revision)
     },
     dispose() {
+      disposed = true
+      releasedProposals.clear()
       terminalResults.clear()
       journal.clearMemory()
       approvals.clear()

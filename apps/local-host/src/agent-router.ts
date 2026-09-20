@@ -187,6 +187,15 @@ export class AgentRouter {
     }
     if (frame.type === 'agent:cancel') {
       this.assertSessionOwner(frame.sessionId, clientId)
+      for (const operation of this.editorOperations.values()) {
+        if (operation.target.sessionId === frame.sessionId && isProposalCommand(operation.command))
+          this.releaseProposal(
+            { clientId, sessionId: frame.sessionId, operationId: operation.target.operationId },
+            'cancelled',
+          )
+      }
+      this.expireApprovals((approval) => approval.sessionId === frame.sessionId)
+      this.expireGrantedApprovals((approval) => approval.sessionId === frame.sessionId)
       this.options.supervisor.cancelTurn(frame.sessionId)
       return
     }
@@ -201,6 +210,7 @@ export class AgentRouter {
         const { timer: _timer, ...granted } = approval
         this.grantedApprovals.set(frame.id, granted)
       }
+      if (frame.outcome !== 'allowed-once') this.releaseProposal(approval, frame.outcome)
       this.options.supervisor.respondApproval(frame.id, frame.outcome)
     }
   }
@@ -226,7 +236,9 @@ export class AgentRouter {
         return
       }
       const timer = setTimeout(() => {
+        const expired = this.approvals.get(frame.id)
         this.approvals.delete(frame.id)
+        if (expired) this.releaseProposal(expired, 'unavailable')
         this.options.supervisor.respondApproval(frame.id, 'unavailable')
       }, this.options.approvalTimeoutMs ?? 120_000)
       this.approvals.set(frame.id, {
@@ -296,11 +308,32 @@ export class AgentRouter {
     this.approvals.clear()
   }
 
+  private releaseProposal(
+    owner: { clientId: ClientId; sessionId: SessionId; operationId?: OperationId },
+    outcome: string,
+  ): void {
+    if (owner.operationId === undefined) return
+    try {
+      this.options.sendToClient(owner.clientId, {
+        type: 'agent:event',
+        protocolVersion: 1,
+        sessionId: owner.sessionId,
+        event: {
+          type: 'editor:proposal-released',
+          data: { operationId: owner.operationId, outcome },
+        },
+      })
+    } catch {
+      /* Offline renderers still release their proposals through the absolute TTL. */
+    }
+  }
+
   private expireApprovals(predicate: (approval: ApprovalOwner) => boolean): void {
     for (const [id, approval] of this.approvals) {
       if (!predicate(approval)) continue
       clearTimeout(approval.timer)
       this.approvals.delete(id)
+      this.releaseProposal(approval, 'unavailable')
       this.options.supervisor.respondApproval(id, 'unavailable')
     }
   }
@@ -309,7 +342,10 @@ export class AgentRouter {
     predicate: (approval: Omit<ApprovalOwner, 'timer'>) => boolean,
   ): void {
     for (const [id, approval] of this.grantedApprovals) {
-      if (predicate(approval)) this.grantedApprovals.delete(id)
+      if (predicate(approval)) {
+        this.grantedApprovals.delete(id)
+        this.releaseProposal(approval, 'unavailable')
+      }
     }
   }
 

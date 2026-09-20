@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import { BoundedEditorCache } from '@nexusdesk/web-client'
 import { createHtmlBrowserAgentBridge } from '../src/renderer/agent/browser-agent-api'
 
 function setup(storageOverride?: any) {
@@ -122,6 +123,189 @@ it('evicts old save proposals after the fixed proposal-cache limit', async () =>
   expect(s.results()[129].result.ok).toBe(false)
   expect(save).not.toHaveBeenCalled()
   s.bridge.dispose()
+})
+
+it.each([70, 255])(
+  'replays the same successful terminal result for a legal %s KiB mutation',
+  async (kib) => {
+    const s = setup()
+    const result = { ok: true, summary: 'applied the large edit once', warnings: [] }
+    const apply = vi.fn(async () => result)
+    const operations = [{ op: 'set_text', sid: 1, text: 'x'.repeat(kib * 1024) }]
+    s.bridge.attachEditor({
+      propose: async (request: any) => ({
+        ...request,
+        operations,
+        planHash: 'large-plan',
+        summary: 'large edit',
+        warnings: [],
+      }),
+      apply,
+    } as never)
+    s.emit(s.frame('propose_ops', { ops: operations }))
+    await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+    expect(new TextEncoder().encode(JSON.stringify({ ops: operations })).byteLength).toBeLessThan(
+      256 * 1024,
+    )
+    const request = s.frame(
+      'apply_ops',
+      { ops: operations },
+      { id: 'approval-1', planHash: 'large-plan' },
+    )
+    s.emit(request)
+    await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+    expect(s.results()[1].result).toEqual(result)
+    s.emit(request)
+    await vi.waitFor(() => expect(s.results()).toHaveLength(3))
+    expect(s.results()[2].result).toEqual(result)
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect([...s.values.values()].every((value) => value.length <= 64 * 1024)).toBe(true)
+    const receipt = [...s.values.values()]
+      .map((value) => JSON.parse(value))
+      .find((value) => value.result)
+    expect(receipt.fingerprint).toMatch(/^[a-f0-9]{64}$/)
+    s.bridge.dispose()
+    const reloaded = setup({
+      getItem: (key: string) => s.values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        s.values.set(key, value)
+      },
+      removeItem: (key: string) => {
+        s.values.delete(key)
+      },
+    })
+    reloaded.bridge.attachEditor({ apply } as never)
+    reloaded.emit(request)
+    await vi.waitFor(() => expect(reloaded.results()).toHaveLength(1))
+    expect(reloaded.results()[0].result).toEqual(result)
+    expect(apply).toHaveBeenCalledTimes(1)
+    reloaded.bridge.dispose()
+  },
+)
+
+it.each(['rejected', 'cancelled'])('immediately releases a proposal after %s', async (outcome) => {
+  const s = setup()
+  const apply = vi.fn(async () => ({ ok: true, summary: 'must not execute', warnings: [] }))
+  const operations = [{ op: 'insert_text', text: 'private proposal text' }]
+  s.bridge.attachEditor({
+    propose: async (request: any) => ({
+      ...request,
+      operations,
+      planHash: 'released-plan',
+      summary: 'edit',
+      warnings: [],
+    }),
+    apply,
+  } as never)
+  s.emit(s.frame('propose_ops', { ops: operations }))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  s.emit({
+    type: 'agent:event',
+    protocolVersion: 1,
+    sessionId: 'session-1',
+    event: { type: 'editor:proposal-released', data: { operationId: 'operation-1', outcome } },
+  })
+  s.emit(
+    s.frame('apply_ops', { ops: operations }, { id: 'late-approval', planHash: 'released-plan' }),
+  )
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(s.results()[1].result.ok).toBe(false)
+  expect(apply).not.toHaveBeenCalled()
+  s.bridge.dispose()
+})
+
+it.each(['rejected', 'cancelled'])(
+  'deletes the retained save snapshot immediately after %s',
+  async (outcome) => {
+    const s = setup()
+    const cacheSet = vi.spyOn(BoundedEditorCache.prototype, 'set')
+    try {
+      s.bridge.attachEditor({
+        saveSnapshot: () => 'private full snapshot'.repeat(4096),
+        proposeSave: async () => ({
+          planHash: 'released-save-plan',
+          contentVersion: 1,
+          summary: 'save',
+          targets: [],
+          warnings: [],
+        }),
+      } as never)
+      s.emit(s.frame('propose_save'))
+      await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+      expect(s.results()[0].result.ok).toBe(true)
+      const index = cacheSet.mock.calls.findIndex(
+        ([key, value]) =>
+          key === 'operation-1' &&
+          value &&
+          typeof value === 'object' &&
+          ('snapshot' in value || 'contentVersion' in value),
+      )
+      expect(index).toBeGreaterThanOrEqual(0)
+      const cache = cacheSet.mock.contexts[index] as Map<string, unknown>
+      expect(cache.has('operation-1')).toBe(true)
+      s.emit({
+        type: 'agent:event',
+        protocolVersion: 1,
+        sessionId: 'session-1',
+        event: { type: 'editor:proposal-released', data: { operationId: 'operation-1', outcome } },
+      })
+      expect(cache.has('operation-1')).toBe(false)
+    } finally {
+      s.bridge.dispose()
+      cacheSet.mockRestore()
+    }
+  },
+)
+
+it('preserves a mutation that completes after bridge disposal for persistent replay', async () => {
+  const s = setup()
+  let finish!: (value: any) => void
+  const result = { ok: true, summary: 'completed after disposal', warnings: [] }
+  const apply = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const operations = [{ op: 'edit' }]
+  s.bridge.attachEditor({
+    propose: async (request: any) => ({
+      ...request,
+      operations,
+      planHash: 'late-plan',
+      summary: 'edit',
+      warnings: [],
+    }),
+    apply,
+  } as never)
+  s.emit(s.frame('propose_ops', { ops: operations }))
+  await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+  const request = s.frame(
+    'apply_ops',
+    { ops: operations },
+    { id: 'approval', planHash: 'late-plan' },
+  )
+  s.emit(request)
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(1))
+  s.bridge.dispose()
+  finish(result)
+  await vi.waitFor(() => expect(s.results()).toHaveLength(2))
+  expect(s.results()[1].result).toEqual(result)
+  const reloaded = setup({
+    getItem: (key: string) => s.values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      s.values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      s.values.delete(key)
+    },
+  })
+  reloaded.bridge.attachEditor({ apply } as never)
+  reloaded.emit(request)
+  await vi.waitFor(() => expect(reloaded.results()).toHaveLength(1))
+  expect(reloaded.results()[0].result).toEqual(result)
+  expect(apply).toHaveBeenCalledTimes(1)
+  reloaded.bridge.dispose()
 })
 
 it('journals thrown failures so retries do not rerun terminal commands', async () => {
@@ -257,7 +441,7 @@ it('evicts completed promises and journals beyond the per-document limit', async
     const frame = s.frame('read_html')
     frame.target.operationId = 'read-' + index
     s.emit(frame)
-    for (let turn = 0; turn < 8; turn++) await Promise.resolve()
+    await vi.waitFor(() => expect(s.results()).toHaveLength(index + 1), { interval: 1 })
   }
   await vi.waitFor(() => expect(s.results()).toHaveLength(130))
   expect(s.values.size).toBeLessThanOrEqual(129)
