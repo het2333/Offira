@@ -8,11 +8,12 @@ import {
   type AgentServerFrame,
   type ClientFrame,
   type ClientId,
+  type DocumentId,
 } from '@nexusdesk/protocol'
 import { WebSocket, WebSocketServer } from 'ws'
 
 import { acceptWebSocketOrigin } from './origin-policy'
-import { DocumentRegistry } from './document-registry'
+import { DocumentRegistry, type AuthorizedDocument } from './document-registry'
 
 const MAX_FRAME_BYTES = 1024 * 1024
 
@@ -20,6 +21,7 @@ export interface WsSessionOptions {
   origin: () => string
   hasSession(sessionId: string): boolean
   documents: DocumentRegistry
+  authorizedDocument(documentId: DocumentId): AuthorizedDocument | undefined
   onFrame?: (frame: ClientFrame, clientId: ClientId) => void
   onDisconnect?: (clientId: ClientId) => void
 }
@@ -92,10 +94,13 @@ export function installWsSessionServer(
       try {
         const frame = parseClientFrame(JSON.parse(data.toString()))
         switch (frame.type) {
-          case 'editor:register':
+          case 'editor:register': {
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
+            const authorized = options.authorizedDocument(frame.documentId)
+            if (authorized !== undefined) options.documents.refreshFromHost(authorized)
             options.documents.register(frame)
             break
+          }
           case 'editor:revision':
             if (frame.clientId !== clientId) throw new Error('client identity mismatch')
             options.documents.commitRevision(frame)

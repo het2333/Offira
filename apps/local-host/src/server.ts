@@ -185,7 +185,13 @@ export async function startLocalHost(
   const auth = createBootstrapAuth()
   const sessions = new Set<string>()
   const documents = options.documentRegistry ?? new DocumentRegistry()
-  const localDocuments = options.documentDrivers?.list() ?? options.documents ?? []
+  const localDocuments =
+    options.documentDrivers?.list() ?? options.documents?.map((document) => ({ ...document })) ?? []
+  const hostDocuments = new Map(localDocuments.map((document) => [document.documentId, document]))
+  const authorizedDocument = (documentId: string): LocalDocument | undefined =>
+    options.documentDrivers === undefined
+      ? hostDocuments.get(documentId)
+      : options.documentDrivers.list().find((document) => document.documentId === documentId)
   documents.initialize(localDocuments)
   const shellDocuments = localDocuments.map(
     ({ documentId, title, editorType, revision }) =>
@@ -365,6 +371,7 @@ export async function startLocalHost(
           }
           if (request.method === 'GET') {
             const preview = await driver.readPreview()
+            documents.refreshFromHost(driver.document)
             response.writeHead(200, {
               'Content-Type': preview.contentType,
               'Content-Length': preview.bytes.byteLength,
@@ -374,6 +381,7 @@ export async function startLocalHost(
             return
           }
           await driver.writePreview(await readBinaryBody(request))
+          documents.refreshFromHost(driver.document)
           response.writeHead(204, { 'Cache-Control': 'no-store' })
           response.end()
         } catch (error: unknown) {
@@ -404,6 +412,7 @@ export async function startLocalHost(
               )
             }
             const content = await driver.readContent()
+            documents.refreshFromHost(driver.document)
             response.writeHead(200, {
               'Content-Type': content.contentType,
               'Content-Length': content.bytes.byteLength,
@@ -421,11 +430,11 @@ export async function startLocalHost(
           }
           const revision = expectedRevision(request)
           const bytes = await readBinaryBody(request)
-          sendJson(
-            response,
-            200,
-            shellDocumentSummarySchema.parse(await driver.writeContent(bytes, revision)),
+          const summary = shellDocumentSummarySchema.parse(
+            await driver.writeContent(bytes, revision),
           )
+          documents.refreshFromHost(driver.document)
+          sendJson(response, 200, summary)
         } catch (error: unknown) {
           if (error instanceof HostError && error.code === 'UNSUPPORTED_CAPABILITY') {
             sendJson(response, 405, {
@@ -491,14 +500,11 @@ export async function startLocalHost(
         }
         try {
           if (!requireMethod(request, response, action === 'bootstrap' ? 'GET' : 'POST')) return
-          const result =
-            action === 'bootstrap'
-              ? await options.documentDrivers.bootstrap(documentId, origin)
-              : await options.documentDrivers.execute(
-                  documentId,
-                  action,
-                  await readJsonBody(request),
-                )
+          const driver = options.documentDrivers.require(documentId)
+          const result = action === 'bootstrap'
+            ? await driver.bootstrap(origin)
+            : await driver.execute(action, await readJsonBody(request))
+          documents.refreshFromHost(driver.document)
           sendJson(response, 200, result)
         } catch (error: unknown) {
           if (error instanceof HostError || error instanceof SyntaxError) {
@@ -571,6 +577,7 @@ export async function startLocalHost(
     origin: () => origin,
     hasSession: (sessionId) => sessions.has(sessionId),
     documents,
+    authorizedDocument,
     onFrame: (frame, clientId) => agentRouter?.handleClientFrame(frame, clientId),
     onDisconnect: (clientId) => agentRouter?.disconnectClient(clientId),
   })

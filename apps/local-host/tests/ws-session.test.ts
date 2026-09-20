@@ -7,7 +7,9 @@ import {
   type DocumentId,
   type Revision,
 } from '@nexusdesk/protocol'
+import type { ShellDocumentSummary } from '@nexusdesk/office-host'
 import { DocumentRegistry, DocumentRegistryError } from '../src/document-registry'
+import { DocumentDriverRegistry, type LocalDocumentDriver } from '../src/document-driver'
 import { startLocalHost, type RunningLocalHost } from '../src/server'
 
 let running: RunningLocalHost | undefined
@@ -277,6 +279,175 @@ describe('authenticated WebSocket session', () => {
     expect(documents.assertOwner({ documentId, clientId: current.clientId, revision }).clientId)
       .toBe(current.clientId)
     current.socket.close()
+  })
+
+  it('refreshes a detached Sheets document from its durable driver revision before reconnect', async () => {
+    const documents = new DocumentRegistry()
+    const driver: LocalDocumentDriver = {
+      document: {
+        documentId: 'sheet-1',
+        title: 'Forecast.xlsx',
+        editorType: 'sheets',
+        revision: 1,
+      },
+      async bootstrap() { return {} },
+      async execute() { return {} },
+      async close() {},
+    }
+    running = await startLocalHost({
+      documentRegistry: documents,
+      documentDrivers: new DocumentDriverRegistry([driver]),
+    })
+    const cookie = await sessionCookie(running)
+    const live = await openSession(running, cookie)
+    live.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-live',
+      clientId: live.clientId,
+      documentId: 'sheet-1',
+      editorType: 'sheets',
+      revision: 1,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient('sheet-1' as DocumentId, live.clientId).revision === 1
+      } catch {
+        return false
+      }
+    })
+    live.socket.send(JSON.stringify({
+      type: 'editor:revision',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'revision-live',
+      clientId: live.clientId,
+      documentId: 'sheet-1',
+      revision: 2,
+    }))
+    await until(() => documents.assertClient('sheet-1' as DocumentId, live.clientId).revision === 2)
+    live.socket.send(JSON.stringify({
+      type: 'editor:detach',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'detach-live',
+      clientId: live.clientId,
+      documentId: 'sheet-1',
+    }))
+    await until(() => {
+      try {
+        documents.assertClient('sheet-1' as DocumentId, live.clientId)
+        return false
+      } catch (error) {
+        return error instanceof DocumentRegistryError && error.code === 'DOCUMENT_DETACHED'
+      }
+    })
+
+    const reloaded = await openSession(running, cookie)
+    reloaded.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-reloaded',
+      clientId: reloaded.clientId,
+      documentId: 'sheet-1',
+      editorType: 'sheets',
+      revision: 1,
+    }))
+
+    await until(() => {
+      try {
+        return documents.assertClient('sheet-1' as DocumentId, reloaded.clientId).revision === 1
+      } catch {
+        return false
+      }
+    })
+    live.socket.close()
+    reloaded.socket.close()
+  })
+
+  it('refreshes a detached Docs document after an HTTP save advances the driver revision', async () => {
+    const documents = new DocumentRegistry()
+    const driver: LocalDocumentDriver = {
+      document: {
+        documentId: 'doc-1',
+        title: 'Report.docx',
+        editorType: 'docs',
+        revision: 1,
+      },
+      async bootstrap() { return {} },
+      async execute() { return {} },
+      async writeContent(_bytes, expectedRevision) {
+        if (expectedRevision !== driver.document.revision) throw new Error('stale revision')
+        driver.document.revision += 1
+        return { ...driver.document } as ShellDocumentSummary
+      },
+      async close() {},
+    }
+    running = await startLocalHost({
+      documentRegistry: documents,
+      documentDrivers: new DocumentDriverRegistry([driver]),
+    })
+    const cookie = await sessionCookie(running)
+    const beforeSave = await openSession(running, cookie)
+    beforeSave.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-before-save',
+      clientId: beforeSave.clientId,
+      documentId: 'doc-1',
+      editorType: 'docs',
+      revision: 1,
+    }))
+    await until(() => {
+      try {
+        return documents.assertClient('doc-1' as DocumentId, beforeSave.clientId).revision === 1
+      } catch {
+        return false
+      }
+    })
+    const saved = await fetch(`${running.origin}/api/documents/doc-1/content`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/octet-stream',
+        'If-Match': '1',
+      },
+      body: new Uint8Array([80, 75, 3, 4]),
+    })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toMatchObject({ revision: 2 })
+    expect(documents.assertOwner({
+      documentId: 'doc-1' as DocumentId,
+      clientId: beforeSave.clientId,
+      revision: 2 as Revision,
+    }).revision).toBe(2)
+    beforeSave.socket.close()
+    await until(() => {
+      try {
+        documents.assertClient('doc-1' as DocumentId, beforeSave.clientId)
+        return false
+      } catch (error) {
+        return error instanceof DocumentRegistryError && error.code === 'DOCUMENT_DETACHED'
+      }
+    })
+
+    const afterSave = await openSession(running, cookie)
+    afterSave.socket.send(JSON.stringify({
+      type: 'editor:register',
+      protocolVersion: PROTOCOL_VERSION,
+      id: 'register-after-save',
+      clientId: afterSave.clientId,
+      documentId: 'doc-1',
+      editorType: 'docs',
+      revision: 2,
+    }))
+
+    await until(() => {
+      try {
+        return documents.assertClient('doc-1' as DocumentId, afterSave.clientId).revision === 2
+      } catch {
+        return false
+      }
+    })
+    afterSave.socket.close()
   })
 
   it('broadcasts sequenced Shell changes after a persisted tab mutation', async () => {

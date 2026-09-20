@@ -72,6 +72,39 @@ export class DocumentRegistry {
     this.documents = initialized
   }
 
+  refreshFromHost(document: AuthorizedDocument): void {
+    const documentId = document.documentId as DocumentId
+    const current = this.documents.get(documentId)
+    if (current === undefined) {
+      throw new DocumentRegistryError(
+        'DOCUMENT_NOT_FOUND',
+        `document ${document.documentId} is not authorized`,
+      )
+    }
+    if (current.attached) {
+      if (current.editorType !== document.editorType) {
+        throw new DocumentRegistryError(
+          'WRONG_EDITOR',
+          `document ${document.documentId} is attached to editor ${current.editorType}`,
+        )
+      }
+      if (document.revision <= current.revision) return
+      const refreshed: AttachedDocument = {
+        ...current,
+        revision: document.revision as Revision,
+      }
+      this.documents.set(documentId, refreshed)
+      return
+    }
+    const refreshed: DetachedDocument = {
+      documentId,
+      editorType: document.editorType,
+      revision: document.revision as Revision,
+      attached: false,
+    }
+    this.documents.set(documentId, refreshed)
+  }
+
   register(registration: DocumentRegistration): AttachedDocument {
     const current = this.documents.get(registration.documentId)
     if (current === undefined) {
@@ -142,6 +175,7 @@ export class DocumentRegistry {
     if (record.clientId !== update.clientId) {
       throw new DocumentRegistryError('WRONG_CLIENT', `document ${update.documentId} belongs to another browser client`)
     }
+    if (update.revision === record.revision) return record
     if (update.revision !== record.revision + 1) {
       throw new DocumentRegistryError(
         'NON_MONOTONIC_REVISION',

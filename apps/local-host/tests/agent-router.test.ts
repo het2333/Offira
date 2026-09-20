@@ -1038,7 +1038,6 @@ describe('AgentRouter', () => {
     await until(() => sent.some(({ frame }) => frame.type === 'editor:request'))
     const original = sent.find(({ frame }) => frame.type === 'editor:request')!.frame
 
-    documents.commitRevision({ documentId, clientId, revision: 2 as Revision })
     router.disconnectClient(clientId)
     documents.detachClient(clientId)
     const reconnectedClientId = 'client-recovered' as ClientId
@@ -1046,7 +1045,7 @@ describe('AgentRouter', () => {
       documentId,
       clientId: reconnectedClientId,
       editorType: 'sheets',
-      revision: 2 as Revision,
+      revision,
     })
     router.handleClientFrame(
       {
@@ -1056,7 +1055,7 @@ describe('AgentRouter', () => {
         clientId: reconnectedClientId,
         documentId,
         editorType: 'sheets',
-        revision: 2 as Revision,
+        revision,
       },
       reconnectedClientId,
     )

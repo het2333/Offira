@@ -43,7 +43,12 @@ describe('DocumentRegistry', () => {
     expect(registryErrorCode(() => documents.assertOwner({ documentId, clientId, revision })))
       .toBe('STALE_REVISION')
     expect(documents.assertOwner({ documentId, clientId, revision: 5 as Revision }).revision).toBe(5)
-    expect(registryErrorCode(() => documents.commitRevision({ documentId, clientId, revision: 5 as Revision })))
+    expect(documents.commitRevision({
+      documentId,
+      clientId,
+      revision: 5 as Revision,
+    }).revision).toBe(5)
+    expect(registryErrorCode(() => documents.commitRevision({ documentId, clientId, revision })))
       .toBe('NON_MONOTONIC_REVISION')
     expect(registryErrorCode(() => documents.commitRevision({ documentId, clientId, revision: 7 as Revision })))
       .toBe('NON_MONOTONIC_REVISION')
@@ -125,5 +130,19 @@ describe('DocumentRegistry', () => {
     expect(registryErrorCode(() => documents.assertClient(documentId, clientId)))
       .toBe('DOCUMENT_DETACHED')
     expect(documents.assertClient(otherDocumentId, clientId).clientId).toBe(clientId)
+  })
+
+  it('does not let stale Host metadata reset an attached owner', () => {
+    const documents = registry()
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    documents.commitRevision({ documentId, clientId, revision: 5 as Revision })
+
+    documents.refreshFromHost({ documentId, editorType: 'sheets', revision })
+
+    expect(documents.assertOwner({
+      documentId,
+      clientId,
+      revision: 5 as Revision,
+    }).revision).toBe(5)
   })
 })
