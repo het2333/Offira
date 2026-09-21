@@ -5,10 +5,10 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join as join2 } from "node:path";
 import { loadLayeredEnv, loadProfileDirectory } from "@deepseek-ai/dsh-app-boot";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -15945,15 +15945,141 @@ function createSlidesTools(bridge) {
   ];
 }
 
+// src/office-session-binding.ts
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+var BINDING_FILE = "office-session-bindings.json";
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function boundedString(value, label, maxLength) {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+    throw new Error(`Invalid Office ${label}.`);
+  }
+  return value;
+}
+function strictKeys(value, allowed, label) {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`Invalid Office ${label}.`);
+  }
+}
+function validateBindingMap(value) {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.bindings)) {
+    throw new Error("Invalid Office Session binding map.");
+  }
+  const keys = /* @__PURE__ */ new Set();
+  const sessions = /* @__PURE__ */ new Set();
+  const bindings = value.bindings.map((entry) => {
+    if (!isRecord(entry)) throw new Error("Invalid Office Session binding map.");
+    strictKeys(entry, ["hostId", "documentId", "sessionId"], "Session binding map");
+    const binding = {
+      hostId: boundedString(entry.hostId, "Host identity", 256),
+      documentId: boundedString(entry.documentId, "document identity", 512),
+      sessionId: boundedString(entry.sessionId, "Session identity", 256)
+    };
+    const key = JSON.stringify([binding.hostId, binding.documentId]);
+    if (keys.has(key) || sessions.has(binding.sessionId)) {
+      throw new Error("Invalid Office Session binding map.");
+    }
+    keys.add(key);
+    sessions.add(binding.sessionId);
+    return binding;
+  });
+  return { version: 1, bindings };
+}
+var OfficeSessionBindingStore = class {
+  constructor(stateDirectory, createSessionId = () => `office-${randomUUID()}`) {
+    this.stateDirectory = stateDirectory;
+    this.createSessionId = createSessionId;
+  }
+  queue = Promise.resolve();
+  bindOfficeSession(hostId, documentId) {
+    const operation = this.queue.then(
+      () => this.bind(hostId, documentId),
+      () => this.bind(hostId, documentId)
+    );
+    this.queue = operation.then(() => void 0, () => void 0);
+    return operation;
+  }
+  async bind(hostIdValue, documentIdValue) {
+    const hostId = boundedString(hostIdValue, "Host identity", 256);
+    const documentId = boundedString(documentIdValue, "document identity", 512);
+    const path = join(this.stateDirectory, BINDING_FILE);
+    let state = { version: 1, bindings: [] };
+    try {
+      state = validateBindingMap(JSON.parse(await readFile(path, "utf8")));
+    } catch (error51) {
+      if (error51.code !== "ENOENT") {
+        throw new Error("Could not read the Office Session binding map.", { cause: error51 });
+      }
+    }
+    const existing = state.bindings.find(
+      (binding) => binding.hostId === hostId && binding.documentId === documentId
+    );
+    if (existing !== void 0) return existing.sessionId;
+    const sessionId = boundedString(this.createSessionId(), "Session identity", 256);
+    if (state.bindings.some((binding) => binding.sessionId === sessionId)) {
+      throw new Error("Office Session identity is already bound.");
+    }
+    const next = {
+      version: 1,
+      bindings: [...state.bindings, { hostId, documentId, sessionId }]
+    };
+    await mkdir(this.stateDirectory, { recursive: true });
+    const temporary = join(this.stateDirectory, `.${BINDING_FILE}.${randomUUID()}.tmp`);
+    await writeFile(temporary, `${JSON.stringify(next)}
+`, { encoding: "utf8", mode: 384 });
+    await rename(temporary, path);
+    return sessionId;
+  }
+};
+async function acquireOfficeAgent(input) {
+  const snapshot = await input.sessionPersistence.stat(input.sessionId);
+  if (snapshot === void 0) {
+    const handle3 = await input.agents.create({
+      sessionId: input.sessionId,
+      meta: { cwd: input.cwd },
+      agentOptions: input.agentOptions,
+      setup: input.setup
+    });
+    return { handle: handle3, resumed: false };
+  }
+  const handle2 = await input.agents.resume({
+    resumeSessionId: input.sessionId,
+    agentOptions: input.agentOptions,
+    setup: input.setup
+  });
+  try {
+    if (handle2.agent.inbox.hasPending) handle2.agent.inbox.clear();
+  } catch (error51) {
+    await Promise.resolve(handle2.dispose()).catch(() => void 0);
+    throw error51;
+  }
+  return { handle: handle2, resumed: true };
+}
+
 // src/index.ts
 function asRuntimeContext(value) {
   return value;
 }
-var [runtimeDir = "", profileDir = "", mode = "runtime", ...patchFiles] = process.argv.slice(2);
-var installAnchor = join(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
-var runtimeStateDir = mkdtempSync(join(tmpdir(), "nexusdesk-runtime-"));
+var [runtimeDir = "", profileDir = "", mode = "runtime", ...runtimeOptions] = process.argv.slice(2);
+var stateOptions = runtimeOptions.filter((argument) => argument.startsWith("--state-dir="));
+if (stateOptions.length > 1) throw new Error("runtime accepts only one --state-dir option");
+var explicitStateDirectory = stateOptions[0]?.slice("--state-dir=".length);
+if (explicitStateDirectory !== void 0 && !isAbsolute(explicitStateDirectory)) {
+  throw new Error("runtime --state-dir must be an absolute path");
+}
+var patchFiles = runtimeOptions.filter((argument) => !argument.startsWith("--state-dir="));
+var installAnchor = join2(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+var runtimeStateDir = explicitStateDirectory ?? mkdtempSync(join2(tmpdir(), "nexusdesk-runtime-"));
+mkdirSync(runtimeStateDir, { recursive: true });
 process.env.DSH_HOME = runtimeStateDir;
-process.once("exit", () => rmSync(runtimeStateDir, { recursive: true, force: true }));
+if (explicitStateDirectory === void 0) {
+  process.once("exit", () => rmSync(runtimeStateDir, { recursive: true, force: true }));
+}
+var officeSessionBindings = new OfficeSessionBindingStore(runtimeStateDir);
 function send(frame) {
   if (!process.connected || process.send === void 0) return;
   process.send(frame, (error51) => {
@@ -15963,6 +16089,7 @@ function send(frame) {
 }
 var replies = /* @__PURE__ */ new Map();
 var agents = /* @__PURE__ */ new Map();
+var pendingAgentAcquisitions = /* @__PURE__ */ new Map();
 var editorTargets = /* @__PURE__ */ new Map();
 var textBlocks = /* @__PURE__ */ new Map();
 var stopping;
@@ -15991,7 +16118,7 @@ process.on("message", (frame) => {
   });
 });
 function requestParent(frame, timeoutMs = 12e4) {
-  const id = `request-${randomUUID()}`;
+  const id = `request-${randomUUID2()}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       replies.delete(id);
@@ -16005,7 +16132,7 @@ function requestParent(frame, timeoutMs = 12e4) {
   });
 }
 function requestParentTracked(frame, timeoutMs = 12e4) {
-  const id = `request-${randomUUID()}`;
+  const id = `request-${randomUUID2()}`;
   return {
     id,
     reply: new Promise((resolve, reject) => {
@@ -16048,8 +16175,62 @@ async function openAgent(frame) {
   agents.set(frame.sessionId, created);
   return created;
 }
+function officeAgentSetup(editorType) {
+  return (agentContext, agent) => {
+    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent);
+  };
+}
+async function bindOfficeAgent(frame) {
+  const boundId = await officeSessionBindings.bindOfficeSession(frame.hostId, String(frame.documentId));
+  const sessionId = brandString(boundId);
+  const existing = agents.get(sessionId);
+  editorTargets.set(sessionId, {
+    sessionId,
+    documentId: frame.documentId,
+    clientId: frame.clientId,
+    editorType: frame.editorType,
+    revision: frame.revision
+  });
+  if (existing !== void 0) return { sessionId, resumed: true };
+  const ctx2 = asRuntimeContext((await boot).ctx);
+  const agentOptions = frame.provider !== void 0 && frame.model !== void 0 ? { provider: frame.provider, model: frame.model } : ctx2.agentDefaultModel.currentSelection();
+  let acquisition = pendingAgentAcquisitions.get(sessionId);
+  if (acquisition === void 0) {
+    acquisition = acquireOfficeAgent({
+      sessionId,
+      cwd: frame.cwd,
+      setup: officeAgentSetup(frame.editorType),
+      agentOptions,
+      sessionPersistence: ctx2.sessionPersistence,
+      agents: ctx2.agents
+    }).then((acquired) => {
+      const handle2 = acquired.handle;
+      agents.set(sessionId, handle2);
+      return { handle: handle2, resumed: acquired.resumed };
+    });
+    pendingAgentAcquisitions.set(sessionId, acquisition);
+    void acquisition.finally(() => pendingAgentAcquisitions.delete(sessionId)).catch(() => void 0);
+  }
+  try {
+    const acquired = await acquisition;
+    return { sessionId, resumed: acquired.resumed };
+  } catch (error51) {
+    editorTargets.delete(sessionId);
+    throw error51;
+  }
+}
 async function handle(frame) {
   switch (frame.type) {
+    case "office:bind": {
+      const bound = await bindOfficeAgent(frame);
+      send({
+        type: "office:bound",
+        protocolVersion: PROTOCOL_VERSION,
+        id: frame.id,
+        ...bound
+      });
+      return;
+    }
     case "agent:start": {
       editorTargets.set(frame.sessionId, {
         sessionId: frame.sessionId,

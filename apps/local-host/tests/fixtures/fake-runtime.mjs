@@ -18,7 +18,19 @@ if (process.argv[2] === 'idle-crash') {
 }
 
 process.on('message', (frame) => {
-  if (frame.type === 'agent:start') {
+  if (frame.type === 'office:bind') {
+    if (frame.documentId === 'crash-bind') {
+      process.exit(20)
+      return
+    }
+    process.send?.({
+      type: 'office:bound',
+      protocolVersion: 1,
+      id: frame.id,
+      sessionId: `native-${frame.documentId}`,
+      resumed: false,
+    })
+  } else if (frame.type === 'agent:start') {
     activeSession = frame.sessionId
     activeTurn = frame
     process.send?.({

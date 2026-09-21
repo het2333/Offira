@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 import { loadLayeredEnv, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -33,6 +33,11 @@ import { createPdfTools } from './pdf-tools'
 import { createSheetsTools } from './sheets-tools'
 import { createSlidesTools } from './slides-tools'
 import {
+  OfficeSessionBindingStore,
+  acquireOfficeAgent,
+  type OfficeAgentHandle,
+} from './office-session-binding'
+import {
   PROTOCOL_VERSION,
   validateRuntimeEditorResponse,
   type HarnessDurableEvent,
@@ -43,6 +48,7 @@ import {
 
 interface AgentHandle {
   agent: {
+    inbox: { readonly hasPending: boolean; clear(): void }
     followup(message: unknown): void
     cancel(cause: { kind: 'user' }, options?: { keepInbox?: boolean }): void
   }
@@ -55,6 +61,10 @@ interface RuntimeContext {
   }
   agents: {
     create(options: unknown): Promise<unknown>
+    resume(options: unknown): Promise<unknown>
+  }
+  sessionPersistence: {
+    stat(sessionId: unknown): Promise<unknown | undefined>
   }
   profileContext: {
     startedBundles: unknown
@@ -96,14 +106,25 @@ function asRuntimeContext(value: unknown): RuntimeContext {
   return value as RuntimeContext
 }
 
-const [runtimeDir = '', profileDir = '', mode = 'runtime', ...patchFiles] = process.argv.slice(2)
+const [runtimeDir = '', profileDir = '', mode = 'runtime', ...runtimeOptions] = process.argv.slice(2)
+const stateOptions = runtimeOptions.filter((argument) => argument.startsWith('--state-dir='))
+if (stateOptions.length > 1) throw new Error('runtime accepts only one --state-dir option')
+const explicitStateDirectory = stateOptions[0]?.slice('--state-dir='.length)
+if (explicitStateDirectory !== undefined && !isAbsolute(explicitStateDirectory)) {
+  throw new Error('runtime --state-dir must be an absolute path')
+}
+const patchFiles = runtimeOptions.filter((argument) => !argument.startsWith('--state-dir='))
 const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
 // The product runtime never composes the user's general-purpose Harness patch.
 // Provider selection remains available through the pinned base profile and
 // inherited provider environment, while plugin/tool composition is app-owned.
-const runtimeStateDir = mkdtempSync(join(tmpdir(), 'nexusdesk-runtime-'))
+const runtimeStateDir = explicitStateDirectory ?? mkdtempSync(join(tmpdir(), 'nexusdesk-runtime-'))
+mkdirSync(runtimeStateDir, { recursive: true })
 process.env.DSH_HOME = runtimeStateDir
-process.once('exit', () => rmSync(runtimeStateDir, { recursive: true, force: true }))
+if (explicitStateDirectory === undefined) {
+  process.once('exit', () => rmSync(runtimeStateDir, { recursive: true, force: true }))
+}
+const officeSessionBindings = new OfficeSessionBindingStore(runtimeStateDir)
 
 function send(frame: RuntimeResponseFrame): void {
   if (!process.connected || process.send === undefined) return
@@ -114,6 +135,10 @@ function send(frame: RuntimeResponseFrame): void {
 
 const replies = new Map<string, (frame: RuntimeRequestFrame) => void>()
 const agents = new Map<string, AgentHandle>()
+const pendingAgentAcquisitions = new Map<
+  string,
+  Promise<{ handle: AgentHandle; resumed: boolean }>
+>()
 const editorTargets = new Map<
   string,
   {
@@ -228,8 +253,71 @@ async function openAgent(
   return created
 }
 
+function officeAgentSetup(editorType: string) {
+  return (
+    agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] },
+    agent: object,
+  ) => {
+    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent)
+  }
+}
+
+async function bindOfficeAgent(
+  frame: Extract<RuntimeRequestFrame, { type: 'office:bind' }>,
+): Promise<{ sessionId: SessionId; resumed: boolean }> {
+  const boundId = await officeSessionBindings.bindOfficeSession(frame.hostId, String(frame.documentId))
+  const sessionId = brandString(boundId) as unknown as SessionId
+  const existing = agents.get(sessionId)
+  editorTargets.set(sessionId, {
+    sessionId,
+    documentId: frame.documentId,
+    clientId: frame.clientId,
+    editorType: frame.editorType,
+    revision: frame.revision,
+  })
+  if (existing !== undefined) return { sessionId, resumed: true }
+  const ctx = asRuntimeContext((await boot).ctx)
+  const agentOptions = frame.provider !== undefined && frame.model !== undefined
+    ? { provider: frame.provider, model: frame.model }
+    : ctx.agentDefaultModel.currentSelection()
+  let acquisition = pendingAgentAcquisitions.get(sessionId)
+  if (acquisition === undefined) {
+    acquisition = acquireOfficeAgent({
+      sessionId,
+      cwd: frame.cwd,
+      setup: officeAgentSetup(frame.editorType),
+      agentOptions,
+      sessionPersistence: ctx.sessionPersistence as never,
+      agents: ctx.agents as never,
+    }).then((acquired) => {
+      const handle = acquired.handle as OfficeAgentHandle as AgentHandle
+      agents.set(sessionId, handle)
+      return { handle, resumed: acquired.resumed }
+    })
+    pendingAgentAcquisitions.set(sessionId, acquisition)
+    void acquisition.finally(() => pendingAgentAcquisitions.delete(sessionId)).catch(() => undefined)
+  }
+  try {
+    const acquired = await acquisition
+    return { sessionId, resumed: acquired.resumed }
+  } catch (error) {
+    editorTargets.delete(sessionId)
+    throw error
+  }
+}
+
 async function handle(frame: RuntimeRequestFrame): Promise<void> {
   switch (frame.type) {
+    case 'office:bind': {
+      const bound = await bindOfficeAgent(frame)
+      send({
+        type: 'office:bound',
+        protocolVersion: PROTOCOL_VERSION,
+        id: frame.id,
+        ...bound,
+      })
+      return
+    }
     case 'agent:start': {
       editorTargets.set(frame.sessionId, {
         sessionId: frame.sessionId,

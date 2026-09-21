@@ -41,6 +41,25 @@ function collect(target: RuntimeResponseFrame[], predicate: () => boolean): Prom
 }
 
 describe('HarnessSupervisor', () => {
+  it('binds a native Office Session without starting a prompt', async () => {
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const frames: RuntimeResponseFrame[] = []
+    supervisor.onFrame((frame) => frames.push(frame))
+    await supervisor.ready()
+
+    const result = await supervisor.bindOfficeSession({
+      hostId: 'host-a',
+      documentId: 'document-1' as DocumentId,
+      clientId: 'client-1' as ClientId,
+      editorType: 'sheets',
+      revision: 1 as Revision,
+      cwd: join(process.cwd(), 'tests'),
+    })
+
+    expect(result).toEqual({ sessionId: 'native-document-1' as SessionId, resumed: false })
+    expect(frames.some((frame) => frame.type === 'agent:event')).toBe(false)
+  })
+
   it('streams a normal turn and reports its terminal event', async () => {
     supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
     const frames: RuntimeResponseFrame[] = []
@@ -112,5 +131,21 @@ describe('HarnessSupervisor', () => {
 
     expect(exits).toHaveLength(1)
     expect(exits[0]?.activeSessions).toEqual([])
+  })
+
+  it('rejects an in-flight native bind when its runtime exits', async () => {
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    await supervisor.ready()
+
+    const binding = supervisor.bindOfficeSession({
+      hostId: 'host-a',
+      documentId: 'crash-bind' as DocumentId,
+      clientId: 'client-1' as ClientId,
+      editorType: 'sheets',
+      revision: 1 as Revision,
+      cwd: join(process.cwd(), 'tests'),
+    })
+
+    await expect(binding).rejects.toThrow(/exited|disconnected/i)
   })
 })

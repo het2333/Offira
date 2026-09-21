@@ -43,7 +43,12 @@ const running = await startLocalHost({
   },
   runtimeCommand: {
     entry: resolve(runtimePackage, 'lib/index.mjs'),
-    args: [repositoryRoot, resolve(runtimePackage, 'profile'), 'runtime'],
+    args: [
+      repositoryRoot,
+      resolve(runtimePackage, 'profile'),
+      'runtime',
+      `--state-dir=${resolve(nexusdeskAppDataDirectory(), 'harness-runtime')}`,
+    ],
   },
   documentDrivers: new DocumentDriverRegistry(drivers),
 })

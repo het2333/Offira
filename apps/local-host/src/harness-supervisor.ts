@@ -8,6 +8,7 @@ import {
   type RuntimeEditorResponseFrame,
   type RuntimeResponseFrame,
 } from '@nexusdesk/runtime-host/protocol'
+import type { OfficeEditorType } from '@nexusdesk/runtime-host/office-session-binding'
 
 const SHUTDOWN_GRACE_MS = 5_000
 const TERM_GRACE_MS = 3_000
@@ -31,6 +32,17 @@ export interface StartTurnInput {
   model?: string
 }
 
+export interface BindOfficeSessionInput {
+  hostId: string
+  documentId: DocumentId
+  clientId: ClientId
+  editorType: OfficeEditorType
+  revision: Revision
+  cwd: string
+  provider?: string
+  model?: string
+}
+
 export interface RuntimeExit {
   code: number | null
   signal: NodeJS.Signals | null
@@ -48,6 +60,13 @@ export class HarnessSupervisor {
   private readonly frames = new Set<FrameListener>()
   private readonly exits = new Set<ExitListener>()
   private readonly activeSessions = new Set<SessionId>()
+  private readonly pendingBindings = new Map<
+    string,
+    {
+      resolve(value: { sessionId: SessionId; resumed: boolean }): void
+      reject(error: Error): void
+    }
+  >()
   private readyPromise!: Promise<void>
   private resolveReady!: () => void
 
@@ -77,6 +96,26 @@ export class HarnessSupervisor {
       protocolVersion: PROTOCOL_VERSION,
       id: `turn-${randomUUID()}`,
       ...input,
+    })
+  }
+
+  bindOfficeSession(
+    input: BindOfficeSessionInput,
+  ): Promise<{ sessionId: SessionId; resumed: boolean }> {
+    const id = `office-bind-${randomUUID()}`
+    return new Promise((resolve, reject) => {
+      this.pendingBindings.set(id, { resolve, reject })
+      try {
+        this.send({
+          type: 'office:bind',
+          protocolVersion: PROTOCOL_VERSION,
+          id,
+          ...input,
+        })
+      } catch (error) {
+        this.pendingBindings.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 
@@ -128,6 +167,13 @@ export class HarnessSupervisor {
     this.child = child
     child.on('message', (frame: RuntimeResponseFrame) => {
       if (frame.type === 'ready') this.resolveReady()
+      if (frame.type === 'office:bound') {
+        const pending = this.pendingBindings.get(frame.id)
+        if (pending !== undefined) {
+          this.pendingBindings.delete(frame.id)
+          pending.resolve({ sessionId: frame.sessionId, resumed: frame.resumed })
+        }
+      }
       if (frame.type === 'agent:event' && frame.event.type === 'turn/end') {
         this.activeSessions.delete(frame.sessionId)
       }
@@ -137,6 +183,10 @@ export class HarnessSupervisor {
       if (this.child === child) this.child = undefined
       const activeSessions = [...this.activeSessions]
       this.activeSessions.clear()
+      for (const pending of this.pendingBindings.values()) {
+        pending.reject(new Error(`Harness runtime exited during Office Session binding (${String(code ?? signal)})`))
+      }
+      this.pendingBindings.clear()
       for (const listener of this.exits) listener({ code, signal, activeSessions })
       if (!this.stopping) {
         this.restartTimer = setTimeout(() => this.launch(), this.options.restartDelayMs ?? 1_000)

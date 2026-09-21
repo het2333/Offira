@@ -14,6 +14,13 @@ import type {
   SessionId,
 } from '@nexusdesk/protocol'
 import type { RuntimeResponseFrame } from '@nexusdesk/runtime-host/protocol'
+import {
+  freezeOfficeTurnContext,
+  officeTurnContextText,
+  type OfficeEditorType,
+  type OfficeSelection,
+  type OfficeTurnContext,
+} from '@nexusdesk/runtime-host/office-session-binding'
 
 import { DocumentRegistry } from './document-registry'
 import { HarnessSupervisor } from './harness-supervisor'
@@ -23,6 +30,33 @@ import { WorkingCopyCoordinator, isWorkingCopyMutation } from './working-copy-co
 interface SessionOwner {
   clientId: ClientId
   documentId: DocumentId
+}
+
+interface NativeSessionOwner extends SessionOwner {
+  hostId: string
+}
+
+export interface BindNativeSessionInput {
+  hostId: string
+  documentId: DocumentId
+  clientId: ClientId
+  cwd: string
+  provider?: string
+  model?: string
+}
+
+export interface PrepareNativeTurnInput {
+  requestId: string
+  sessionId: SessionId
+  clientId: ClientId
+  selection: OfficeSelection | unknown
+}
+
+export interface PreparedNativeTurn {
+  requestId: string
+  sessionId: SessionId
+  context: OfficeTurnContext
+  contextText: string
 }
 
 interface ApprovalOwner extends SessionOwner {
@@ -57,6 +91,7 @@ export interface AgentRouterOptions {
 /** Routes one runtime to authenticated browser/document owners. */
 export class AgentRouter {
   private readonly sessions = new Map<SessionId, SessionOwner>()
+  private readonly nativeSessions = new Map<SessionId, NativeSessionOwner>()
   private readonly approvals = new Map<string, ApprovalOwner>()
   private readonly grantedApprovals = new Map<string, Omit<ApprovalOwner, 'timer'>>()
   private readonly editorOperations = new Map<OperationId, EditorOperationOwner>()
@@ -80,6 +115,64 @@ export class AgentRouter {
         this.sessions.delete(sessionId)
       }
       this.clearApprovals()
+    })
+  }
+
+  async bindNativeSession(input: BindNativeSessionInput): Promise<SessionId> {
+    const document = this.options.documents.assertClient(input.documentId, input.clientId)
+    if (!isNativeEditorType(document.editorType)) {
+      throw new Error(`native Office Session binding does not support ${document.editorType}`)
+    }
+    const result = await this.options.supervisor.bindOfficeSession({
+      hostId: input.hostId,
+      documentId: input.documentId,
+      clientId: input.clientId,
+      editorType: document.editorType,
+      revision: document.revision,
+      cwd: input.cwd,
+      ...(input.provider === undefined ? {} : { provider: input.provider }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+    })
+    const existing = this.sessions.get(result.sessionId)
+    if (existing !== undefined && existing.documentId !== input.documentId) {
+      throw new Error(`native session ${result.sessionId} is already bound to another document`)
+    }
+    const owner = { hostId: input.hostId, clientId: input.clientId, documentId: input.documentId }
+    this.sessions.set(result.sessionId, owner)
+    this.nativeSessions.set(result.sessionId, owner)
+    return result.sessionId
+  }
+
+  assertNativeSessionOwner(sessionId: SessionId, clientId: ClientId): NativeSessionOwner {
+    const owner = this.nativeSessions.get(sessionId)
+    if (owner === undefined || owner.clientId !== clientId) {
+      throw new Error(`client ${clientId} does not own native session ${sessionId}`)
+    }
+    this.options.documents.assertClient(owner.documentId, clientId)
+    return owner
+  }
+
+  prepareNativeTurn(input: PrepareNativeTurnInput): PreparedNativeTurn {
+    if (typeof input.requestId !== 'string' || input.requestId.length === 0 || input.requestId.length > 256) {
+      throw new Error('Invalid native Office request identity.')
+    }
+    const owner = this.assertNativeSessionOwner(input.sessionId, input.clientId)
+    const document = this.options.documents.assertClient(owner.documentId, input.clientId)
+    if (!isNativeEditorType(document.editorType)) {
+      throw new Error(`native Office Session binding does not support ${document.editorType}`)
+    }
+    const context = freezeOfficeTurnContext({
+      hostId: owner.hostId,
+      documentId: String(owner.documentId),
+      editorType: document.editorType,
+      revision: document.revision,
+      selection: input.selection,
+    })
+    return Object.freeze({
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      context,
+      contextText: officeTurnContextText(context),
     })
   }
 
@@ -332,6 +425,7 @@ export class AgentRouter {
     this.clearApprovals()
     this.grantedApprovals.clear()
     this.deliveredEditorResults.clear()
+    this.nativeSessions.clear()
   }
 
   private assertSessionOwner(sessionId: SessionId, clientId: ClientId): SessionOwner {
@@ -641,6 +735,10 @@ export class AgentRouter {
       this.options.supervisor.respondApproval(frame.id, 'unavailable')
     }
   }
+}
+
+function isNativeEditorType(editorType: string): editorType is OfficeEditorType {
+  return editorType === 'sheets' || editorType === 'docs' || editorType === 'slides'
 }
 
 function sameTarget(left: MutationTarget, right: MutationTarget): boolean {

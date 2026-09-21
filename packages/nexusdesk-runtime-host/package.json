@@ -7,7 +7,8 @@
   "exports": {
     ".": "./lib/index.mjs",
     "./protocol": "./src/protocol.ts",
-    "./projection": "./src/projection.ts"
+    "./projection": "./src/projection.ts",
+    "./office-session-binding": "./src/office-session-binding.ts"
   },
   "scripts": {
     "build": "node build.mjs",

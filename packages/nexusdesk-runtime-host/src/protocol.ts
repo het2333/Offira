@@ -9,6 +9,7 @@ import type {
   Revision,
   SessionId,
 } from '@nexusdesk/protocol'
+import type { OfficeEditorType } from './office-session-binding'
 
 export { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 import { parseAgentToolResult, persistenceReferenceSchema } from '@nexusdesk/protocol'
@@ -36,6 +37,17 @@ interface RuntimeFrameBase {
 }
 
 export type RuntimeRequestFrame =
+  | (RuntimeFrameBase & {
+      type: 'office:bind'
+      hostId: string
+      documentId: DocumentId
+      clientId: ClientId
+      editorType: OfficeEditorType
+      revision: Revision
+      cwd: string
+      provider?: string
+      model?: string
+    })
   | (RuntimeFrameBase & {
       type: 'agent:start'
       sessionId: SessionId
@@ -69,6 +81,13 @@ export type RuntimeResponseFrame =
       }
     }
   | { type: 'fatal'; protocolVersion: number; message: string }
+  | {
+      type: 'office:bound'
+      protocolVersion: number
+      id: string
+      sessionId: SessionId
+      resumed: boolean
+    }
   | { type: 'shutdown-complete'; protocolVersion: number }
   | AgentEventFrame
   | {

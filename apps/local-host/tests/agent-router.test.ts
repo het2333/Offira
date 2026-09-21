@@ -35,6 +35,95 @@ afterEach(async () => {
 })
 
 describe('AgentRouter', () => {
+  it('binds a Host-authorized native Session and prepares an immutable authoritative turn', async () => {
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const bind = vi.spyOn(supervisor, 'bindOfficeSession').mockResolvedValue({
+      sessionId: 'native-session-1' as SessionId,
+      resumed: false,
+    })
+    const router = new AgentRouter({
+      supervisor,
+      documents,
+      operations: new OperationStore(),
+      sendToClient: vi.fn(),
+    })
+    await supervisor.ready()
+
+    const bound = await router.bindNativeSession({
+      hostId: 'host-a', documentId, clientId, cwd: '/workspace',
+    })
+    const selection = {
+      kind: 'sheets', sheetId: 'sheet-1', a1: 'C1:C3', columns: ['Revenue'],
+    }
+    const prepared = router.prepareNativeTurn({
+      requestId: 'native-request-1', sessionId: bound, clientId, selection,
+    })
+    selection.a1 = 'Z99'
+
+    expect(bind).toHaveBeenCalledWith({
+      hostId: 'host-a', documentId, clientId, editorType: 'sheets', revision, cwd: '/workspace',
+    })
+    expect(prepared).toMatchObject({
+      requestId: 'native-request-1',
+      sessionId: 'native-session-1',
+      context: {
+        hostId: 'host-a', documentId, editorType: 'sheets', revision,
+        selection: { kind: 'sheets', sheetId: 'sheet-1', a1: 'C1:C3', columns: ['Revenue'] },
+      },
+    })
+    expect(prepared.contextText).toContain('"a1":"C1:C3"')
+    expect(Object.isFrozen(prepared.context)).toBe(true)
+    expect(() => router.prepareNativeTurn({
+      requestId: '', sessionId: bound, clientId, selection,
+    })).toThrow(/request identity/i)
+    router.dispose()
+  })
+
+  it('rejects native binding unless the browser owns a registered supported editor', async () => {
+    const pdfDocument = 'document-pdf' as DocumentId
+    const documents = new DocumentRegistry([
+      { documentId, editorType: 'docs', revision },
+      { documentId: pdfDocument, editorType: 'pdf', revision },
+    ])
+    documents.register({ documentId, clientId, editorType: 'docs', revision })
+    documents.register({ documentId: pdfDocument, clientId, editorType: 'pdf', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const bind = vi.spyOn(supervisor, 'bindOfficeSession')
+    const router = new AgentRouter({
+      supervisor, documents, operations: new OperationStore(), sendToClient: vi.fn(),
+    })
+    await supervisor.ready()
+
+    await expect(router.bindNativeSession({
+      hostId: 'host-a', documentId, clientId: 'attacker' as ClientId, cwd: '/workspace',
+    })).rejects.toThrow(/another browser client/i)
+    await expect(router.bindNativeSession({
+      hostId: 'host-a', documentId: pdfDocument, clientId, cwd: '/workspace',
+    })).rejects.toThrow(/does not support/i)
+    expect(bind).not.toHaveBeenCalled()
+    router.dispose()
+  })
+
+  it('does not publish native ownership when the runtime bind fails', async () => {
+    const documents = new DocumentRegistry([{ documentId, editorType: 'slides', revision }])
+    documents.register({ documentId, clientId, editorType: 'slides', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    vi.spyOn(supervisor, 'bindOfficeSession').mockRejectedValue(new Error('persistence unavailable'))
+    const router = new AgentRouter({
+      supervisor, documents, operations: new OperationStore(), sendToClient: vi.fn(),
+    })
+    await supervisor.ready()
+
+    await expect(router.bindNativeSession({
+      hostId: 'host-a', documentId, clientId, cwd: '/workspace',
+    })).rejects.toThrow('persistence unavailable')
+    expect(() => router.assertNativeSessionOwner('native-session-1' as SessionId, clientId))
+      .toThrow(/does not own native session/i)
+    router.dispose()
+  })
+
   it.each([
     { label: 'document', target: { documentId: 'document-2' as DocumentId } },
     { label: 'editor type', target: { editorType: 'docs' } },
