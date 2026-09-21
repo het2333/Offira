@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -336,12 +336,10 @@ export class OfficeSessionBindingStore {
       await rename(candidatePath, lockPath)
     } catch (error) {
       await rm(candidatePath, { recursive: true, force: true })
-      try {
-        await stat(lockPath)
-        return undefined
-      } catch {
-        throw error
-      }
+      // The owner may release its lock before contender cleanup finishes.
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST' || code === 'ENOTEMPTY') return undefined
+      throw error
     }
     return async () => {
       const owner = await readBindingLockOwner(lockPath)

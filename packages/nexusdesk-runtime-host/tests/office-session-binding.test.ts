@@ -155,6 +155,58 @@ describe('OfficeSessionBindingStore', () => {
       .resolves.toBe('office-session-recovered')
   }, 10_000)
 
+  it('retries when the owner releases its lock during contender cleanup', async () => {
+    const directory = await stateDirectory()
+    const script = `
+      import fs from 'node:fs/promises'
+      import { syncBuiltinESMExports } from 'node:module'
+      import { join } from 'node:path'
+      import { OfficeSessionBindingStore } from ${JSON.stringify(bindingModuleUrl)}
+      const directory = process.env.NEXUSDESK_TEST_STATE_DIRECTORY
+      const owner = new OfficeSessionBindingStore(directory)
+      const releaseOwner = await owner.tryAcquireBindingLock(
+        join(directory, '.office-session-bindings.lock'),
+      )
+      if (!releaseOwner) throw new Error('Could not install the initial owner')
+      const originalRm = fs.rm
+      let released = false
+      fs.rm = async (path, options) => {
+        await originalRm(path, options)
+        // Schedule a normal owner release after the contender's real collision.
+        if (!released && path.startsWith(join(directory, '.office-session-bindings.candidate-'))) {
+          released = true
+          await releaseOwner()
+        }
+      }
+      syncBuiltinESMExports()
+      try {
+        const contender = new OfficeSessionBindingStore(
+          directory, () => 'office-session-after-release',
+          { lockTimeoutMs: 500, lockRetryMs: 1 },
+        )
+        process.stdout.write(await contender.bindOfficeSession('host-a', 'document-a'))
+      } finally {
+        fs.rm = originalRm
+        syncBuiltinESMExports()
+        if (!released) await releaseOwner()
+      }
+    `
+
+    await expect(execFileAsync(
+      process.execPath,
+      ['--import', 'tsx/esm', '--input-type=module', '--eval', script],
+      {
+        cwd: fileURLToPath(new URL('..', import.meta.url)),
+        env: { ...process.env, NEXUSDESK_TEST_STATE_DIRECTORY: directory },
+      },
+    )).resolves.toMatchObject({ stdout: 'office-session-after-release' })
+    expect(JSON.parse(await readFile(join(directory, 'office-session-bindings.json'), 'utf8')))
+      .toEqual({
+        version: 1,
+        bindings: [{ hostId: 'host-a', documentId: 'document-a', sessionId: 'office-session-after-release' }],
+      })
+  }, 30_000)
+
   it('times out without deleting a lock owned by a live runtime', async () => {
     const directory = await stateDirectory()
     await installBindingLock(directory, { token: 'active-runtime', pid: process.pid })
