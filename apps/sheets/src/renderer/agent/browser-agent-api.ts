@@ -32,6 +32,8 @@ export interface BrowserAgentBridge {
   readonly agentApi: AgentApi
   attachEditor(adapter: EditorAdapter): void
   client(): { clientId: ClientId | undefined; attached: boolean }
+  /** Existing authenticated socket carrier; consumers must not create a second client. */
+  transportClient(): NexusClient
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
   setHydrated(state: WorkingCopyBootstrap | null): void
@@ -472,6 +474,9 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
         attached:
           options.client.state === 'ready' && (!options.workingCopy || registration.attached),
       }
+    },
+    transportClient() {
+      return options.client
     },
     consumeApproval(approvalId, planHash) {
       if (approvals.get(approvalId) !== planHash) return false

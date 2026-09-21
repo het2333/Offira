@@ -424,10 +424,12 @@ import {
 } from './WorkbookVisuals'
 import { ChartFormatPane, SelectDataDialog } from './ChartPanels'
 import { handleSheetsControl, type ControlRequest } from './control'
+import { nativeHarnessEnabled } from './native-harness'
 
 // Source sheet id of an in-flight copy-sheet command; the next insert-sheet
 // mutation is that copy and must journal as a duplicate, not a blank add.
 let pendingCopySource: string | undefined
+const NATIVE_HARNESS_ENABLED = nativeHarnessEnabled(window.location.search)
 
 /// Plain text of a rich-text cell: neither the raw model nor the view model
 /// materializes a v for those — the text lives in the p document. The
@@ -4589,6 +4591,43 @@ export function App(): React.JSX.Element {
         />
       )}
       <ExcelShell
+        {...(NATIVE_HARNESS_ENABLED
+          ? {
+              nativeHarnessCaptureSnapshot: () => {
+                const host = window.nexusdeskBrowserHost
+                const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
+                const worksheet = workbook?.getActiveSheet()
+                if (host === undefined || workbook == null || worksheet == null) {
+                  throw new Error('当前工作簿尚未就绪，请稍后重试。')
+                }
+                const sheetId = worksheet.getSheetId()
+                if (!sheetId) throw new Error('无法确认当前工作表。')
+                let a1: string | null = null
+                let columns: readonly string[] | null = null
+                const range = workbook.getActiveRange()
+                if (range != null) {
+                  const extent = sheetDataExtent(worksheet)
+                  const bounds = clampBoundsToExtent(range.getRange(), extent, {
+                    rowCount: worksheet.getMaxRows(),
+                    columnCount: worksheet.getMaxColumns(),
+                  })
+                  a1 = boundsToA1(bounds)
+                  columns = columnScopeHeaders(bounds, extent, (column) =>
+                    String(worksheet.getRange(0, column, 1, 1).getDisplayValue() ?? ''),
+                  )
+                }
+                return {
+                  revision: host.document.revision,
+                  selection: {
+                    kind: 'sheets',
+                    sheetId,
+                    a1,
+                    ...(columns === null ? {} : { columns }),
+                  },
+                }
+              },
+            }
+          : {})}
         prompt={prompt}
         preview={preview}
         sheetHasContent={sheetHasContent}

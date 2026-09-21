@@ -1768,6 +1768,27 @@ button.check-item:hover {
   color: var(--color-text-primary);
 }
 
+.native-harness-panel-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.native-harness-panel-error {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: 24px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.native-harness-collapse {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+}
+
 /* Collapsed rail: identical to the slides .ai-rail — plain white strip,
  * hairline right border, no float shadow */
 .copilot.collapsed {

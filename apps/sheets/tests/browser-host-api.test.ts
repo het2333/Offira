@@ -195,6 +195,7 @@ describe('browser agent bridge', () => {
     bridge.attachEditor(adapter)
 
     expect(bridge.client()).toEqual({ clientId: 'client-1', attached: true })
+    expect(bridge.transportClient()).toBe(client)
 
     client.emit({
       type: 'editor:request',

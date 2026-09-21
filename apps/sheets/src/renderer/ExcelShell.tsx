@@ -60,6 +60,8 @@ import { ConsolidateDialog } from './ConsolidateDialog'
 import type { ConsolidateConfig } from './consolidate'
 import { HeaderFooterDialog, type HeaderFooterResult } from './HeaderFooterDialog'
 import type { HeaderFooterParts } from './edit-journal'
+import type { HarnessPanelSnapshot } from '@nexusdesk/web-client'
+import { NativeHarnessPanel } from './native-harness'
 
 // No File tab: file commands live in the macOS
 // application menu (File → Open/Save/Save As) and the toolbar icons.
@@ -161,6 +163,7 @@ function ToolSymbol({ symbol }: { readonly symbol: string }): React.JSX.Element 
 }
 
 interface ExcelShellProps {
+  readonly nativeHarnessCaptureSnapshot?: () => HarnessPanelSnapshot
   readonly prompt: string
   readonly preview: ChangePlan | null
   readonly selectionFormat: SelectionFormat | null
@@ -312,6 +315,7 @@ export interface PageLayoutEcho {
 }
 
 export function ExcelShell({
+  nativeHarnessCaptureSnapshot,
   prompt,
   preview,
   selectionFormat,
@@ -698,33 +702,42 @@ export function ExcelShell({
 
       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
       <div className="sheet-body">
-        <AiChatPanel
-          isOpen={isCopilotOpen}
-          hasContent={sheetHasContent}
-          chat={chat}
-          {...(historicChat !== undefined ? { historicChat } : {})}
-          attachments={attachments}
-          attachNotice={attachNotice}
-          onPickAttachments={onPickAttachments}
-          onAddAttachmentPaths={onAddAttachmentPaths}
-          onAddPastedImage={onAddPastedImage}
-          onRemoveAttachment={onRemoveAttachment}
-          prompt={prompt}
-          preview={preview}
-          aiBusy={aiBusy}
-          onPromptChange={onPromptChange}
-          onSend={onSend}
-          onStop={onStop}
-          onNewChat={onNewChat}
-          onUndo={onUndo}
-          scopeRange={aiScopeRange}
-          scopeColumns={aiScopeColumns}
-          scopeLocked={aiScopeLocked}
-          onScopeDismiss={onAiScopeDismiss}
-          onCitation={onAiCitation}
-          onExpand={() => setIsCopilotOpen(true)}
-          onCollapse={() => setIsCopilotOpen(false)}
-        />
+        {nativeHarnessCaptureSnapshot ? (
+          <NativeHarnessPanel
+            isOpen={isCopilotOpen}
+            onExpand={() => setIsCopilotOpen(true)}
+            onCollapse={() => setIsCopilotOpen(false)}
+            captureSnapshot={nativeHarnessCaptureSnapshot}
+          />
+        ) : (
+          <AiChatPanel
+            isOpen={isCopilotOpen}
+            hasContent={sheetHasContent}
+            chat={chat}
+            {...(historicChat !== undefined ? { historicChat } : {})}
+            attachments={attachments}
+            attachNotice={attachNotice}
+            onPickAttachments={onPickAttachments}
+            onAddAttachmentPaths={onAddAttachmentPaths}
+            onAddPastedImage={onAddPastedImage}
+            onRemoveAttachment={onRemoveAttachment}
+            prompt={prompt}
+            preview={preview}
+            aiBusy={aiBusy}
+            onPromptChange={onPromptChange}
+            onSend={onSend}
+            onStop={onStop}
+            onNewChat={onNewChat}
+            onUndo={onUndo}
+            scopeRange={aiScopeRange}
+            scopeColumns={aiScopeColumns}
+            scopeLocked={aiScopeLocked}
+            onScopeDismiss={onAiScopeDismiss}
+            onCitation={onAiCitation}
+            onExpand={() => setIsCopilotOpen(true)}
+            onCollapse={() => setIsCopilotOpen(false)}
+          />
+        )}
         <div className="sheet-main">
           <section className="workbook-area">
             <div id="univer-container" className="spreadsheet" />
