@@ -6,11 +6,13 @@ import {
 import { z } from 'zod'
 
 import { normalizeSheetRefs, primaryCellOf, primarySheetId, type SheetRef } from '../mcp-sheet-refs'
+import { expandReadTargets } from './read-targets'
 
 export interface McpSheetHandlers {
   hasWorkbook: () => boolean
   context: () => unknown
   readCells: (addresses: string[], sheetId?: string) => unknown
+  ensureCellsLoaded?: (addresses: readonly string[], sheetId?: string) => Promise<boolean>
   sheets: () => readonly SheetRef[]
   applyOps: (ops: WorkbookOperation[], dryRun: boolean) => Promise<unknown>
   focusSheet: (sheetId: string, address?: string) => void
@@ -55,13 +57,29 @@ function resolveReadSheet(
   name: string | undefined,
   id: string | undefined,
 ): string | undefined {
-  if (name === undefined) return id
   const sheets = handlers.sheets()
+  if (name === undefined && id === undefined) return undefined
+  if (name === undefined) {
+    if (sheets.some((sheet) => sheet.id === id)) return id
+    const known = sheets.length === 0 ? 'none' : sheets.map((sheet) => sheet.id).join(', ')
+    throw new SheetsCommandError(
+      'SHEET_NOT_FOUND',
+      `no worksheet with id "${String(id)}" in this workbook (sheet ids: ${known})`,
+    )
+  }
   if (sheets.some((sheet) => sheet.id === name)) return name
   const match = sheets.find(
     (sheet) => sheet.name.trim().toLowerCase() === name.trim().toLowerCase(),
   )
-  if (match) return match.id
+  if (match) {
+    if (id !== undefined && id !== match.id) {
+      throw new SheetsCommandError(
+        'SHEET_NOT_FOUND',
+        `worksheet name "${name}" has id "${match.id}", not "${id}"`,
+      )
+    }
+    return match.id
+  }
   const known = sheets.length === 0 ? 'none' : sheets.map((sheet) => sheet.name).join(', ')
   throw new SheetsCommandError(
     'SHEET_NOT_FOUND',
@@ -137,15 +155,20 @@ export async function executeSheetsCommand(
         typeof payload.sheet === 'string' ? payload.sheet : undefined,
         typeof payload.sheetId === 'string' ? payload.sheetId : undefined,
       )
+      const targets = expandReadTargets(addresses)
+      if (addresses.length > 0 && handlers.ensureCellsLoaded !== undefined) {
+        const loaded = await handlers.ensureCellsLoaded(addresses, sheetId)
+        if (!loaded) throw new Error('the requested spreadsheet cells could not be loaded')
+      }
       const data =
-        addresses.length > 0
-          ? { cells: handlers.readCells(addresses, sheetId) }
+        targets.length > 0
+          ? { cells: await handlers.readCells(targets, sheetId) }
           : { context: handlers.context() }
       return {
         ok: true,
         summary:
-          addresses.length > 0
-            ? `Read ${String(addresses.length)} spreadsheet target(s).`
+          targets.length > 0
+            ? `Read ${String(targets.length)} spreadsheet cell(s).`
             : 'Read the workbook summary.',
         warnings: [],
         data: jsonValue(data),

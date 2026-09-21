@@ -117,6 +117,7 @@ import { type WorkbookOperation } from '@genoffice/xlsx-gateway/domain/workbook-
 import {
   columnLabel,
   parseAddress,
+  parseRange,
   rangeCellCount,
 } from '@genoffice/xlsx-gateway/domain/cell-address'
 import { aggregateWorkbookRange } from './ai/aggregate-range'
@@ -4162,12 +4163,34 @@ export function App(): React.JSX.Element {
             address,
             {
               value,
+              ...(cell.rawValue === undefined ? {} : { rawValue: cell.rawValue }),
               ...(cell.value !== value ? { display: cell.value } : {}),
               ...(cell.formula === undefined ? {} : { formula: cell.formula }),
             },
           ]
         }),
       )
+    },
+    ensureCellsLoaded: async (addresses, sheetId) => {
+      const state = lazyWorkbookRef.current
+      if (!state || state.flags.preloadComplete) return true
+      const runtime = univerRef.current
+      const workbook = runtime?.univerAPI.getActiveWorkbook()
+      const worksheet =
+        sheetId === undefined ? workbook?.getActiveSheet() : workbook?.getSheetBySheetId(sheetId)
+      if (!runtime || !worksheet) return false
+      if (!state.file.sheets.some((sheet) => sheet.id === worksheet.getSheetId())) return true
+      for (const address of addresses) {
+        const loaded = await ensureLazyRangeLoaded(
+          runtime,
+          lazyWorkbookRef,
+          worksheet,
+          parseRange(address.toUpperCase()),
+          setMessage,
+        )
+        if (!loaded) return false
+      }
+      return true
     },
     sheets: () => getActiveSheetInfo().sheets.map((sheet) => ({ id: sheet.id, name: sheet.name })),
     // The user is watching this grid, so an edit to a sheet the view is not
@@ -4257,6 +4280,8 @@ export function App(): React.JSX.Element {
       hasWorkbook: () => handlers.current?.hasWorkbook() ?? false,
       context: () => handlers.current?.context(),
       readCells: (addresses, sheetId) => handlers.current?.readCells(addresses, sheetId) ?? {},
+      ensureCellsLoaded: async (addresses, sheetId) =>
+        (await handlers.current?.ensureCellsLoaded?.(addresses, sheetId)) ?? false,
       sheets: () => handlers.current?.sheets() ?? [],
       focusSheet: (sheetId, address) => handlers.current?.focusSheet(sheetId, address),
       applyOps: async (ops, dryRun) =>
