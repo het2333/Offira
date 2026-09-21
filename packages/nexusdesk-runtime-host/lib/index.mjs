@@ -17210,6 +17210,7 @@ officeCarrier = new OfficeRuntimeCarrier({
 function createEditorToolBridge(editorType) {
   return {
     async request(command, arguments_, execution, authorization) {
+      execution.signal.throwIfAborted();
       const sessionId = String(execution.agent?.id ?? "");
       const target = editorTargets.get(sessionId);
       if (target === void 0) {
@@ -17238,9 +17239,11 @@ function createEditorToolBridge(editorType) {
       }
       validateRuntimeEditorResponse(reply);
       target.revision = reply.currentRevision;
+      if (authorization === void 0) execution.signal.throwIfAborted();
       return reply.result;
     },
     async approve(toolName, proposal3, execution) {
+      execution.signal.throwIfAborted();
       if (execution.agent === void 0) return { approved: false };
       const sessionId = String(execution.agent.id ?? "");
       const pending = requestParentTracked({
@@ -17251,6 +17254,7 @@ function createEditorToolBridge(editorType) {
         proposal: proposal3
       });
       const reply = await pending.reply;
+      execution.signal.throwIfAborted();
       return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
     }
   };

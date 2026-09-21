@@ -403,6 +403,7 @@ function createEditorToolBridge(
 ): DocsToolBridge {
   return {
     async request(command, arguments_, execution, authorization): Promise<AgentToolResult> {
+      execution.signal.throwIfAborted()
       const sessionId = String(execution.agent?.id ?? '')
       const target = editorTargets.get(sessionId)
       if (target === undefined) {
@@ -438,9 +439,13 @@ function createEditorToolBridge(
       }
       validateRuntimeEditorResponse(reply)
       target.revision = reply.currentRevision
+      // Stop reads/proposals from advancing a cancelled tool, but preserve the
+      // verified or unknown outcome of an authorized mutation already dispatched.
+      if (authorization === undefined) execution.signal.throwIfAborted()
       return reply.result
     },
     async approve(toolName, proposal: AgentApprovalProposal, execution) {
+      execution.signal.throwIfAborted()
       if (execution.agent === undefined) return { approved: false }
       const sessionId = String(execution.agent.id ?? '') as SessionId
       const pending = requestParentTracked({
@@ -451,6 +456,7 @@ function createEditorToolBridge(
         proposal,
       })
       const reply = await pending.reply
+      execution.signal.throwIfAborted()
       return reply.type === 'approval:response' && reply.outcome === 'allowed-once'
         ? { approved: true, approvalId: pending.id }
         : { approved: false }

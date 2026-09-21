@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { RuntimeRequestFrame, RuntimeResponseFrame } from '../src/protocol'
 
@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
   resumes: [] as unknown[],
   followups: [] as unknown[],
   createBarrier: undefined as Promise<void> | undefined,
+  beforeReply: undefined as ((request: RuntimeResponseFrame, reply: RuntimeRequestFrame) => void) | undefined,
   approvalListener: undefined as
     | ((request: unknown, next: () => Promise<unknown>) => Promise<unknown>)
     | undefined,
@@ -86,6 +87,15 @@ function receive(frame: RuntimeRequestFrame): void {
   process.emit('message', frame, undefined)
 }
 
+function deliverReply(request: RuntimeResponseFrame, reply: RuntimeRequestFrame): void {
+  queueMicrotask(() => {
+    harness.beforeReply?.(request, reply)
+    receive(reply)
+  })
+}
+
+afterEach(() => { harness.beforeReply = undefined })
+
 beforeAll(async () => {
   for (const event of ['message', 'disconnect', 'exit']) {
     previousListeners.set(event, (process as EventEmitter).listeners(event))
@@ -96,7 +106,7 @@ beforeAll(async () => {
       sent.push(frame)
       callback(null)
       if (frame.type === 'editor:request') {
-        queueMicrotask(() => receive({
+        deliverReply(frame, {
           type: 'editor:result', protocolVersion: 1, id: frame.id,
           target: frame.target, currentRevision: frame.target.revision,
           result: {
@@ -105,11 +115,11 @@ beforeAll(async () => {
               operationId: frame.target.operationId, planHash: 'plan', targets: [],
             } } : {}),
           },
-        }))
+        })
       } else if (frame.type === 'approval:request') {
-        queueMicrotask(() => receive({
+        deliverReply(frame, {
           type: 'approval:response', protocolVersion: 1, id: frame.id, outcome: 'allowed-once',
-        }))
+        })
       }
       return true
     },
@@ -133,22 +143,83 @@ afterAll(() => {
   vi.unstubAllGlobals()
 })
 
-async function invoke(documentId: string, sessionId: string, toolName = 'read_document') {
+function executeTool(documentId: string, sessionId: string, toolName: string, signal: AbortSignal) {
   receive({
     type: 'agent:start', protocolVersion: 1, documentId, sessionId,
     clientId: `client-${sessionId}`, editorType: 'docs', revision: 1,
     cwd: '/tmp', prompt: 'test',
   } as RuntimeRequestFrame)
   const tool = harness.tools.find(({ name }) => name === toolName)!
-  const start = sent.length
-  await tool.execute(toolName === 'read_document' ? { scope: 'document' } : { operations: [] }, {
+  return tool.execute(toolName === 'read_document' ? { scope: 'document' } : { operations: [] }, {
     agent: { id: sessionId }, callId: 'provider-call-1', name: toolName,
-    signal: new AbortController().signal,
+    signal,
   } as never)
+}
+
+async function invoke(documentId: string, sessionId: string, toolName = 'read_document') {
+  const start = sent.length
+  await executeTool(documentId, sessionId, toolName, new AbortController().signal)
   return sent.slice(start).filter((frame) => frame.type === 'editor:request')
 }
 
 describe('native Harness operation identity', () => {
+  it('does not dispatch an editor request when the tool is already cancelled', async () => {
+    const abort = new AbortController()
+    abort.abort(new Error('cancelled before dispatch'))
+    const start = sent.length
+
+    await expect(executeTool('cancel-document', 'cancel-before-dispatch', 'apply_document_operations', abort.signal))
+      .rejects.toThrow('cancelled before dispatch')
+
+    expect(sent.slice(start).filter((frame) => frame.type === 'editor:request' || frame.type === 'approval:request')).toEqual([])
+  })
+
+  it('does not create an approval when a proposal arrives after tool cancellation', async () => {
+    const abort = new AbortController()
+    const start = sent.length
+    harness.beforeReply = (request) => {
+      if (request.type === 'editor:request' && request.command === 'propose_ops') abort.abort(new Error('cancelled during proposal'))
+    }
+
+    await expect(executeTool('cancel-document', 'cancel-proposal', 'apply_document_operations', abort.signal))
+      .rejects.toThrow('cancelled during proposal')
+
+    expect(sent.slice(start).filter((frame) => frame.type === 'approval:request')).toEqual([])
+    expect(sent.slice(start).filter((frame) => frame.type === 'editor:request').map((frame) => frame.command)).toEqual(['propose_ops'])
+  })
+
+  it('does not dispatch a mutation when approval arrives after tool cancellation', async () => {
+    const abort = new AbortController()
+    const start = sent.length
+    harness.beforeReply = (request) => {
+      if (request.type === 'approval:request') abort.abort(new Error('cancelled during approval'))
+    }
+
+    await expect(executeTool('cancel-document', 'cancel-approval', 'apply_document_operations', abort.signal))
+      .rejects.toThrow('cancelled during approval')
+
+    expect(sent.slice(start).filter((frame) => frame.type === 'editor:request').map((frame) => frame.command)).toEqual(['propose_ops'])
+  })
+
+  it.each([
+    { label: 'verified success', result: { ok: true, summary: 'Committed once.', warnings: [] } },
+    { label: 'unknown outcome', result: { ok: false, summary: 'Verify the dispatched operation before retrying.', warnings: [{ code: 'WORKING_COPY_OUTCOME_UNKNOWN', message: 'Receipt unavailable.' }] } },
+  ])('preserves $label after cancellation of an already dispatched mutation', async ({ result }) => {
+    const abort = new AbortController()
+    const start = sent.length
+    harness.beforeReply = (request, reply) => {
+      if (request.type === 'editor:request' && request.command === 'apply_ops' && reply.type === 'editor:result') {
+        abort.abort(new Error('cancelled after mutation dispatch'))
+        reply.result = result
+      }
+    }
+
+    await expect(executeTool('cancel-document', `cancel-dispatched-${result.ok}`, 'apply_document_operations', abort.signal))
+      .resolves.toEqual(result)
+
+    expect(sent.slice(start).filter((frame) => frame.type === 'editor:request').map((frame) => frame.command)).toEqual(['propose_ops', 'apply_ops'])
+  })
+
   it('uses an explicit durable state directory without installing a deletion exit hook', () => {
     expect(runtimeStateDir).toMatch(/nexusdesk-explicit-runtime-test-/)
     expect((process as EventEmitter).listeners('exit')).toEqual(previousListeners.get('exit'))

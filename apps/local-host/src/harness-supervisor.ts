@@ -67,6 +67,10 @@ export class HarnessSupervisor {
       reject(error: Error): void
     }
   >()
+  private readonly pendingOfficeResources = new Map<string, {
+    resolve(value: Extract<RuntimeResponseFrame, { type: 'office:resource-result' }>['resource']): void
+    reject(error: Error): void
+  }>()
   private readyPromise!: Promise<void>
   private resolveReady!: () => void
 
@@ -89,6 +93,20 @@ export class HarnessSupervisor {
     return this.readyPromise
   }
 
+  officeResource(url: string): Promise<Extract<RuntimeResponseFrame, { type: 'office:resource-result' }>['resource']> {
+    if (this.pendingOfficeResources.size >= 32) return Promise.reject(new Error('Too many pending Office resources.'))
+    const id = `office-resource-${randomUUID()}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.pendingOfficeResources.delete(id); reject(new Error('Office resource timed out.')) }, 15000)
+      this.pendingOfficeResources.set(id, {
+        resolve(value) { clearTimeout(timer); resolve(value) },
+        reject(error) { clearTimeout(timer); reject(error) },
+      })
+      try { this.send({ type: 'office:resource', protocolVersion: 1, id, url }) }
+      catch (error) { this.pendingOfficeResources.delete(id); clearTimeout(timer); reject(error) }
+    })
+  }
+
   startTurn(input: StartTurnInput): void {
     this.activeSessions.add(input.sessionId)
     this.send({
@@ -97,6 +115,10 @@ export class HarnessSupervisor {
       id: `turn-${randomUUID()}`,
       ...input,
     })
+  }
+
+  forwardOfficeFrame(frame: Extract<RuntimeRequestFrame, { type: 'office:client' | 'office:detach' }>): void {
+    this.send(frame)
   }
 
   bindOfficeSession(
@@ -166,6 +188,10 @@ export class HarnessSupervisor {
     })
     this.child = child
     child.on('message', (frame: RuntimeResponseFrame) => {
+      if (frame.type === 'office:resource-result') {
+        this.pendingOfficeResources.get(frame.id)?.resolve(frame.resource)
+        this.pendingOfficeResources.delete(frame.id)
+      }
       if (frame.type === 'ready') this.resolveReady()
       if (frame.type === 'office:bound') {
         const pending = this.pendingBindings.get(frame.id)
@@ -187,6 +213,8 @@ export class HarnessSupervisor {
         pending.reject(new Error(`Harness runtime exited during Office Session binding (${String(code ?? signal)})`))
       }
       this.pendingBindings.clear()
+      for (const pending of this.pendingOfficeResources.values()) pending.reject(new Error('Office runtime disconnected.'))
+      this.pendingOfficeResources.clear()
       for (const listener of this.exits) listener({ code, signal, activeSessions })
       if (!this.stopping) {
         this.restartTimer = setTimeout(() => this.launch(), this.options.restartDelayMs ?? 1_000)

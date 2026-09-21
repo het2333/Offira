@@ -1,8 +1,9 @@
 import { createServer, type ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { extname, resolve, sep } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { dirname, extname, resolve, sep } from 'node:path'
+import { createRequire } from 'node:module'
+import { createHash, randomUUID } from 'node:crypto'
 
 import { PROTOCOL_VERSION, checkpointMetadataSchema, checkpointCommitSchema, workingCopyLookupSchema, manualSaveMetadataSchema } from '@nexusdesk/protocol'
 import {
@@ -24,6 +25,8 @@ import { DocumentRegistry } from './document-registry'
 import { expectedRevision, readBinaryBody } from './document-content'
 import { DocumentDriverRegistry, type LocalDocument } from './document-driver'
 import { HarnessSupervisor } from './harness-supervisor'
+import { NativeOfficeCarrier } from './native-office-carrier'
+import type { ClientId, DocumentId, HarnessClientFrame } from '@nexusdesk/protocol'
 import { OperationStore } from './operation-store'
 import { acceptHttpOrigin } from './origin-policy'
 import { ShellState } from './shell-state'
@@ -227,6 +230,7 @@ export async function startLocalHost(
             ? {}
             : { nodeExecutable: options.runtimeCommand.nodeExecutable }),
         })
+  let nativeCarrier: NativeOfficeCarrier | undefined = undefined
   const ownedRouter =
     options.agentRouter === undefined && supervisor !== undefined
       ? new OwnedAgentRouter({
@@ -234,10 +238,28 @@ export async function startLocalHost(
           documents,
           operations: new OperationStore(),
           workingCopy,
-          sendToClient: (clientId, frame) => wsSessions.send(clientId, frame),
+          sendToClient: (clientId, frame) => {
+            if (frame.type === 'approval:request' && nativeCarrier?.presentApproval(clientId, frame)) return
+            wsSessions.send(clientId, frame)
+          },
+          onApprovalExpired: (clientId, id) => nativeCarrier?.cancelApproval(clientId, id),
         })
       : undefined
   const agentRouter = options.agentRouter ?? ownedRouter
+  nativeCarrier = supervisor && agentRouter ? new NativeOfficeCarrier({
+    router: agentRouter,
+    hostId: `host-${createHash('sha256').update(options.shellStatePath ?? process.cwd()).digest('hex')}`,
+    cwd: process.cwd(),
+    send: (clientId, frame) => wsSessions.send(clientId, frame),
+    forward: (frame) => supervisor.forwardOfficeFrame(frame),
+    answerApproval: (id, outcome, clientId) => agentRouter.handleClientFrame({
+      type: 'approval:response', protocolVersion: 1, id, outcome,
+    }, clientId),
+  }) : undefined
+  const offNativeFrames = supervisor?.onFrame((frame) => {
+    if (frame.type === 'office:client-result') nativeCarrier?.receive(frame)
+  })
+  const offNativeExit = supervisor?.onExit(() => nativeCarrier?.runtimeExited())
   let origin = ''
   let closing: Promise<void> | undefined
 
@@ -270,6 +292,35 @@ export async function startLocalHost(
       const sessionId = cookieSession(request.headers.cookie)
       if (sessionId === undefined || !sessions.has(sessionId)) {
         sendJson(response, 401, { error: 'authentication required' })
+        return
+      }
+      if (url.pathname === '/harness/index.html' || url.pathname.startsWith('/plugins/')) {
+        if (request.method !== 'GET' || !supervisor || !nativeCarrier) {
+          sendJson(response, 404, { error: 'Office frontend is unavailable' }); return
+        }
+        if (url.pathname === '/harness/index.html') {
+          const clientId = url.searchParams.get('clientId') ?? ''
+          const documentId = url.searchParams.get('documentId') ?? ''
+          try {
+            wsSessions.assertSession(clientId, sessionId)
+            nativeCarrier.assertBound(clientId as ClientId, documentId as DocumentId)
+          } catch { sendJson(response, 403, { error: 'Office document binding required' }); return }
+        }
+        const resource = await supervisor.officeResource(url.pathname === '/harness/index.html' ? url.pathname : `${url.pathname}${url.search}`)
+        const body = Buffer.from(resource.bodyBase64, 'base64')
+        response.writeHead(resource.status, { 'Content-Type': resource.contentType, 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+        response.end(body)
+        return
+      }
+      if (url.pathname.startsWith('/harness/')) {
+        if (request.method !== 'GET') { sendJson(response, 405, { error: 'method not allowed' }); return }
+        const require = createRequire(import.meta.url)
+        const file = url.pathname === '/harness/binding.js'
+          ? await staticFile(dirname(require.resolve('@nexusdesk/harness-office-panel-ui/package.json')), 'lib/binding.js')
+          : await staticFile(resolve(dirname(require.resolve('@deepseek-ai/dsh-web-frontend/package.json')), 'dist'), url.pathname.slice('/harness/'.length))
+        if (!file) { sendJson(response, 404, { error: 'Office frontend asset not found' }); return }
+        response.writeHead(200, { 'Content-Type': file.type, 'Content-Length': file.body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+        response.end(file.body)
         return
       }
       if (url.pathname === '/api/bootstrap') {
@@ -650,8 +701,18 @@ export async function startLocalHost(
     documents,
     authorizedDocument,
     workingCopy,
-    onFrame: (frame, clientId) => agentRouter?.handleClientFrame(frame, clientId),
-    onDisconnect: (clientId) => agentRouter?.disconnectClient(clientId),
+    onFrame: (frame, clientId) => {
+      if (frame.type.startsWith('harness:')) {
+        if (!nativeCarrier) throw new Error('Native Office runtime is unavailable.')
+        return nativeCarrier.handle(frame as HarnessClientFrame, clientId)
+      }
+      if (frame.type === 'editor:detach') nativeCarrier?.disconnect(clientId)
+      return agentRouter?.handleClientFrame(frame, clientId)
+    },
+    onDisconnect: (clientId) => {
+      nativeCarrier?.disconnect(clientId)
+      agentRouter?.disconnectClient(clientId)
+    },
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -677,6 +738,9 @@ export async function startLocalHost(
         await wsSessions.close()
         await workingCopy?.close()
         ownedRouter?.dispose()
+        offNativeFrames?.()
+        offNativeExit?.()
+        nativeCarrier?.runtimeExited()
         await supervisor?.shutdown()
         await options.documentDrivers?.close()
         await new Promise<void>((resolve, reject) => {

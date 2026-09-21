@@ -771,6 +771,24 @@ describe('AgentRouter', () => {
     router.dispose()
   })
 
+  it('notifies the native UI when an unanswered approval expires', async () => {
+    const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
+    documents.register({ documentId, clientId, editorType: 'sheets', revision })
+    supervisor = new HarnessSupervisor({ entry: fixture, restartDelayMs: 10 })
+    const expired: unknown[][] = []
+    const router = new AgentRouter({ supervisor, documents, operations: new OperationStore(),
+      sendToClient: () => undefined, approvalTimeoutMs: 30,
+      onApprovalExpired: (...args) => expired.push(args),
+    })
+    await supervisor.ready()
+    router.handleClientFrame({ type: 'agent:start', protocolVersion: PROTOCOL_VERSION,
+      id: startRequestId, sessionId, documentId, prompt: 'approval-wait' }, clientId)
+    await until(() => expired.length > 0)
+    expect(expired).toEqual([[clientId, 'approval-1']])
+    expect(router.hasApproval('approval-1')).toBe(false)
+    router.dispose()
+  })
+
   it('rejects an approval response from a different browser client', async () => {
     const documents = new DocumentRegistry([{ documentId, editorType: 'sheets', revision }])
     documents.register({ documentId, clientId, editorType: 'sheets', revision })

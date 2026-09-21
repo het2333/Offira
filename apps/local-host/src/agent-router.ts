@@ -85,6 +85,7 @@ export interface AgentRouterOptions {
   operations: OperationStore
   workingCopy?: WorkingCopyCoordinator
   sendToClient(clientId: ClientId, frame: AgentServerFrame): void
+  onApprovalExpired?(clientId: ClientId, id: string): void
   approvalTimeoutMs?: number
 }
 
@@ -174,6 +175,11 @@ export class AgentRouter {
       context,
       contextText: officeTurnContextText(context),
     })
+  }
+
+  expireNativeSessionApprovals(sessionId: SessionId, clientId: ClientId): void {
+    this.assertNativeSessionOwner(sessionId, clientId)
+    this.cancelSessionApprovals(sessionId, clientId)
   }
 
   handleClientFrame(frame: ClientFrame, clientId: ClientId): void | Promise<void> {
@@ -300,15 +306,7 @@ export class AgentRouter {
     }
     if (frame.type === 'agent:cancel') {
       this.assertSessionOwner(frame.sessionId, clientId)
-      for (const operation of this.editorOperations.values()) {
-        if (operation.target.sessionId === frame.sessionId && isProposalCommand(operation.command))
-          this.releaseProposal(
-            { clientId, sessionId: frame.sessionId, operationId: operation.target.operationId },
-            'cancelled',
-          )
-      }
-      this.expireApprovals((approval) => approval.sessionId === frame.sessionId)
-      this.expireGrantedApprovals((approval) => approval.sessionId === frame.sessionId)
+      this.cancelSessionApprovals(frame.sessionId, clientId)
       this.options.supervisor.cancelTurn(frame.sessionId)
       return
     }
@@ -351,7 +349,10 @@ export class AgentRouter {
       const timer = setTimeout(() => {
         const expired = this.approvals.get(frame.id)
         this.approvals.delete(frame.id)
-        if (expired) this.releaseProposal(expired, 'unavailable')
+        if (expired) {
+          this.options.onApprovalExpired?.(expired.clientId, frame.id)
+          this.releaseProposal(expired, 'unavailable')
+        }
         this.options.supervisor.respondApproval(frame.id, 'unavailable')
       }, this.options.approvalTimeoutMs ?? 120_000)
       this.approvals.set(frame.id, {
@@ -414,6 +415,7 @@ export class AgentRouter {
       if (approval.clientId !== clientId) continue
       clearTimeout(approval.timer)
       this.approvals.delete(id)
+      this.options.onApprovalExpired?.(approval.clientId, id)
       this.options.supervisor.respondApproval(id, 'unavailable')
     }
     this.expireGrantedApprovals((approval) => approval.clientId === clientId)
@@ -522,8 +524,23 @@ export class AgentRouter {
   }
 
   private clearApprovals(): void {
-    for (const approval of this.approvals.values()) clearTimeout(approval.timer)
+    for (const [id, approval] of this.approvals) {
+      clearTimeout(approval.timer)
+      this.options.onApprovalExpired?.(approval.clientId, id)
+    }
     this.approvals.clear()
+  }
+
+  private cancelSessionApprovals(sessionId: SessionId, clientId: ClientId): void {
+    for (const operation of this.editorOperations.values()) {
+      if (operation.target.sessionId === sessionId && isProposalCommand(operation.command))
+        this.releaseProposal(
+          { clientId, sessionId, operationId: operation.target.operationId },
+          'cancelled',
+        )
+    }
+    this.expireApprovals((approval) => approval.sessionId === sessionId)
+    this.expireGrantedApprovals((approval) => approval.sessionId === sessionId)
   }
 
   private releaseProposal(
@@ -551,6 +568,7 @@ export class AgentRouter {
       if (!predicate(approval)) continue
       clearTimeout(approval.timer)
       this.approvals.delete(id)
+      this.options.onApprovalExpired?.(approval.clientId, id)
       this.releaseProposal(approval, 'unavailable')
       this.options.supervisor.respondApproval(id, 'unavailable')
     }
