@@ -14,6 +14,9 @@ const harness = vi.hoisted(() => ({
   resumes: [] as unknown[],
   followups: [] as unknown[],
   createBarrier: undefined as Promise<void> | undefined,
+  approvalListener: undefined as
+    | ((request: unknown, next: () => Promise<unknown>) => Promise<unknown>)
+    | undefined,
 }))
 vi.mock('@deepseek-ai/dsh-app-boot', () => ({
   loadLayeredEnv: () => ({}),
@@ -22,6 +25,20 @@ vi.mock('@deepseek-ai/dsh-app-boot', () => ({
 vi.mock('@deepseek-ai/dsh/profile-boot', () => ({
   runProfile: async () => ({
     ctx: {
+      clientModules: {
+        graph: () => ({ entries: [] }),
+        fetchBundle: async () => new Response(null, { status: 404 }),
+      },
+      connection: {
+        createSharedFetchHandler: () => ({
+          fetch: async () => new Response(null, { status: 404 }),
+        }),
+      },
+      typertGateway: {
+        wireStream: {
+          async *open() {},
+        },
+      },
       agentDefaultModel: { currentSelection: () => ({ provider: 'test', model: 'test' }) },
       agents: {
         create: async (options: unknown) => {
@@ -51,7 +68,9 @@ vi.mock('@deepseek-ai/dsh/profile-boot', () => ({
       sessionPersistence: { stat: async () => undefined },
       profileContext: { startedBundles: [] },
       tools: { register: (tool: ToolDefinition) => { harness.tools.push(tool); return () => {} } },
-      on() {},
+      on(event: string, listener: (request: unknown, next: () => Promise<unknown>) => Promise<unknown>) {
+        if (event === 'approval/request') harness.approvalListener = listener
+      },
     },
     shutdown: { shutdown: async () => {} },
   }),
@@ -180,6 +199,58 @@ describe('native Harness operation identity', () => {
     })
     const bindings = sent.slice(sentBefore).filter((frame) => frame.type === 'office:bound')
     expect(new Set(bindings.map((frame) => frame.sessionId))).toHaveLength(1)
+  })
+
+  it('delegates generic approvals for official Office Sessions', async () => {
+    const sentBeforeBind = sent.length
+    receive({
+      type: 'office:bind', protocolVersion: 1, id: 'bind-approval', hostId: 'host-a',
+      documentId: 'approval-document' as never, clientId: 'native-client' as never,
+      editorType: 'docs', revision: 4 as never, cwd: '/workspace',
+    })
+    await vi.waitFor(() => {
+      expect(sent.slice(sentBeforeBind)).toContainEqual(expect.objectContaining({
+        type: 'office:bound', id: 'bind-approval',
+      }))
+    })
+    const bound = sent.slice(sentBeforeBind).find(
+      (frame): frame is Extract<RuntimeResponseFrame, { type: 'office:bound' }> =>
+        frame.type === 'office:bound' && frame.id === 'bind-approval',
+    )
+    const next = vi.fn(async () => 'rejected')
+    const sentBeforeApproval = sent.length
+
+    await expect(harness.approvalListener!(
+      { toolName: 'bash', agent: { session: { id: bound!.sessionId } } },
+      next,
+    )).resolves.toBe('rejected')
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(sent.slice(sentBeforeApproval)).not.toContainEqual(expect.objectContaining({
+      type: 'approval:request',
+    }))
+  })
+
+  it('keeps generic approvals for legacy sessions on parent IPC', async () => {
+    const next = vi.fn(async () => 'rejected')
+    const sentBeforeApproval = sent.length
+
+    await expect(harness.approvalListener!(
+      {
+        toolName: 'bash',
+        reason: 'needs shell access',
+        agent: { session: { id: 'legacy-session' } },
+      },
+      next,
+    )).resolves.toBe('allowed-once')
+
+    expect(next).not.toHaveBeenCalled()
+    expect(sent.slice(sentBeforeApproval)).toContainEqual(expect.objectContaining({
+      type: 'approval:request',
+      sessionId: 'legacy-session',
+      toolName: 'bash',
+      reason: 'needs shell access',
+    }))
   })
 
   it('separates the same provider call id in different documents', async () => {

@@ -87,7 +87,7 @@ interface RuntimeContext {
       toolName: string
       reason?: string
       agent?: { session?: { id?: unknown } }
-    }) => Promise<ApprovalOutcome>,
+    }, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>,
   ): void
   on(
     event: 'session/event',
@@ -149,6 +149,7 @@ const editorTargets = new Map<
     revision: import('@nexusdesk/protocol').Revision
   }
 >()
+const nativeOfficeSessions = new Set<string>()
 const textBlocks = new Map<string, Set<number>>()
 let stopping: Promise<void> | undefined
 let disposeOfficeTools: Array<() => void> = []
@@ -275,7 +276,10 @@ async function bindOfficeAgent(
     editorType: frame.editorType,
     revision: frame.revision,
   })
-  if (existing !== undefined) return { sessionId, resumed: true }
+  if (existing !== undefined) {
+    nativeOfficeSessions.add(sessionId)
+    return { sessionId, resumed: true }
+  }
   const ctx = asRuntimeContext((await boot).ctx)
   const agentOptions = frame.provider !== undefined && frame.model !== undefined
     ? { provider: frame.provider, model: frame.model }
@@ -299,6 +303,7 @@ async function bindOfficeAgent(
   }
   try {
     const acquired = await acquisition
+    nativeOfficeSessions.add(sessionId)
     return { sessionId, resumed: acquired.resumed }
   } catch (error) {
     editorTargets.delete(sessionId)
@@ -353,6 +358,7 @@ const stop = (): Promise<void> =>
     for (const handle of agents.values()) await handle.dispose().catch(() => undefined)
     agents.clear()
     editorTargets.clear()
+    nativeOfficeSessions.clear()
     for (const dispose of disposeOfficeTools.splice(0)) dispose()
     await running?.shutdown.shutdown(0)
     send({ type: 'shutdown-complete', protocolVersion: PROTOCOL_VERSION })
@@ -436,10 +442,11 @@ disposeOfficeTools = [
 
 ctx.on(
   'approval/request',
-  (request: { toolName: string; reason?: string; agent?: { session?: { id?: unknown } } }) => {
+  (request: { toolName: string; reason?: string; agent?: { session?: { id?: unknown } } }, next) => {
     const sessionId = String(
       request.agent?.session?.id ?? agents.keys().next().value ?? '',
     ) as SessionId
+    if (nativeOfficeSessions.has(sessionId)) return next()
     return requestParent({
       type: 'approval:request',
       sessionId,
