@@ -67,7 +67,7 @@ function OfficeFailureScreen(): ReactNode {
         textAlign: 'center',
       }}
     >
-      The Office assistant is unavailable. Reopen this panel to reconnect safely.
+      文档助手暂时无法连接。请重新打开面板；若刚才提交过修改，请先检查文件再继续。
     </div>
   )
 }

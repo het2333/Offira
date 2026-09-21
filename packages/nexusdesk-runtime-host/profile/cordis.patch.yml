@@ -1,1 +1,63 @@
-[]
+# Carrier-neutral official Office conversation graph. No second HTTP listener.
+# Browser capabilities are additionally fenced by office-gateway-policy.
+- insert:
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: session-reference
+      name: '@deepseek-ai/dsh-session-reference'
+    - id: file-reference-local
+      name: '@deepseek-ai/dsh-file-reference-local'
+    - id: directory-picker
+      name: '@deepseek-ai/dsh-host-directory-picker-native'
+    - id: modules
+      name: '@deepseek-ai/dsh-client-modules'
+    - id: connection
+      name: '@deepseek-ai/dsh-client-connection'
+    - id: file-upload
+      name: '@deepseek-ai/dsh-client-file-upload'
+    - id: api-remotes
+      name: '@deepseek-ai/dsh-api-remotes'
+    - id: session-controller
+      name: '@deepseek-ai/dsh-api-session-controller'
+      config:
+        nativeOpen: false
+    - id: workspace-controller
+      name: '@deepseek-ai/dsh-api-workspace-controller'
+    - id: settings-controller
+      name: '@deepseek-ai/dsh-api-settings-controller'
+    - id: locale
+      name: '@deepseek-ai/dsh-client-locale'
+    - id: ui-renderer
+      name: '@deepseek-ai/dsh-client-ui-renderer'
+    - id: ui-settings
+      name: '@deepseek-ai/dsh-client-ui-settings'
+    - id: ui-conversation
+      name: '@deepseek-ai/dsh-client-ui-conversation'
+    - id: ui-layout
+      name: '@deepseek-ai/dsh-client-ui-layout'
+    - id: ui-session
+      name: '@deepseek-ai/dsh-client-ui-session'
+    - id: ui-theme
+      name: '@deepseek-ai/dsh-client-ui-theme'
+    - id: ui-workspace
+      name: '@deepseek-ai/dsh-client-ui-workspace'
+    - id: ui-input-trigger
+      name: '@deepseek-ai/dsh-client-ui-input-trigger'
+    - id: ui-sidebar-right
+      name: '@deepseek-ai/dsh-client-ui-sidebar-right'
+    - id: resources
+      name: '@deepseek-ai/dsh-client-resources'
+    - id: ui-chat
+      name: '@deepseek-ai/dsh-client-ui-chat'
+    - id: ui-commands
+      name: '@deepseek-ai/dsh-client-ui-commands'
+    - id: ui-model-selection
+      name: '@deepseek-ai/dsh-client-ui-model-selection'
+    - id: ui-user-questions
+      name: '@deepseek-ai/dsh-client-ui-user-questions'
+    - id: ui-approval
+      name: '@deepseek-ai/dsh-client-ui-approval'
+    - id: office-panel-ui
+      name: '@nexusdesk/harness-office-panel-ui'

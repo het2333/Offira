@@ -258,7 +258,7 @@ describe('official Office conversation composition', () => {
     })
     consoleError.mockRestore()
     expect(container.querySelector('[data-nexusdesk-office-panel="failed"]')?.textContent).toMatch(
-      /unavailable/i,
+      /无法连接.*重新打开面板/,
     )
     expect(container.textContent).not.toContain('generic workbench')
 

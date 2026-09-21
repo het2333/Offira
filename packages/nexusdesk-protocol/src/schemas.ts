@@ -4,6 +4,7 @@ import type { AgentToolResult, JsonValue } from './editor'
 import type { ClientFrame } from './frames'
 import { PROTOCOL_VERSION } from './frames'
 import { persistenceReferenceSchema } from './working-copy'
+import { harnessClientFrameSchemas } from './harness-frames'
 
 const nonEmptyString = z.string().min(1)
 const revisionSchema = z.number().int().nonnegative()
@@ -82,6 +83,7 @@ const agentToolResultSchema = z
 const frameBase = { protocolVersion: z.literal(PROTOCOL_VERSION) }
 
 const clientFrameSchema = z.discriminatedUnion('type', [
+  ...harnessClientFrameSchemas,
   z
     .object({
       ...frameBase,

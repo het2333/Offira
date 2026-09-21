@@ -17,6 +17,9 @@ import type {
 } from '@nexusdesk/protocol'
 
 import { projectDurableEvent, projectStreamChunk } from './projection'
+import { OfficeRuntimeCarrier } from './office-runtime-carrier'
+import { createOfficeGatewayFetch } from './office-gateway-fetch'
+import { readOfficeResource } from './office-resource'
 import {
   configureOfficeToolScope,
   DOCS_TOOL_NAMES,
@@ -56,6 +59,9 @@ interface AgentHandle {
 }
 
 interface RuntimeContext {
+  clientModules: Pick<import('@deepseek-ai/dsh-client-modules').ClientModuleRegistry, 'graph' | 'fetchBundle'>
+  connection: { createSharedFetchHandler(channel: '/api'): { fetch(request: Request): Promise<Response> } }
+  typertGateway: { wireStream: { open(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown> } }
   agentDefaultModel: {
     currentSelection(): { provider: string; model: string; reasoningEffort?: string }
   }
@@ -153,6 +159,7 @@ const nativeOfficeSessions = new Set<string>()
 const textBlocks = new Map<string, Set<number>>()
 let stopping: Promise<void> | undefined
 let disposeOfficeTools: Array<() => void> = []
+let officeCarrier: OfficeRuntimeCarrier | undefined = undefined
 
 process.on('message', (frame: RuntimeRequestFrame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== 'shutdown') {
@@ -259,7 +266,7 @@ function officeAgentSetup(editorType: string) {
     agentContext: { tools: Parameters<typeof configureOfficeToolScope>[0]['tools'] },
     agent: object,
   ) => {
-    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent)
+    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent, { nativeQuestions: true })
   }
 }
 
@@ -313,6 +320,19 @@ async function bindOfficeAgent(
 
 async function handle(frame: RuntimeRequestFrame): Promise<void> {
   switch (frame.type) {
+    case 'office:resource': {
+      const runtimeContext = asRuntimeContext((await boot).ctx)
+      const resource = await readOfficeResource(runtimeContext.clientModules, frame.url).catch(() => ({ status: 503, contentType: 'text/plain', bodyBase64: Buffer.from('Office resource unavailable').toString('base64') }))
+      send({ type: 'office:resource-result', protocolVersion: 1, id: frame.id, resource })
+      return
+    }
+    case 'office:client':
+      if (!officeCarrier) throw new Error('Native Office carrier is not ready.')
+      await officeCarrier.handle(frame)
+      return
+    case 'office:detach':
+      officeCarrier?.detach(frame.clientId)
+      return
     case 'office:bind': {
       const bound = await bindOfficeAgent(frame)
       send({
@@ -355,6 +375,7 @@ async function handle(frame: RuntimeRequestFrame): Promise<void> {
 const stop = (): Promise<void> =>
   (stopping ??= (async () => {
     const running = await boot.catch(() => undefined)
+    officeCarrier?.close()
     for (const handle of agents.values()) await handle.dispose().catch(() => undefined)
     agents.clear()
     editorTargets.clear()
@@ -370,6 +391,12 @@ process.once('disconnect', () => {
 })
 
 const ctx = asRuntimeContext((await boot).ctx)
+officeCarrier = new OfficeRuntimeCarrier({
+  target: (sessionId) => editorTargets.get(sessionId),
+  send,
+  dispatch: createOfficeGatewayFetch(ctx.connection.createSharedFetchHandler('/api')),
+  open: (endpoint, payload, signal) => ctx.typertGateway.wireStream.open(endpoint, payload, signal),
+})
 
 function createEditorToolBridge(
   editorType: 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
@@ -480,6 +507,7 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles as string[],
+  officeClientModules: ctx.clientModules.graph().entries.map((entry) => entry.id),
   toolCatalogs: {
     docs: DOCS_TOOL_NAMES,
     sheets: SHEETS_TOOL_NAMES,

@@ -8,8 +8,10 @@ import type {
   EditorResponseFrame,
   Revision,
   SessionId,
+  HarnessClientFrame,
+  HarnessServerFrame,
 } from '@nexusdesk/protocol'
-import type { OfficeEditorType } from './office-session-binding'
+import type { OfficeEditorType, OfficeTurnContext } from './office-session-binding'
 
 export { PROTOCOL_VERSION } from '@nexusdesk/protocol'
 import { parseAgentToolResult, persistenceReferenceSchema } from '@nexusdesk/protocol'
@@ -37,6 +39,15 @@ interface RuntimeFrameBase {
 }
 
 export type RuntimeRequestFrame =
+  | (RuntimeFrameBase & { type: 'office:resource'; url: string })
+  | (RuntimeFrameBase & {
+      type: 'office:client'
+      clientId: ClientId
+      sessionId: SessionId
+      frame: Exclude<HarnessClientFrame, { type: 'harness:bind' }>
+      context?: OfficeTurnContext
+    })
+  | (RuntimeFrameBase & { type: 'office:detach'; clientId: ClientId })
   | (RuntimeFrameBase & {
       type: 'office:bind'
       hostId: string
@@ -66,11 +77,14 @@ export type RuntimeRequestFrame =
   | (RuntimeFrameBase & { type: 'shutdown' })
 
 export type RuntimeResponseFrame =
+  | { type: 'office:resource-result'; protocolVersion: number; id: string; resource: import('./office-resource').OfficeResource }
+  | { type: 'office:client-result'; protocolVersion: number; clientId: ClientId; frame: HarnessServerFrame }
   | {
       type: 'ready'
       protocolVersion: number
       pid: number
       startedBundles: string[]
+      officeClientModules?: string[]
       toolCatalogs: {
         docs: readonly string[]
         sheets: readonly string[]

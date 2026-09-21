@@ -5,10 +5,10 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { createHash, randomUUID as randomUUID4 } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join as join2 } from "node:path";
+import { basename, isAbsolute, join as join3 } from "node:path";
 import { loadLayeredEnv, loadProfileDirectory } from "@deepseek-ai/dsh-app-boot";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -3109,42 +3109,42 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     }
     doc.write(`const newResult = {};`);
     for (const key of normalized.keys) {
-      const id = ids[key];
+      const id2 = ids[key];
       const k = esc(key);
       const schema = shape[key];
       const isOptionalIn = schema?._zod?.optin === "optional";
       const isOptionalOut = schema?._zod?.optout === "optional";
-      doc.write(`const ${id} = ${parseStr(key)};`);
+      doc.write(`const ${id2} = ${parseStr(key)};`);
       if (isOptionalIn && isOptionalOut) {
         doc.write(`
-        if (${id}.issues.length) {
+        if (${id2}.issues.length) {
           if (${k} in input) {
-            payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
+            payload.issues = payload.issues.concat(${id2}.issues.map(iss => ({
               ...iss,
               path: iss.path ? [${k}, ...iss.path] : [${k}]
             })));
           }
         }
         
-        if (${id}.value === undefined) {
+        if (${id2}.value === undefined) {
           if (${k} in input) {
             newResult[${k}] = undefined;
           }
         } else {
-          newResult[${k}] = ${id}.value;
+          newResult[${k}] = ${id2}.value;
         }
         
       `);
       } else if (!isOptionalIn) {
         doc.write(`
-        const ${id}_present = ${k} in input;
-        if (${id}.issues.length) {
-          payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
+        const ${id2}_present = ${k} in input;
+        if (${id2}.issues.length) {
+          payload.issues = payload.issues.concat(${id2}.issues.map(iss => ({
             ...iss,
             path: iss.path ? [${k}, ...iss.path] : [${k}]
           })));
         }
-        if (!${id}_present && !${id}.issues.length) {
+        if (!${id2}_present && !${id2}.issues.length) {
           payload.issues.push({
             code: "invalid_type",
             expected: "nonoptional",
@@ -3153,30 +3153,30 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
           });
         }
 
-        if (${id}_present) {
-          if (${id}.value === undefined) {
+        if (${id2}_present) {
+          if (${id2}.value === undefined) {
             newResult[${k}] = undefined;
           } else {
-            newResult[${k}] = ${id}.value;
+            newResult[${k}] = ${id2}.value;
           }
         }
 
       `);
       } else {
         doc.write(`
-        if (${id}.issues.length) {
-          payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
+        if (${id2}.issues.length) {
+          payload.issues = payload.issues.concat(${id2}.issues.map(iss => ({
             ...iss,
             path: iss.path ? [${k}, ...iss.path] : [${k}]
           })));
         }
         
-        if (${id}.value === undefined) {
+        if (${id2}.value === undefined) {
           if (${k} in input) {
             newResult[${k}] = undefined;
           }
         } else {
-          newResult[${k}] = ${id}.value;
+          newResult[${k}] = ${id2}.value;
         }
         
       `);
@@ -7655,8 +7655,8 @@ function ko_default() {
 }
 
 // ../../node_modules/zod/v4/locales/lt.js
-var capitalizeFirstCharacter = (text) => {
-  return text.charAt(0).toUpperCase() + text.slice(1);
+var capitalizeFirstCharacter = (text2) => {
+  return text2.charAt(0).toUpperCase() + text2.slice(1);
 };
 function getUnitTypeFromNumber(number4) {
   const abs = Math.abs(number4);
@@ -11508,26 +11508,26 @@ function extractDefs(ctx2, schema) {
     throw new Error("Unprocessed schema. This is a bug in Zod.");
   const idToSchema = /* @__PURE__ */ new Map();
   for (const entry of ctx2.seen.entries()) {
-    const id = ctx2.metadataRegistry.get(entry[0])?.id;
-    if (id) {
-      const existing = idToSchema.get(id);
+    const id2 = ctx2.metadataRegistry.get(entry[0])?.id;
+    if (id2) {
+      const existing = idToSchema.get(id2);
       if (existing && existing !== entry[0]) {
-        throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
+        throw new Error(`Duplicate schema id "${id2}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
       }
-      idToSchema.set(id, entry[0]);
+      idToSchema.set(id2, entry[0]);
     }
   }
   const makeURI = (entry) => {
     const defsSegment = ctx2.target === "draft-2020-12" ? "$defs" : "definitions";
     if (ctx2.external) {
       const externalId = ctx2.external.registry.get(entry[0])?.id;
-      const uriGenerator = ctx2.external.uri ?? ((id2) => id2);
+      const uriGenerator = ctx2.external.uri ?? ((id3) => id3);
       if (externalId) {
         return { ref: uriGenerator(externalId) };
       }
-      const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx2.counter++}`;
-      entry[1].defId = id;
-      return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id}` };
+      const id2 = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx2.counter++}`;
+      entry[1].defId = id2;
+      return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id2}` };
     }
     if (entry[1] === root) {
       return { ref: "#" };
@@ -11575,8 +11575,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
         continue;
       }
     }
-    const id = ctx2.metadataRegistry.get(entry[0])?.id;
-    if (id) {
+    const id2 = ctx2.metadataRegistry.get(entry[0])?.id;
+    if (id2) {
       extractToDef(entry);
       continue;
     }
@@ -11672,10 +11672,10 @@ function finalize(ctx2, schema) {
   } else {
   }
   if (ctx2.external?.uri) {
-    const id = ctx2.external.registry.get(schema)?.id;
-    if (!id)
+    const id2 = ctx2.external.registry.get(schema)?.id;
+    if (!id2)
       throw new Error("Schema is missing an `id` property");
-    result2.$id = ctx2.external.uri(id);
+    result2.$id = ctx2.external.uri(id2);
   }
   Object.assign(result2, root.def ?? root.schema);
   const rootMetaId = ctx2.metadataRegistry.get(schema)?.id;
@@ -14531,6 +14531,89 @@ function date4(params) {
 // ../../node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// ../nexusdesk-protocol/src/working-copy.ts
+var text = external_exports.string().min(1).max(4096);
+var hash2 = external_exports.string().regex(/^[a-f0-9]{64}$/);
+var revision = external_exports.number().int().nonnegative().safe();
+var persistenceReferenceSchema = external_exports.object({
+  documentEpoch: text,
+  operationId: text,
+  requestFingerprint: hash2,
+  checkpointId: text,
+  blobHash: hash2,
+  workingRevision: revision,
+  savedRevision: revision,
+  dirty: external_exports.boolean()
+}).strict();
+var workingCopyBootstrapSchema = external_exports.object({
+  documentEpoch: text,
+  workingRevision: revision,
+  savedRevision: revision,
+  sourceContentId: hash2,
+  checkpointId: text.nullable(),
+  dirty: external_exports.boolean(),
+  recoveryState: external_exports.enum(["ready", "conflict"]),
+  contentUrl: text
+}).strict();
+var checkpointMetadataSchema = external_exports.object({
+  schemaVersion: external_exports.literal(1),
+  requestId: text,
+  clientId: text,
+  documentEpoch: text,
+  operationId: text,
+  expectedWorkingRevision: revision,
+  expectedSavedRevision: revision,
+  sourceContentId: hash2,
+  planHash: text,
+  result: external_exports.unknown().transform((value) => parseAgentToolResult(value)),
+  payloadKind: external_exports.enum(["docx-bytes", "xlsx-save-plan", "pdf-save-plan"])
+}).strict();
+var manualSaveMetadataSchema = external_exports.object({
+  operationId: text,
+  documentEpoch: text,
+  sourceContentId: hash2,
+  expectedWorkingRevision: revision,
+  expectedSavedRevision: revision,
+  payloadKind: external_exports.enum(["docx-bytes", "xlsx-save-plan", "pdf-save-plan"]),
+  snapshotHash: hash2
+}).strict();
+var checkpointPartSchema = external_exports.object({
+  partId: external_exports.string().regex(/^(document|manifest|edits-\d{4}|asset-\d{4})$/),
+  sha256: hash2,
+  byteLength: revision.max(134217728)
+}).strict();
+var checkpointCommitSchema = external_exports.object({ parts: external_exports.array(checkpointPartSchema).min(1).max(4096) }).strict();
+var workingCopyLookupSchema = external_exports.object({
+  documentEpoch: text,
+  operationId: text,
+  requestFingerprint: hash2
+}).strict();
+
+// ../nexusdesk-protocol/src/harness-frames.ts
+var id = external_exports.string().min(1).max(512);
+var base = { protocolVersion: external_exports.literal(1), id, documentId: id };
+var endpoint = external_exports.string().max(128).regex(/^[a-zA-Z0-9_$-]+(?:\/[a-zA-Z0-9_$-]+)*$/);
+var boundedObject = external_exports.record(external_exports.string(), external_exports.unknown()).refine((value) => {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= 512 * 1024;
+  } catch {
+    return false;
+  }
+}, "Native carrier payload exceeds 512 KiB.");
+var harnessClientFrameSchemas = [
+  external_exports.object({ ...base, type: external_exports.literal("harness:bind") }).strict(),
+  external_exports.object({
+    ...base,
+    type: external_exports.literal("harness:prepare"),
+    requestId: id,
+    revision: external_exports.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    selection: boundedObject
+  }).strict(),
+  external_exports.object({ ...base, type: external_exports.literal("harness:rpc"), endpoint, payload: boundedObject }).strict(),
+  external_exports.object({ ...base, type: external_exports.literal("harness:stream-open"), endpoint, payload: boundedObject }).strict(),
+  external_exports.object({ ...base, type: external_exports.literal("harness:stream-cancel"), streamId: id }).strict()
+];
+
 // ../nexusdesk-protocol/src/schemas.ts
 var nonEmptyString = external_exports.string().min(1);
 var revisionSchema = external_exports.number().int().nonnegative();
@@ -14588,6 +14671,7 @@ var agentToolResultSchema = external_exports.object({
 });
 var frameBase = { protocolVersion: external_exports.literal(PROTOCOL_VERSION) };
 var clientFrameSchema = external_exports.discriminatedUnion("type", [
+  ...harnessClientFrameSchemas,
   external_exports.object({
     ...frameBase,
     type: external_exports.literal("agent:start"),
@@ -14615,9 +14699,14 @@ var clientFrameSchema = external_exports.discriminatedUnion("type", [
     type: external_exports.literal("editor:register"),
     id: nonEmptyString,
     clientId: nonEmptyString,
+    rendererInstanceId: nonEmptyString,
     documentId: nonEmptyString,
     editorType: nonEmptyString,
-    revision: revisionSchema
+    revision: revisionSchema,
+    editorSessionId: external_exports.string().min(1).max(256).optional(),
+    documentEpoch: nonEmptyString.optional(),
+    sourceContentId: external_exports.string().regex(/^[a-f0-9]{64}$/).optional(),
+    restoredCheckpointId: nonEmptyString.nullable().optional()
   }).strict(),
   external_exports.object({
     ...frameBase,
@@ -14639,15 +14728,24 @@ var clientFrameSchema = external_exports.discriminatedUnion("type", [
     type: external_exports.literal("editor:result"),
     id: nonEmptyString,
     target: mutationTargetSchema,
-    result: agentToolResultSchema
+    result: agentToolResultSchema,
+    persistence: persistenceReferenceSchema.optional()
   }).strict(),
   external_exports.object({
     ...frameBase,
     type: external_exports.literal("operation:lookup"),
     id: nonEmptyString,
-    operationId: nonEmptyString
+    operationId: nonEmptyString,
+    documentId: nonEmptyString.optional(),
+    documentEpoch: nonEmptyString.optional(),
+    requestFingerprint: external_exports.string().regex(/^[a-f0-9]{64}$/).optional()
   }).strict()
-]);
+]).superRefine((frame, context) => {
+  const fields = frame.type === "editor:register" ? [frame.documentEpoch, frame.sourceContentId, frame.restoredCheckpointId] : frame.type === "operation:lookup" ? [frame.documentId, frame.documentEpoch, frame.requestFingerprint] : [];
+  if (fields.some((field) => field !== void 0) && fields.some((field) => field === void 0)) {
+    context.addIssue({ code: "custom", message: "Working-copy identity fields must be supplied together." });
+  }
+});
 function parseAgentToolResult(value) {
   return agentToolResultSchema.parse(value);
 }
@@ -14808,6 +14906,768 @@ function projectStreamChunk(sessionId, chunk, openTextBlocks) {
   return eventFrame(sessionId, "stream/chunk", data);
 }
 
+// src/office-gateway-channel.ts
+import { randomUUID } from "node:crypto";
+
+// src/office-gateway-policy.ts
+function record2(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid Office gateway object.");
+  }
+  return value;
+}
+function exactKeys(value, keys) {
+  if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
+    throw new Error("Invalid Office gateway fields.");
+  }
+}
+function nonempty(value) {
+  if (typeof value !== "string" || !value) throw new Error("Missing Office gateway identity.");
+  return value;
+}
+function authorizeOfficeGatewayRequest(binding, mode2, endpoint2, payload) {
+  nonempty(binding.sessionId);
+  const envelope = record2(payload);
+  exactKeys(envelope, ["args"]);
+  const args = record2(envelope.args);
+  const noArgs = mode2 === "call" ? endpoint2 === "session/modelCatalog" : endpoint2 === "$events" || endpoint2 === "session/control";
+  if (noArgs) {
+    exactKeys(args, []);
+    return structuredClone(envelope);
+  }
+  const permitted = mode2 === "call" ? [
+    "session/prompt",
+    "session/cancel",
+    "session/selectModel",
+    "session/page",
+    "session/attachment"
+  ] : ["session/follow"];
+  if (!permitted.includes(endpoint2))
+    throw new Error("This capability is not available in the Office panel.");
+  exactKeys(args, ["request"]);
+  const request = record2(args.request);
+  if (endpoint2 === "session/page" || endpoint2 === "session/follow") {
+    const address = record2(request.address);
+    exactKeys(address, ["kind", "sessionId"]);
+    if (address.kind !== "session" || address.sessionId !== binding.sessionId) {
+      throw new Error("The requested history does not belong to this document.");
+    }
+  } else if (request.sessionId !== binding.sessionId) {
+    throw new Error("The requested Session does not belong to this document.");
+  }
+  if (endpoint2 === "session/prompt") {
+    nonempty(request.requestId);
+    if (request.mode !== "queue") throw new Error("Office prompts require a new frozen submission.");
+  }
+  return structuredClone(envelope);
+}
+function filterOfficeControlFrame(sessionId, input) {
+  const frame = record2(input);
+  if (frame.type === "baseline") {
+    const value = record2(frame.value);
+    const jobs = record2(value.jobs);
+    const projections = record2(value.projections);
+    return {
+      type: "baseline",
+      value: {
+        jobs: Object.hasOwn(jobs, sessionId) ? { [sessionId]: structuredClone(jobs[sessionId]) } : {},
+        projections: Object.hasOwn(projections, sessionId) ? { [sessionId]: structuredClone(projections[sessionId]) } : {}
+      }
+    };
+  }
+  if ((frame.type === "jobs" || frame.type === "projection") && frame.sessionId === sessionId) {
+    return structuredClone(frame);
+  }
+  return void 0;
+}
+var OfficeRemoteEventFilter = class {
+  constructor(sessionId, clientToken) {
+    this.sessionId = sessionId;
+    this.clientToken = clientToken;
+    nonempty(sessionId);
+    nonempty(clientToken);
+  }
+  gatewayClientId;
+  deliveries = /* @__PURE__ */ new Map();
+  closed = false;
+  receive(input) {
+    if (this.closed) throw new Error("Office event stream is closed.");
+    const frame = record2(input);
+    if (frame.type === "ready") {
+      if (this.gatewayClientId) throw new Error("Duplicate Office event generation.");
+      this.gatewayClientId = nonempty(frame.clientId);
+      return { forward: { ...structuredClone(frame), clientId: this.clientToken } };
+    }
+    if (!this.gatewayClientId) throw new Error("Office event stream is not ready.");
+    if (frame.type === "waterfall") {
+      const eventId = nonempty(frame.eventId);
+      if (frame.agentId !== this.sessionId || !["approval/request", "user-questions/request"].includes(String(frame.event))) {
+        return {
+          delegate: {
+            args: { clientId: this.gatewayClientId, eventId, outcome: { kind: "next" } }
+          }
+        };
+      }
+      if (this.deliveries.has(eventId) || this.deliveries.size >= 128) {
+        throw new Error("Office event delivery limit or duplicate delivery.");
+      }
+      this.deliveries.set(eventId, String(frame.event));
+      return { forward: structuredClone(frame) };
+    }
+    if (frame.type === "cancel") {
+      if (!this.deliveries.delete(nonempty(frame.eventId))) return {};
+      return { forward: structuredClone(frame) };
+    }
+    if (frame.type === "emit") {
+      const args = Array.isArray(frame.args) ? frame.args : [];
+      const scoped = [
+        "api-session/status",
+        "api-session/activity",
+        "api-session/error",
+        "api-session/removed"
+      ];
+      if (scoped.includes(String(frame.event)) && args[0] === this.sessionId)
+        return { forward: structuredClone(frame) };
+      if (frame.event === "llm/adapters-updated" && args.length === 0)
+        return { forward: structuredClone(frame) };
+    }
+    return {};
+  }
+  /** Consume before awaiting Gateway dispatch so a concurrent duplicate cannot settle twice. */
+  consume(input) {
+    if (this.closed || !this.gatewayClientId)
+      throw new Error("Office event stream is closed or not ready.");
+    const payload = record2(input);
+    exactKeys(payload, ["args"]);
+    const args = record2(payload.args);
+    exactKeys(args, ["clientId", "eventId", "outcome"]);
+    const eventId = nonempty(args.eventId);
+    const event = this.deliveries.get(eventId);
+    if (args.clientId !== this.clientToken || event === void 0) {
+      throw new Error("This question was not delivered to this Office client.");
+    }
+    const outcome = record2(args.outcome);
+    if (typeof outcome.kind !== "string" || !["next", "result", "rejected"].includes(outcome.kind))
+      throw new Error("Invalid question answer outcome.");
+    if (event === "approval/request" && outcome.kind === "result" && (typeof outcome.value !== "string" || !["allowed-once", "rejected", "cancelled", "unavailable"].includes(outcome.value))) {
+      throw new Error("Invalid Office approval outcome.");
+    }
+    this.deliveries.delete(eventId);
+    return { args: { ...structuredClone(args), clientId: this.gatewayClientId } };
+  }
+  close() {
+    this.closed = true;
+    this.gatewayClientId = void 0;
+    this.deliveries.clear();
+  }
+};
+
+// src/office-gateway-channel.ts
+var OfficeGatewayChannel = class {
+  constructor(options) {
+    this.options = options;
+  }
+  lifetime = new AbortController();
+  streams = /* @__PURE__ */ new Map();
+  assertLive() {
+    this.lifetime.signal.throwIfAborted();
+    this.options.assertOwner();
+  }
+  async call(endpoint2, input, signal) {
+    this.assertLive();
+    const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+    combined.throwIfAborted();
+    let payload;
+    if (endpoint2 === "$events/result") {
+      const token = input?.args?.clientId;
+      const stream = [...this.streams.values()].find(
+        (entry) => entry.token === token && entry.events !== void 0
+      );
+      if (!stream?.events) throw new Error("No active Office answer stream owns this result.");
+      payload = stream.events.consume(input);
+    } else {
+      payload = authorizeOfficeGatewayRequest(this.options, "call", endpoint2, input);
+      if (endpoint2 === "session/prompt") {
+        const requestId = payload.args.request.requestId;
+        payload = await this.options.preparePrompt(payload);
+        this.assertLive();
+        payload = authorizeOfficeGatewayRequest(this.options, "call", endpoint2, payload);
+        if (payload.args.request.requestId !== requestId) {
+          throw new Error("Office preparation changed the native request identity.");
+        }
+      }
+    }
+    combined.throwIfAborted();
+    return this.options.dispatch(endpoint2, payload, combined);
+  }
+  async *open(streamId, endpoint2, input, signal) {
+    this.assertLive();
+    if (!streamId || this.streams.has(streamId) || this.streams.size >= 16)
+      throw new Error("Invalid or duplicate Office stream.");
+    const payload = authorizeOfficeGatewayRequest(this.options, "stream", endpoint2, input);
+    if (endpoint2 === "$events" && [...this.streams.values()].some((entry) => entry.events)) {
+      throw new Error("An Office answer stream is already active.");
+    }
+    const abort = new AbortController();
+    const combined = AbortSignal.any([
+      this.lifetime.signal,
+      abort.signal,
+      ...signal ? [signal] : []
+    ]);
+    combined.throwIfAborted();
+    const token = endpoint2 === "$events" ? randomUUID() : void 0;
+    const events = token ? new OfficeRemoteEventFilter(this.options.sessionId, token) : void 0;
+    const stream = { abort, ...events ? { events, token } : {} };
+    this.streams.set(streamId, stream);
+    try {
+      for await (const value of this.options.open(endpoint2, payload, combined)) {
+        this.assertLive();
+        combined.throwIfAborted();
+        if (events) {
+          const filtered = events.receive(value);
+          if (filtered.delegate) {
+            const result2 = await this.options.dispatch(
+              "$events/result",
+              filtered.delegate,
+              combined
+            );
+            if (!result2.ok) throw new Error("Unable to delegate unrelated Gateway event.");
+          }
+          if (filtered.forward) yield filtered.forward;
+        } else if (endpoint2 === "session/control") {
+          const filtered = filterOfficeControlFrame(this.options.sessionId, value);
+          if (filtered) yield filtered;
+        } else {
+          yield value;
+        }
+      }
+    } finally {
+      abort.abort();
+      events?.close();
+      if (this.streams.get(streamId) === stream) this.streams.delete(streamId);
+    }
+  }
+  cancel(streamId) {
+    const stream = this.streams.get(streamId);
+    stream?.events?.close();
+    stream?.abort.abort();
+    this.streams.delete(streamId);
+  }
+  close() {
+    this.lifetime.abort();
+    for (const streamId of this.streams.keys()) this.cancel(streamId);
+  }
+};
+
+// src/office-session-binding.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+var BINDING_FILE = "office-session-bindings.json";
+var BINDING_LOCK_DIRECTORY = ".office-session-bindings.lock";
+var BINDING_LOCK_OWNER_FILE = "owner.json";
+var BINDING_LOCK_TIMEOUT_MS = 5e3;
+var BINDING_LOCK_RETRY_MS = 10;
+var MAX_SHEET_SELECTION_CELLS = 1e4;
+var MAX_SLIDE_SELECTION_ELEMENTS = 256;
+var MAX_DOCUMENT_POSITION = 1e8;
+var A1_RANGE = /^\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?$/;
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function boundedString(value, label, maxLength) {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+    throw new Error(`Invalid Office ${label}.`);
+  }
+  return value;
+}
+function boundedInteger(value, label, maximum = Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new Error(`Invalid Office ${label}.`);
+  }
+  return value;
+}
+function strictKeys(value, allowed, label) {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`Invalid Office ${label}.`);
+  }
+}
+function columnNumber(column) {
+  let result2 = 0;
+  for (const character of column.toUpperCase()) {
+    result2 = result2 * 26 + character.charCodeAt(0) - 64;
+  }
+  return result2;
+}
+function validateA1Range(value) {
+  const match = A1_RANGE.exec(value);
+  if (match === null) throw new Error("Invalid Office sheets selection range.");
+  const startColumn = columnNumber(match[1]);
+  const startRow = Number(match[2]);
+  const endColumn = columnNumber(match[3] ?? match[1]);
+  const endRow = Number(match[4] ?? match[2]);
+  if (startColumn < 1 || startColumn > 16384 || endColumn < startColumn || endColumn > 16384 || startRow < 1 || startRow > 1048576 || endRow < startRow || endRow > 1048576) {
+    throw new Error("Invalid Office sheets selection range.");
+  }
+  const cells = (endColumn - startColumn + 1) * (endRow - startRow + 1);
+  if (cells > MAX_SHEET_SELECTION_CELLS) {
+    throw new Error("Office sheets selection range is too large.");
+  }
+  return value.toUpperCase();
+}
+function validateSelection(editorType, value) {
+  if (!isRecord(value) || value.kind !== editorType) {
+    throw new Error("Office selection does not match its editor.");
+  }
+  if (editorType === "sheets") {
+    strictKeys(value, ["kind", "sheetId", "a1", "columns"], "sheets selection");
+    const a1 = value.a1 === null ? null : validateA1Range(boundedString(value.a1, "sheets selection range", 32));
+    if (value.columns !== void 0 && (!Array.isArray(value.columns) || value.columns.length > 256)) {
+      throw new Error("Invalid Office sheets selection columns.");
+    }
+    const columns = value.columns === void 0 ? void 0 : Object.freeze(value.columns.map(
+      (column) => boundedString(column, "sheets selection column", 255)
+    ));
+    return Object.freeze({
+      kind: "sheets",
+      sheetId: boundedString(value.sheetId, "sheets selection sheet identity", 256),
+      a1,
+      ...columns === void 0 ? {} : { columns }
+    });
+  }
+  if (editorType === "docs") {
+    strictKeys(value, ["kind", "startIndex", "endIndex", "isRange", "from", "to"], "docs selection");
+    const startIndex = boundedInteger(value.startIndex, "docs selection start", MAX_DOCUMENT_POSITION);
+    const endIndex = boundedInteger(value.endIndex, "docs selection end", MAX_DOCUMENT_POSITION);
+    if (startIndex > endIndex || typeof value.isRange !== "boolean") {
+      throw new Error("Invalid Office docs selection.");
+    }
+    const from = value.from === void 0 ? void 0 : boundedInteger(value.from, "docs selection from", MAX_DOCUMENT_POSITION);
+    const to = value.to === void 0 ? void 0 : boundedInteger(value.to, "docs selection to", MAX_DOCUMENT_POSITION);
+    if (from === void 0 !== (to === void 0) || from !== void 0 && to !== void 0 && from > to) {
+      throw new Error("Invalid Office docs selection positions.");
+    }
+    return Object.freeze({
+      kind: "docs",
+      startIndex,
+      endIndex,
+      isRange: value.isRange,
+      ...from === void 0 || to === void 0 ? {} : { from, to }
+    });
+  }
+  strictKeys(value, ["kind", "slide", "elements"], "slides selection");
+  if (!Array.isArray(value.elements) || value.elements.length > MAX_SLIDE_SELECTION_ELEMENTS) {
+    throw new Error("Invalid Office slides selection elements.");
+  }
+  const elements = value.elements.map(
+    (element) => boundedString(element, "slides selection element", 256)
+  );
+  if (new Set(elements).size !== elements.length) {
+    throw new Error("Invalid Office slides selection elements.");
+  }
+  return Object.freeze({
+    kind: "slides",
+    slide: boundedInteger(value.slide, "slides selection slide", 1e5),
+    elements: Object.freeze(elements)
+  });
+}
+function freezeOfficeTurnContext(value) {
+  if (!isRecord(value)) throw new Error("Invalid Office turn context.");
+  strictKeys(value, ["hostId", "documentId", "editorType", "revision", "selection"], "turn context");
+  if (value.editorType !== "sheets" && value.editorType !== "docs" && value.editorType !== "slides") {
+    throw new Error("Invalid Office editor type.");
+  }
+  const revision2 = boundedInteger(value.revision, "revision");
+  return Object.freeze({
+    hostId: boundedString(value.hostId, "Host identity", 256),
+    documentId: boundedString(value.documentId, "document identity", 512),
+    editorType: value.editorType,
+    revision: revision2,
+    selection: validateSelection(value.editorType, value.selection)
+  });
+}
+function validateBindingMap(value) {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.bindings)) {
+    throw new Error("Invalid Office Session binding map.");
+  }
+  const keys = /* @__PURE__ */ new Set();
+  const sessions = /* @__PURE__ */ new Set();
+  const bindings = value.bindings.map((entry) => {
+    if (!isRecord(entry)) throw new Error("Invalid Office Session binding map.");
+    strictKeys(entry, ["hostId", "documentId", "sessionId"], "Session binding map");
+    const binding = {
+      hostId: boundedString(entry.hostId, "Host identity", 256),
+      documentId: boundedString(entry.documentId, "document identity", 512),
+      sessionId: boundedString(entry.sessionId, "Session identity", 256)
+    };
+    const key = JSON.stringify([binding.hostId, binding.documentId]);
+    if (keys.has(key) || sessions.has(binding.sessionId)) {
+      throw new Error("Invalid Office Session binding map.");
+    }
+    keys.add(key);
+    sessions.add(binding.sessionId);
+    return binding;
+  });
+  return { version: 1, bindings };
+}
+function parseBindingLockOwner(value) {
+  if (!isRecord(value) || value.version !== 1) return void 0;
+  if (typeof value.token !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid <= 0) {
+    return void 0;
+  }
+  return { version: 1, token: value.token, pid: value.pid };
+}
+async function readBindingLockOwner(lockPath) {
+  try {
+    return parseBindingLockOwner(JSON.parse(
+      await readFile(join(lockPath, BINDING_LOCK_OWNER_FILE), "utf8")
+    ));
+  } catch {
+    return void 0;
+  }
+}
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error51) {
+    return error51.code !== "ESRCH";
+  }
+}
+var OfficeSessionBindingStore = class {
+  constructor(stateDirectory, createSessionId = () => `office-${randomUUID2()}`, lockOptions = {}) {
+    this.stateDirectory = stateDirectory;
+    this.createSessionId = createSessionId;
+    this.lockOptions = lockOptions;
+  }
+  queue = Promise.resolve();
+  bindOfficeSession(hostId, documentId) {
+    const operation = this.queue.then(
+      () => this.bindWithLock(hostId, documentId),
+      () => this.bindWithLock(hostId, documentId)
+    );
+    this.queue = operation.then(() => void 0, () => void 0);
+    return operation;
+  }
+  async bindWithLock(hostId, documentId) {
+    await mkdir(this.stateDirectory, { recursive: true });
+    const lockPath = join(this.stateDirectory, BINDING_LOCK_DIRECTORY);
+    const lockTimeoutMs = this.lockOptions.lockTimeoutMs ?? BINDING_LOCK_TIMEOUT_MS;
+    const lockRetryMs = this.lockOptions.lockRetryMs ?? BINDING_LOCK_RETRY_MS;
+    const startedAt = Date.now();
+    let release;
+    while (true) {
+      release = await this.tryAcquireBindingLock(lockPath);
+      if (release !== void 0) break;
+      const owner = await readBindingLockOwner(lockPath);
+      if (owner !== void 0 && !processIsAlive(owner.pid)) {
+        const recoveredPath = join(
+          this.stateDirectory,
+          `.office-session-bindings.recovered-${owner.token}`
+        );
+        try {
+          await rename(lockPath, recoveredPath);
+          continue;
+        } catch (error51) {
+          const code = error51.code;
+          if (code !== "ENOENT" && code !== "EEXIST" && code !== "ENOTEMPTY") throw error51;
+        }
+      }
+      if (Date.now() - startedAt >= lockTimeoutMs) {
+        throw new Error("Timed out waiting for the Office Session binding map lock.");
+      }
+      await delay(lockRetryMs);
+    }
+    try {
+      return await this.bind(hostId, documentId);
+    } finally {
+      await release();
+    }
+  }
+  async tryAcquireBindingLock(lockPath) {
+    const token = randomUUID2();
+    const candidatePath = join(
+      this.stateDirectory,
+      `.office-session-bindings.candidate-${token}`
+    );
+    await mkdir(candidatePath, { mode: 448 });
+    await writeFile(
+      join(candidatePath, BINDING_LOCK_OWNER_FILE),
+      `${JSON.stringify({ version: 1, token, pid: process.pid })}
+`,
+      { encoding: "utf8", mode: 384 }
+    );
+    try {
+      await rename(candidatePath, lockPath);
+    } catch (error51) {
+      await rm(candidatePath, { recursive: true, force: true });
+      const code = error51.code;
+      if (code === "EEXIST" || code === "ENOTEMPTY") return void 0;
+      throw error51;
+    }
+    return async () => {
+      const owner = await readBindingLockOwner(lockPath);
+      if (owner?.token !== token || owner.pid !== process.pid) {
+        throw new Error("Could not release the owned Office Session binding map lock.");
+      }
+      await rm(lockPath, { recursive: true });
+    };
+  }
+  async bind(hostIdValue, documentIdValue) {
+    const hostId = boundedString(hostIdValue, "Host identity", 256);
+    const documentId = boundedString(documentIdValue, "document identity", 512);
+    const path = join(this.stateDirectory, BINDING_FILE);
+    let state = { version: 1, bindings: [] };
+    try {
+      state = validateBindingMap(JSON.parse(await readFile(path, "utf8")));
+    } catch (error51) {
+      if (error51.code !== "ENOENT") {
+        throw new Error("Could not read the Office Session binding map.", { cause: error51 });
+      }
+    }
+    const existing = state.bindings.find(
+      (binding) => binding.hostId === hostId && binding.documentId === documentId
+    );
+    if (existing !== void 0) return existing.sessionId;
+    const sessionId = boundedString(this.createSessionId(), "Session identity", 256);
+    if (state.bindings.some((binding) => binding.sessionId === sessionId)) {
+      throw new Error("Office Session identity is already bound.");
+    }
+    const next = {
+      version: 1,
+      bindings: [...state.bindings, { hostId, documentId, sessionId }]
+    };
+    const temporary = join(this.stateDirectory, `.${BINDING_FILE}.${randomUUID2()}.tmp`);
+    await writeFile(temporary, `${JSON.stringify(next)}
+`, { encoding: "utf8", mode: 384 });
+    await rename(temporary, path);
+    return sessionId;
+  }
+};
+async function acquireOfficeAgent(input) {
+  const snapshot = await input.sessionPersistence.stat(input.sessionId);
+  if (snapshot === void 0) {
+    const handle3 = await input.agents.create({
+      sessionId: input.sessionId,
+      meta: { cwd: input.cwd },
+      agentOptions: input.agentOptions,
+      setup: input.setup
+    });
+    return { handle: handle3, resumed: false };
+  }
+  const handle2 = await input.agents.resume({
+    resumeSessionId: input.sessionId,
+    agentOptions: input.agentOptions,
+    setup: input.setup
+  });
+  try {
+    if (handle2.agent.inbox.hasPending) handle2.agent.inbox.clear();
+  } catch (error51) {
+    await Promise.resolve(handle2.dispose()).catch(() => void 0);
+    throw error51;
+  }
+  return { handle: handle2, resumed: true };
+}
+function officeTurnContextText(context) {
+  const visibleContext = {
+    documentId: context.documentId,
+    editorType: context.editorType,
+    revision: context.revision,
+    selection: context.selection
+  };
+  return `NexusDesk Office context (Host-validated and frozen at submission):
+${JSON.stringify(visibleContext)}`;
+}
+
+// src/office-runtime-carrier.ts
+var OfficeRuntimeCarrier = class {
+  constructor(options) {
+    this.options = options;
+  }
+  channels = /* @__PURE__ */ new Map();
+  preparedRequests = /* @__PURE__ */ new Set();
+  entry(input) {
+    const key = JSON.stringify([input.clientId, input.sessionId, input.frame.documentId]);
+    const assertOwner = () => {
+      const target = this.options.target(input.sessionId);
+      if (!target || target.clientId !== input.clientId || target.documentId !== input.frame.documentId) throw new Error("Native Office session ownership changed.");
+    };
+    assertOwner();
+    let entry = this.channels.get(key);
+    if (entry) return entry;
+    if (this.channels.size >= 128) throw new Error("Too many Office channels.");
+    const contexts = /* @__PURE__ */ new Map();
+    const channel = new OfficeGatewayChannel({
+      sessionId: input.sessionId,
+      assertOwner,
+      dispatch: this.options.dispatch,
+      open: this.options.open,
+      preparePrompt: async (payload) => {
+        const args = payload.args;
+        const requestId = args.request.requestId;
+        const context = contexts.get(requestId);
+        if (!context) throw new Error("Native prompt has no prepared Office context.");
+        contexts.delete(requestId);
+        const target = this.options.target(input.sessionId);
+        if (target.revision !== context.revision) throw new Error("Document changed after submission preparation.");
+        if (!Array.isArray(args.request.content)) throw new Error("Invalid native prompt content.");
+        return { args: { request: { ...args.request, content: [{ type: "text", text: officeTurnContextText(context) }, ...args.request.content] } } };
+      }
+    });
+    entry = { clientId: input.clientId, channel, contexts };
+    this.channels.set(key, entry);
+    return entry;
+  }
+  async handle(input) {
+    const frame = input.frame;
+    const base2 = { protocolVersion: 1, id: frame.id, documentId: frame.documentId };
+    const send2 = (value) => this.options.send({ type: "office:client-result", protocolVersion: 1, clientId: input.clientId, frame: value });
+    const fail = (_error) => send2({ ...base2, type: "harness:error", message: "\u4F1A\u8BDD\u8BF7\u6C42\u672A\u80FD\u5B8C\u6210\uFF1B\u5982\u5DF2\u63D0\u4EA4\u4FEE\u6539\uFF0C\u8BF7\u5148\u6838\u5B9E\u6587\u6863\u7ED3\u679C\u3002" });
+    try {
+      const entry = this.entry(input);
+      switch (frame.type) {
+        case "harness:prepare": {
+          const identity = JSON.stringify([input.sessionId, frame.requestId]);
+          if (entry.contexts.size >= 128 || this.preparedRequests.size >= 1e4 || this.preparedRequests.has(identity)) throw new Error("Duplicate or excessive Office submissions.");
+          const context = freezeOfficeTurnContext(input.context);
+          const target = this.options.target(input.sessionId);
+          if (context.documentId !== frame.documentId || context.editorType !== target.editorType || context.revision !== frame.revision || context.revision < target.revision) throw new Error("Prepared context does not match the bound document.");
+          target.revision = context.revision;
+          entry.contexts.set(frame.requestId, context);
+          this.preparedRequests.add(identity);
+          send2({ ...base2, type: "harness:prepared", requestId: frame.requestId });
+          return;
+        }
+        case "harness:rpc": {
+          const result2 = await entry.channel.call(frame.endpoint, frame.payload);
+          send2({ ...base2, type: "harness:result", result: result2 });
+          return;
+        }
+        case "harness:stream-open":
+          void (async () => {
+            try {
+              for await (const value of entry.channel.open(frame.id, frame.endpoint, frame.payload)) send2({ ...base2, type: "harness:stream-item", value });
+              send2({ ...base2, type: "harness:stream-end" });
+            } catch (error51) {
+              fail(error51);
+            }
+          })();
+          return;
+        case "harness:stream-cancel":
+          entry.channel.cancel(frame.streamId);
+          return;
+      }
+    } catch (error51) {
+      fail(error51);
+    }
+  }
+  detach(clientId) {
+    for (const [key, entry] of this.channels) {
+      if (entry.clientId !== clientId) continue;
+      entry.channel.close();
+      entry.contexts.clear();
+      this.channels.delete(key);
+    }
+  }
+  close() {
+    for (const entry of this.channels.values()) {
+      entry.channel.close();
+      entry.contexts.clear();
+    }
+    this.channels.clear();
+    this.preparedRequests.clear();
+  }
+};
+
+// src/office-gateway-fetch.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+function createOfficeGatewayFetch(handler) {
+  return async (endpoint2, payload, signal) => {
+    if (!/^[a-zA-Z0-9_$-]+(?:\/[a-zA-Z0-9_$-]+)*$/.test(endpoint2)) {
+      throw new Error("Invalid internal Gateway endpoint.");
+    }
+    signal?.throwIfAborted();
+    const rpcId = randomUUID3();
+    const response = await handler.fetch(
+      new Request(`http://office.invalid/api/${endpoint2}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "client-request", rpcId, method: endpoint2, payload }),
+        ...signal ? { signal } : {}
+      })
+    );
+    if (!response.ok) throw new Error(`Internal Gateway returned HTTP ${response.status}.`);
+    const message = await response.json();
+    if (!message || typeof message !== "object" || !("type" in message) || message.type !== "server-response" || !("rpcId" in message) || message.rpcId !== rpcId) {
+      throw new Error("Internal Gateway response correlation mismatch.");
+    }
+    const result2 = "result" in message ? message.result : void 0;
+    if (!result2 || typeof result2 !== "object" || !("ok" in result2))
+      throw new Error("Invalid Gateway result.");
+    if (result2.ok === true) return { ok: true, value: "value" in result2 ? result2.value : void 0 };
+    if (result2.ok === false && "error" in result2 && result2.error && typeof result2.error === "object") {
+      const error51 = result2.error;
+      if ("code" in error51 && typeof error51.code === "string" && "message" in error51 && typeof error51.message === "string" && "details" in error51 && error51.details !== null && typeof error51.details === "object") {
+        return {
+          ok: false,
+          error: { code: error51.code, message: error51.message, details: error51.details }
+        };
+      }
+    }
+    throw new Error("Invalid Gateway result.");
+  };
+}
+
+// src/office-resource.ts
+import { readFile as readFile2 } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join as join2 } from "node:path";
+import { bootInjections } from "@deepseek-ai/dsh-client-modules";
+import { renderIndexInjections } from "@deepseek-ai/dsh-host-webserver";
+function createOfficeIndexHtml(source, injections) {
+  const entry = source.match(/<script\s+type="module"[^>]*src="(\.\/assets\/[^"<>]+\.js)"[^>]*><\/script>/);
+  if (!entry?.[1]) throw new Error("Unsupported official frontend entry layout.");
+  const script = `
+<script type="module">
+import { installOfficePanelBinding } from '/harness/binding.js';
+const capability = window.frameElement?.__NEXUSD_OFFICE__;
+const status = document.getElementById('office-status');
+const fail = () => { status.hidden = false; status.textContent = '\u52A9\u624B\u672A\u80FD\u8FDE\u63A5\u3002\u8BF7\u91CD\u65B0\u6253\u5F00\u5F53\u524D\u6587\u6863\u9762\u677F\uFF1B\u4E0D\u8981\u91CD\u590D\u63D0\u4EA4\u672A\u6838\u5B9E\u7684\u4FEE\u6539\u3002'; capability?.onError?.(); };
+try {
+  if (!capability?.binding || !capability?.rpc) throw new Error('Missing Office capability');
+  window.__DSH_TRANSPORT__ = { rpc: capability.rpc };
+  installOfficePanelBinding(capability.binding);
+  let reported = false;
+  const observer = new MutationObserver(() => {
+    const ready = document.querySelector('[data-nexusdesk-office-panel="ready"]');
+    const failed = document.querySelector('[data-nexusdesk-office-panel="failed"]');
+    status.hidden = Boolean(ready);
+    if (ready && !reported) { reported = true; capability.onReady?.(); }
+    if (failed) fail();
+  });
+  observer.observe(document.getElementById('root'), { childList: true, subtree: true });
+  await import(${JSON.stringify(entry[1].replace("./assets/", "/harness/assets/"))});
+} catch { fail(); }
+</script>`;
+  const html = source.replace(entry[0], "").replaceAll('href="./', 'href="/harness/').replace('<html lang="en">', '<html lang="zh-CN">').replace("</head>", `<style>html,body,#root{height:100%;margin:0}#root:not(:has([data-nexusdesk-office-panel])){visibility:hidden}#office-status{position:absolute;inset:0;display:grid;place-items:center;padding:20px;text-align:center;font:14px system-ui;color:#666}#office-status[hidden]{display:none}</style></head>`).replace("</body>", `<div id="office-status" role="status">\u6B63\u5728\u8FDE\u63A5\u6587\u6863\u52A9\u624B\u2026</div>${script}</body>`);
+  return renderIndexInjections(html, injections);
+}
+async function readOfficeResource(modules, url2) {
+  if (url2 === "/harness/index.html") {
+    const graph = modules.graph();
+    if (!graph.entries.some((entry) => entry.id === "@nexusdesk/harness-office-panel-ui")) throw new Error("Office Client graph is missing its restricted root.");
+    const require2 = createRequire(import.meta.url);
+    const frontendRoot = dirname(require2.resolve("@deepseek-ai/dsh-web-frontend/package.json"));
+    const html = createOfficeIndexHtml(await readFile2(join2(frontendRoot, "dist/index.html"), "utf8"), bootInjections(graph));
+    return { status: 200, contentType: "text/html; charset=utf-8", bodyBase64: Buffer.from(html).toString("base64") };
+  }
+  if (!url2.startsWith("/plugins/") || url2.length > 16384 || url2.includes(".map")) throw new Error("Invalid Office resource URL.");
+  const response = await modules.fetchBundle(new Request(new URL(url2, "http://office.invalid")));
+  return { status: response.status, contentType: response.headers.get("content-type") ?? "application/javascript", bodyBase64: Buffer.from(await response.arrayBuffer()).toString("base64") };
+}
+
 // src/runtime-policy.ts
 var SHEETS_TOOL_NAMES = ["read_sheet", "apply_sheet_operations", "save_sheet"];
 var DOCS_TOOL_NAMES = [
@@ -14866,8 +15726,8 @@ function officeToolNames(editorType) {
   if (editorType === "html") return HTML_TOOL_NAMES;
   throw new Error(`unsupported Office editor: ${editorType}`);
 }
-function configureOfficeToolScope(agentContext, editorType, agentScope) {
-  const toolNames = officeToolNames(editorType);
+function configureOfficeToolScope(agentContext, editorType, agentScope, options = {}) {
+  const toolNames = [...officeToolNames(editorType), ...options.nativeQuestions ? ["ask_user_question"] : []];
   const allowed = new Set(toolNames);
   agentContext.tools.restrict({ allow: toolNames });
   agentContext.tools.guard(
@@ -14963,7 +15823,11 @@ function createDocsTools(bridge) {
       const { operationId, proposal: proposal3 } = proposalFrom(proposalResult);
       const approval = await bridge.approve("apply_document_operations", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("document mutation was not approved");
+        return {
+          ok: false,
+          summary: "The operation was not approved.",
+          warnings: [{ code: "APPROVAL_DENIED", message: "The operation was not approved." }]
+        };
       }
       return agentResult(
         await bridge.request("apply_ops", { ops: args.operations }, exec, {
@@ -14976,25 +15840,42 @@ function createDocsTools(bridge) {
   });
   const save = defineTool({
     name: "save_document",
-    description: "Save the open document in place. The model cannot choose or change the authorized path.",
+    description: "Save the proposed document snapshot in place after exact approval.",
     parameters: {},
     output: agentOutput,
-    async execute(_args, exec) {
-      const proposal3 = {
-        planHash: "save-current-document-in-place",
-        summary: "Save the current document in place.",
-        targets: ["current document"],
-        warnings: []
-      };
-      const approval = await bridge.approve("save_document", proposal3, exec);
-      if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("document save was not approved");
+    async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request("propose_save", {}, execution));
+      if (!proposed.ok) return proposed;
+      const data = proposed.data ?? {};
+      if (typeof data.operationId !== "string" || typeof data.planHash !== "string" || typeof data.snapshotHash !== "string" || !data.snapshotHash) {
+        throw new Error("editor returned an invalid save proposal");
       }
-      return agentResult(
-        await bridge.request("save_document", { inPlace: true }, exec, {
-          approvalId: approval.approvalId,
-          planHash: proposal3.planHash
-        })
+      const proposal3 = {
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === "string" ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets) ? data.targets.filter((value) => typeof value === "string") : [],
+        warnings: proposed.warnings
+      };
+      const approval = await bridge.approve("save_document", proposal3, execution);
+      if (!approval.approved || approval.approvalId === void 0) {
+        return {
+          ok: false,
+          summary: "The operation was not approved.",
+          warnings: [{ code: "APPROVAL_DENIED", message: "The operation was not approved." }]
+        };
+      }
+      return parseAgentToolResult(
+        await bridge.request(
+          "save_document",
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId
+          }
+        )
       );
     }
   });
@@ -15005,7 +15886,9 @@ function createDocsTools(bridge) {
 import { defineTool as defineTool2 } from "@deepseek-ai/dsh-tools";
 var agentOutput2 = {
   schema: { type: "json" },
-  render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }]
+  render: (_args, value) => [
+    { type: "text", text: JSON.stringify(value) }
+  ]
 };
 var MARKDOWN_DSL_GUIDE = [
   "Markdown DSL (ordered and atomic):",
@@ -15068,7 +15951,9 @@ function createMarkdownTools(bridge) {
     output: agentOutput2,
     isConcurrencySafe: () => true,
     async execute(_args, execution) {
-      return agentResult2(await bridge.request("read_markdown", {}, execution));
+      return agentResult2(
+        await bridge.request("read_markdown", {}, execution)
+      );
     }
   });
   const apply = defineTool2({
@@ -15085,7 +15970,9 @@ ${MARKDOWN_DSL_GUIDE}`
     },
     output: agentOutput2,
     async execute(args, execution) {
-      const proposed = agentResult2(await bridge.request("propose_ops", { ops: args.operations }, execution));
+      const proposed = agentResult2(
+        await bridge.request("propose_ops", { ops: args.operations }, execution)
+      );
       if (!proposed.ok) return proposed;
       const { operationId, proposal: proposal3 } = proposalFrom2(proposed);
       const approval = await bridge.approve("apply_markdown_operations", proposal3, execution);
@@ -15103,25 +15990,38 @@ ${MARKDOWN_DSL_GUIDE}`
   });
   const save = defineTool2({
     name: "save_markdown",
-    description: "Save the current Markdown document in place. The model cannot choose the path.",
+    description: "Save the proposed document snapshot in place after exact approval.",
     parameters: {},
     output: agentOutput2,
     async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request("propose_save", {}, execution));
+      if (!proposed.ok) return proposed;
+      const data = proposed.data ?? {};
+      if (typeof data.operationId !== "string" || typeof data.planHash !== "string" || typeof data.snapshotHash !== "string" || !data.snapshotHash) {
+        throw new Error("editor returned an invalid save proposal");
+      }
       const proposal3 = {
-        planHash: "save-current-markdown-in-place",
-        summary: "Save the current Markdown document in place.",
-        targets: ["current document"],
-        warnings: []
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === "string" ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets) ? data.targets.filter((value) => typeof value === "string") : [],
+        warnings: proposed.warnings
       };
       const approval = await bridge.approve("save_markdown", proposal3, execution);
       if (!approval.approved || approval.approvalId === void 0) {
         return approvalDenied("Markdown save");
       }
-      return agentResult2(
-        await bridge.request("save_markdown", { inPlace: true }, execution, {
-          approvalId: approval.approvalId,
-          planHash: proposal3.planHash
-        })
+      return parseAgentToolResult(
+        await bridge.request(
+          "save_markdown",
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId
+          }
+        )
       );
     }
   });
@@ -15130,7 +16030,12 @@ ${MARKDOWN_DSL_GUIDE}`
 
 // src/html-tools.ts
 import { defineTool as defineTool3 } from "@deepseek-ai/dsh-tools";
-var output = { schema: { type: "json" }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] };
+var output = {
+  schema: { type: "json" },
+  render: (_args, value) => [
+    { type: "text", text: JSON.stringify(value) }
+  ]
+};
 var HTML_DSL_GUIDE = [
   "HTML DSL (stable sid targets from read_html):",
   "str_replace {old, new, sid?, replace_all?}",
@@ -15148,34 +16053,117 @@ var HTML_DSL_GUIDE = [
   "unwrap {sid}"
 ].join("\n");
 function bounded(value) {
-  return parseAgentToolResult({ ok: value.ok, summary: value.summary, warnings: value.warnings, ...value.changes ? { changes: value.changes } : {}, ...value.verification ? { verification: value.verification } : {}, ...value.transactionId ? { transactionId: value.transactionId } : {}, ...value.data ? { data: value.data } : {} });
+  return parseAgentToolResult({
+    ok: value.ok,
+    summary: value.summary,
+    warnings: value.warnings,
+    ...value.changes ? { changes: value.changes } : {},
+    ...value.verification ? { verification: value.verification } : {},
+    ...value.transactionId ? { transactionId: value.transactionId } : {},
+    ...value.data ? { data: value.data } : {}
+  });
 }
 function approvalDenied2(action) {
-  return bounded({ ok: false, summary: `${action} was not approved.`, warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }] });
+  return bounded({
+    ok: false,
+    summary: `${action} was not approved.`,
+    warnings: [{ code: "APPROVAL_DENIED", message: `${action} was not approved.` }]
+  });
 }
 function proposal(result2) {
   const data = result2.data ?? {};
-  if (typeof data.operationId !== "string" || typeof data.planHash !== "string") throw new Error("HTML editor returned an invalid edit proposal");
-  return { operationId: data.operationId, proposal: { operationId: data.operationId, planHash: data.planHash, summary: typeof data.summary === "string" ? data.summary : result2.summary, targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [], warnings: result2.warnings } };
+  if (typeof data.operationId !== "string" || typeof data.planHash !== "string")
+    throw new Error("HTML editor returned an invalid edit proposal");
+  return {
+    operationId: data.operationId,
+    proposal: {
+      operationId: data.operationId,
+      planHash: data.planHash,
+      summary: typeof data.summary === "string" ? data.summary : result2.summary,
+      targets: Array.isArray(data.targets) ? data.targets.filter((v) => typeof v === "string") : [],
+      warnings: result2.warnings
+    }
+  };
 }
 function createHtmlTools(bridge) {
-  const read = defineTool3({ name: "read_html", description: "Read a bounded structural view of the current HTML document.", parameters: {}, output, isConcurrencySafe: () => true, async execute(_args, execution) {
-    return bounded(await bridge.request("read_html", {}, execution));
-  } });
-  const apply = defineTool3({ name: "apply_html_operations", description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.", parameters: { operations: { type: "array", required: true, items: { type: "json" }, description: `Use only the curated GenOffice operations below. Stable sid values come from read_html.
-${HTML_DSL_GUIDE}` } }, output, async execute(args, execution) {
-    const proposed = bounded(await bridge.request("propose_ops", { ops: args.operations }, execution));
-    if (!proposed.ok) return proposed;
-    const value = proposal(proposed);
-    const approval = await bridge.approve("apply_html_operations", value.proposal, execution);
-    if (!approval.approved || approval.approvalId === void 0) return approvalDenied2("HTML mutation");
-    return bounded(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: value.proposal.planHash, operationId: value.operationId }));
-  } });
-  const save = defineTool3({ name: "save_html", description: "Save the current HTML document in place. The model cannot choose the path.", parameters: {}, output, async execute(_args, execution) {
-    const approved = await bridge.approve("save_html", { planHash: "save-current-html-in-place", summary: "Save the current HTML document in place.", targets: ["current document"], warnings: [] }, execution);
-    if (!approved.approved || approved.approvalId === void 0) return approvalDenied2("HTML save");
-    return bounded(await bridge.request("save_html", { inPlace: true }, execution, { approvalId: approved.approvalId, planHash: "save-current-html-in-place" }));
-  } });
+  const read = defineTool3({
+    name: "read_html",
+    description: "Read a bounded structural view of the current HTML document.",
+    parameters: {},
+    output,
+    isConcurrencySafe: () => true,
+    async execute(_args, execution) {
+      return bounded(await bridge.request("read_html", {}, execution));
+    }
+  });
+  const apply = defineTool3({
+    name: "apply_html_operations",
+    description: "Apply one ordered batch of existing GenOffice HTML apply_ops operations after exact user approval.",
+    parameters: {
+      operations: {
+        type: "array",
+        required: true,
+        items: { type: "json" },
+        description: `Use only the curated GenOffice operations below. Stable sid values come from read_html.
+${HTML_DSL_GUIDE}`
+      }
+    },
+    output,
+    async execute(args, execution) {
+      const proposed = bounded(
+        await bridge.request("propose_ops", { ops: args.operations }, execution)
+      );
+      if (!proposed.ok) return proposed;
+      const value = proposal(proposed);
+      const approval = await bridge.approve("apply_html_operations", value.proposal, execution);
+      if (!approval.approved || approval.approvalId === void 0)
+        return approvalDenied2("HTML mutation");
+      return bounded(
+        await bridge.request("apply_ops", { ops: args.operations }, execution, {
+          approvalId: approval.approvalId,
+          planHash: value.proposal.planHash,
+          operationId: value.operationId
+        })
+      );
+    }
+  });
+  const save = defineTool3({
+    name: "save_html",
+    description: "Save the proposed document snapshot in place after exact approval.",
+    parameters: {},
+    output,
+    async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request("propose_save", {}, execution));
+      if (!proposed.ok) return proposed;
+      const data = proposed.data ?? {};
+      if (typeof data.operationId !== "string" || typeof data.planHash !== "string" || typeof data.snapshotHash !== "string" || !data.snapshotHash) {
+        throw new Error("editor returned an invalid save proposal");
+      }
+      const proposal3 = {
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === "string" ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets) ? data.targets.filter((value) => typeof value === "string") : [],
+        warnings: proposed.warnings
+      };
+      const approval = await bridge.approve("save_html", proposal3, execution);
+      if (!approval.approved || approval.approvalId === void 0) {
+        return approvalDenied2("HTML save");
+      }
+      return parseAgentToolResult(
+        await bridge.request(
+          "save_html",
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId
+          }
+        )
+      );
+    }
+  });
   return [read, apply, save];
 }
 
@@ -15797,7 +16785,11 @@ function createSheetsTools(bridge) {
       };
       const approval = await bridge.approve("apply_sheet_operations", proposal3, exec);
       if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("spreadsheet mutation was not approved");
+        return {
+          ok: false,
+          summary: "The operation was not approved.",
+          warnings: [{ code: "APPROVAL_DENIED", message: "The operation was not approved." }]
+        };
       }
       const result2 = await bridge.request("apply_ops", { ops: args.operations }, exec, {
         approvalId: approval.approvalId,
@@ -15809,25 +16801,43 @@ function createSheetsTools(bridge) {
   });
   const save = defineTool5({
     name: "save_sheet",
-    description: "Save the open spreadsheet in place. The model cannot choose or change the destination path.",
+    description: "Save the proposed document snapshot in place after exact approval.",
     parameters: {},
     output: agentOutput4,
-    async execute(_args, exec) {
-      const proposal3 = {
-        planHash: "save-current-workbook-in-place",
-        summary: "Save the current spreadsheet in place.",
-        targets: ["current workbook"],
-        warnings: []
-      };
-      const approval = await bridge.approve("save_sheet", proposal3, exec);
-      if (!approval.approved || approval.approvalId === void 0) {
-        throw new Error("spreadsheet save was not approved");
+    async execute(_args, execution) {
+      const proposed = parseAgentToolResult(await bridge.request("propose_save", {}, execution));
+      if (!proposed.ok) return proposed;
+      const data = proposed.data ?? {};
+      if (typeof data.operationId !== "string" || typeof data.planHash !== "string" || typeof data.snapshotHash !== "string" || !data.snapshotHash) {
+        throw new Error("editor returned an invalid save proposal");
       }
-      const result2 = await bridge.request("save_sheet", { inPlace: true }, exec, {
-        approvalId: approval.approvalId,
-        planHash: proposal3.planHash
-      });
-      return result2;
+      const proposal3 = {
+        operationId: data.operationId,
+        planHash: data.planHash,
+        summary: typeof data.summary === "string" ? data.summary : proposed.summary,
+        targets: Array.isArray(data.targets) ? data.targets.filter((value) => typeof value === "string") : [],
+        warnings: proposed.warnings
+      };
+      const approval = await bridge.approve("save_sheet", proposal3, execution);
+      if (!approval.approved || approval.approvalId === void 0) {
+        return {
+          ok: false,
+          summary: "The operation was not approved.",
+          warnings: [{ code: "APPROVAL_DENIED", message: "The operation was not approved." }]
+        };
+      }
+      return parseAgentToolResult(
+        await bridge.request(
+          "save_sheet",
+          { inPlace: true, snapshotHash: data.snapshotHash },
+          execution,
+          {
+            approvalId: approval.approvalId,
+            planHash: data.planHash,
+            operationId: data.operationId
+          }
+        )
+      );
     }
   });
   return [read, apply, save];
@@ -15945,119 +16955,16 @@ function createSlidesTools(bridge) {
   ];
 }
 
-// src/office-session-binding.ts
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-var BINDING_FILE = "office-session-bindings.json";
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function boundedString(value, label, maxLength) {
-  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
-    throw new Error(`Invalid Office ${label}.`);
+// src/protocol.ts
+function validateRuntimeEditorResponse(frame) {
+  parseAgentToolResult(frame.result);
+  if (!Number.isSafeInteger(frame.currentRevision) || frame.currentRevision < 0) throw Error("Invalid Host revision.");
+  if (frame.persistence) {
+    const receipt = persistenceReferenceSchema.parse(frame.persistence);
+    if (receipt.operationId !== frame.target.operationId || !frame.result.ok) throw Error("Persistence operation does not match its successful result.");
+    if (receipt.workingRevision > frame.currentRevision) throw Error("Host revision is behind its persistence receipt.");
   }
-  return value;
-}
-function strictKeys(value, allowed, label) {
-  const allowedKeys = new Set(allowed);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw new Error(`Invalid Office ${label}.`);
-  }
-}
-function validateBindingMap(value) {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.bindings)) {
-    throw new Error("Invalid Office Session binding map.");
-  }
-  const keys = /* @__PURE__ */ new Set();
-  const sessions = /* @__PURE__ */ new Set();
-  const bindings = value.bindings.map((entry) => {
-    if (!isRecord(entry)) throw new Error("Invalid Office Session binding map.");
-    strictKeys(entry, ["hostId", "documentId", "sessionId"], "Session binding map");
-    const binding = {
-      hostId: boundedString(entry.hostId, "Host identity", 256),
-      documentId: boundedString(entry.documentId, "document identity", 512),
-      sessionId: boundedString(entry.sessionId, "Session identity", 256)
-    };
-    const key = JSON.stringify([binding.hostId, binding.documentId]);
-    if (keys.has(key) || sessions.has(binding.sessionId)) {
-      throw new Error("Invalid Office Session binding map.");
-    }
-    keys.add(key);
-    sessions.add(binding.sessionId);
-    return binding;
-  });
-  return { version: 1, bindings };
-}
-var OfficeSessionBindingStore = class {
-  constructor(stateDirectory, createSessionId = () => `office-${randomUUID()}`) {
-    this.stateDirectory = stateDirectory;
-    this.createSessionId = createSessionId;
-  }
-  queue = Promise.resolve();
-  bindOfficeSession(hostId, documentId) {
-    const operation = this.queue.then(
-      () => this.bind(hostId, documentId),
-      () => this.bind(hostId, documentId)
-    );
-    this.queue = operation.then(() => void 0, () => void 0);
-    return operation;
-  }
-  async bind(hostIdValue, documentIdValue) {
-    const hostId = boundedString(hostIdValue, "Host identity", 256);
-    const documentId = boundedString(documentIdValue, "document identity", 512);
-    const path = join(this.stateDirectory, BINDING_FILE);
-    let state = { version: 1, bindings: [] };
-    try {
-      state = validateBindingMap(JSON.parse(await readFile(path, "utf8")));
-    } catch (error51) {
-      if (error51.code !== "ENOENT") {
-        throw new Error("Could not read the Office Session binding map.", { cause: error51 });
-      }
-    }
-    const existing = state.bindings.find(
-      (binding) => binding.hostId === hostId && binding.documentId === documentId
-    );
-    if (existing !== void 0) return existing.sessionId;
-    const sessionId = boundedString(this.createSessionId(), "Session identity", 256);
-    if (state.bindings.some((binding) => binding.sessionId === sessionId)) {
-      throw new Error("Office Session identity is already bound.");
-    }
-    const next = {
-      version: 1,
-      bindings: [...state.bindings, { hostId, documentId, sessionId }]
-    };
-    await mkdir(this.stateDirectory, { recursive: true });
-    const temporary = join(this.stateDirectory, `.${BINDING_FILE}.${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify(next)}
-`, { encoding: "utf8", mode: 384 });
-    await rename(temporary, path);
-    return sessionId;
-  }
-};
-async function acquireOfficeAgent(input) {
-  const snapshot = await input.sessionPersistence.stat(input.sessionId);
-  if (snapshot === void 0) {
-    const handle3 = await input.agents.create({
-      sessionId: input.sessionId,
-      meta: { cwd: input.cwd },
-      agentOptions: input.agentOptions,
-      setup: input.setup
-    });
-    return { handle: handle3, resumed: false };
-  }
-  const handle2 = await input.agents.resume({
-    resumeSessionId: input.sessionId,
-    agentOptions: input.agentOptions,
-    setup: input.setup
-  });
-  try {
-    if (handle2.agent.inbox.hasPending) handle2.agent.inbox.clear();
-  } catch (error51) {
-    await Promise.resolve(handle2.dispose()).catch(() => void 0);
-    throw error51;
-  }
-  return { handle: handle2, resumed: true };
+  return frame;
 }
 
 // src/index.ts
@@ -16072,8 +16979,8 @@ if (explicitStateDirectory !== void 0 && !isAbsolute(explicitStateDirectory)) {
   throw new Error("runtime --state-dir must be an absolute path");
 }
 var patchFiles = runtimeOptions.filter((argument) => !argument.startsWith("--state-dir="));
-var installAnchor = join2(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
-var runtimeStateDir = explicitStateDirectory ?? mkdtempSync(join2(tmpdir(), "nexusdesk-runtime-"));
+var installAnchor = join3(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+var runtimeStateDir = explicitStateDirectory ?? mkdtempSync(join3(tmpdir(), "nexusdesk-runtime-"));
 mkdirSync(runtimeStateDir, { recursive: true });
 process.env.DSH_HOME = runtimeStateDir;
 if (explicitStateDirectory === void 0) {
@@ -16091,9 +16998,11 @@ var replies = /* @__PURE__ */ new Map();
 var agents = /* @__PURE__ */ new Map();
 var pendingAgentAcquisitions = /* @__PURE__ */ new Map();
 var editorTargets = /* @__PURE__ */ new Map();
+var nativeOfficeSessions = /* @__PURE__ */ new Set();
 var textBlocks = /* @__PURE__ */ new Map();
 var stopping;
 var disposeOfficeTools = [];
+var officeCarrier = void 0;
 process.on("message", (frame) => {
   if (frame.protocolVersion !== PROTOCOL_VERSION && frame.type !== "shutdown") {
     send({
@@ -16118,33 +17027,33 @@ process.on("message", (frame) => {
   });
 });
 function requestParent(frame, timeoutMs = 12e4) {
-  const id = `request-${randomUUID2()}`;
+  const id2 = `request-${randomUUID4()}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      replies.delete(id);
+      replies.delete(id2);
       reject(new Error(`approval request timed out after ${String(timeoutMs)}ms`));
     }, timeoutMs);
-    replies.set(id, (reply) => {
+    replies.set(id2, (reply) => {
       clearTimeout(timer);
       resolve(reply);
     });
-    send({ ...frame, protocolVersion: PROTOCOL_VERSION, id });
+    send({ ...frame, protocolVersion: PROTOCOL_VERSION, id: id2 });
   });
 }
 function requestParentTracked(frame, timeoutMs = 12e4) {
-  const id = `request-${randomUUID2()}`;
+  const id2 = `request-${randomUUID4()}`;
   return {
-    id,
+    id: id2,
     reply: new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        replies.delete(id);
+        replies.delete(id2);
         reject(new Error(`parent request timed out after ${String(timeoutMs)}ms`));
       }, timeoutMs);
-      replies.set(id, (reply) => {
+      replies.set(id2, (reply) => {
         clearTimeout(timer);
         resolve(reply);
       });
-      send({ ...frame, protocolVersion: PROTOCOL_VERSION, id });
+      send({ ...frame, protocolVersion: PROTOCOL_VERSION, id: id2 });
     })
   };
 }
@@ -16177,7 +17086,7 @@ async function openAgent(frame) {
 }
 function officeAgentSetup(editorType) {
   return (agentContext, agent) => {
-    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent);
+    configureOfficeToolScope({ tools: agentContext.tools }, editorType, agent, { nativeQuestions: true });
   };
 }
 async function bindOfficeAgent(frame) {
@@ -16191,7 +17100,10 @@ async function bindOfficeAgent(frame) {
     editorType: frame.editorType,
     revision: frame.revision
   });
-  if (existing !== void 0) return { sessionId, resumed: true };
+  if (existing !== void 0) {
+    nativeOfficeSessions.add(sessionId);
+    return { sessionId, resumed: true };
+  }
   const ctx2 = asRuntimeContext((await boot).ctx);
   const agentOptions = frame.provider !== void 0 && frame.model !== void 0 ? { provider: frame.provider, model: frame.model } : ctx2.agentDefaultModel.currentSelection();
   let acquisition = pendingAgentAcquisitions.get(sessionId);
@@ -16213,6 +17125,7 @@ async function bindOfficeAgent(frame) {
   }
   try {
     const acquired = await acquisition;
+    nativeOfficeSessions.add(sessionId);
     return { sessionId, resumed: acquired.resumed };
   } catch (error51) {
     editorTargets.delete(sessionId);
@@ -16221,6 +17134,19 @@ async function bindOfficeAgent(frame) {
 }
 async function handle(frame) {
   switch (frame.type) {
+    case "office:resource": {
+      const runtimeContext = asRuntimeContext((await boot).ctx);
+      const resource = await readOfficeResource(runtimeContext.clientModules, frame.url).catch(() => ({ status: 503, contentType: "text/plain", bodyBase64: Buffer.from("Office resource unavailable").toString("base64") }));
+      send({ type: "office:resource-result", protocolVersion: 1, id: frame.id, resource });
+      return;
+    }
+    case "office:client":
+      if (!officeCarrier) throw new Error("Native Office carrier is not ready.");
+      await officeCarrier.handle(frame);
+      return;
+    case "office:detach":
+      officeCarrier?.detach(frame.clientId);
+      return;
     case "office:bind": {
       const bound = await bindOfficeAgent(frame);
       send({
@@ -16261,9 +17187,11 @@ async function handle(frame) {
 }
 var stop = () => stopping ??= (async () => {
   const running = await boot.catch(() => void 0);
+  officeCarrier?.close();
   for (const handle2 of agents.values()) await handle2.dispose().catch(() => void 0);
   agents.clear();
   editorTargets.clear();
+  nativeOfficeSessions.clear();
   for (const dispose of disposeOfficeTools.splice(0)) dispose();
   await running?.shutdown.shutdown(0);
   send({ type: "shutdown-complete", protocolVersion: PROTOCOL_VERSION });
@@ -16273,6 +17201,12 @@ process.once("disconnect", () => {
   void stop();
 });
 var ctx = asRuntimeContext((await boot).ctx);
+officeCarrier = new OfficeRuntimeCarrier({
+  target: (sessionId) => editorTargets.get(sessionId),
+  send,
+  dispatch: createOfficeGatewayFetch(ctx.connection.createSharedFetchHandler("/api")),
+  open: (endpoint2, payload, signal) => ctx.typertGateway.wireStream.open(endpoint2, payload, signal)
+});
 function createEditorToolBridge(editorType) {
   return {
     async request(command, arguments_, execution, authorization) {
@@ -16286,7 +17220,7 @@ function createEditorToolBridge(editorType) {
           `agent session is bound to ${target.editorType}, not the requested ${editorType} editor`
         );
       }
-      const operationId = authorization?.operationId ?? `operation-${String(execution.callId)}`;
+      const operationId = authorization?.operationId ?? `operation-${createHash("sha256").update(JSON.stringify([target.documentId, editorType, execution.name, String(execution.callId)])).digest("hex")}`;
       const reply = await requestParent({
         type: "editor:request",
         target: { ...target, operationId },
@@ -16302,6 +17236,7 @@ function createEditorToolBridge(editorType) {
       if (reply.type !== "editor:result" || reply.target.operationId !== operationId) {
         throw new Error(`${editorType} editor returned a mismatched operation result`);
       }
+      validateRuntimeEditorResponse(reply);
       target.revision = reply.currentRevision;
       return reply.result;
     },
@@ -16330,10 +17265,11 @@ disposeOfficeTools = [
 ].map((tool) => ctx.tools.register(tool));
 ctx.on(
   "approval/request",
-  (request) => {
+  (request, next) => {
     const sessionId = String(
       request.agent?.session?.id ?? agents.keys().next().value ?? ""
     );
+    if (nativeOfficeSessions.has(sessionId)) return next();
     return requestParent({
       type: "approval:request",
       sessionId,
@@ -16364,6 +17300,7 @@ send({
   protocolVersion: PROTOCOL_VERSION,
   pid: process.pid,
   startedBundles: ctx.profileContext.startedBundles,
+  officeClientModules: ctx.clientModules.graph().entries.map((entry) => entry.id),
   toolCatalogs: {
     docs: DOCS_TOOL_NAMES,
     sheets: SHEETS_TOOL_NAMES,

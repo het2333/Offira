@@ -72,8 +72,9 @@ export function configureOfficeToolScope(
   agentContext: { tools: ToolScope },
   editorType: string,
   agentScope: object,
+  options: { nativeQuestions?: boolean } = {},
 ): void {
-  const toolNames = officeToolNames(editorType)
+  const toolNames = [...officeToolNames(editorType), ...(options.nativeQuestions ? ['ask_user_question'] : [])]
   const allowed = new Set<string>(toolNames)
   agentContext.tools.restrict({ allow: toolNames })
   agentContext.tools.guard((execution) =>

@@ -13,7 +13,7 @@ import {
 const agentScope = {}
 
 class EffectiveToolCatalog {
-  private visible = new Set(['bash', 'read_file', 'web_fetch', ...OFFICE_TOOL_NAMES])
+  private visible = new Set(['bash', 'read_file', 'web_fetch', 'ask_user_question', ...OFFICE_TOOL_NAMES])
   guardCallback: ((execution: { name: string }) => string | undefined) | undefined
 
   restrict(filter: { allow?: readonly string[] }): () => void {
@@ -35,6 +35,14 @@ class EffectiveToolCatalog {
 }
 
 describe('Office-only Agent capability policy', () => {
+  it('adds only the official question tool for native Office conversations', () => {
+    const tools = new EffectiveToolCatalog()
+    configureOfficeToolScope({ tools }, 'sheets', agentScope, { nativeQuestions: true })
+    expect(tools.schemas(agentScope).map(({ name }) => name).sort()).toEqual([...SHEETS_TOOL_NAMES, 'ask_user_question'].sort())
+    expect(tools.guardCallback?.({ name: 'bash' })).toMatch(/Office tools/)
+    expect(tools.guardCallback?.({ name: 'ask_user_question' })).toBeUndefined()
+  })
+
   it('removes inherited shell, filesystem, search, skill, and web tools from the effective catalog', () => {
     const tools = new EffectiveToolCatalog()
 

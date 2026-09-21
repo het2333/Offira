@@ -146,7 +146,7 @@ window.__ModuleLoader__.load({
             padding: "24px",
             textAlign: "center"
           },
-          children: "The Office assistant is unavailable. Reopen this panel to reconnect safely."
+          children: "\u6587\u6863\u52A9\u624B\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5\u3002\u8BF7\u91CD\u65B0\u6253\u5F00\u9762\u677F\uFF1B\u82E5\u521A\u624D\u63D0\u4EA4\u8FC7\u4FEE\u6539\uFF0C\u8BF7\u5148\u68C0\u67E5\u6587\u4EF6\u518D\u7EE7\u7EED\u3002"
         }
       );
     }

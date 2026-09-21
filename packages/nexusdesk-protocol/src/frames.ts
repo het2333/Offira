@@ -1,5 +1,6 @@
 import type { AgentApprovalProposal, AgentToolResult, JsonValue } from './editor'
 import type { PersistenceReference, WorkingCopyLookup } from './working-copy'
+import type { HarnessClientFrame, HarnessServerFrame } from './harness-frames'
 import type {
   ClientId,
   DocumentId,
@@ -88,6 +89,7 @@ export interface OperationLookupFrame extends FrameBase {
 }
 
 export type ClientFrame =
+  | HarnessClientFrame
   | AgentStartFrame
   | AgentCancelFrame
   | ApprovalResponseFrame
@@ -162,6 +164,7 @@ export interface RecoveryRequiredFrame extends FrameBase {
 }
 
 export type AgentServerFrame =
+  | HarnessServerFrame
   | ServerReadyFrame
   | FatalFrame
   | AgentEventFrame
