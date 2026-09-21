@@ -1,0 +1,269 @@
+window.__ModuleLoader__.load({
+  id: "@nexusdesk/harness-office-panel-ui",
+  factory: (require) => {
+    var module = { exports: {} };
+    var exports = module.exports;
+    "use strict";
+    var __defProp = Object.defineProperty;
+    var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+    var __getOwnPropNames = Object.getOwnPropertyNames;
+    var __hasOwnProp = Object.prototype.hasOwnProperty;
+    var __export = (target, all) => {
+      for (var name in all)
+        __defProp(target, name, { get: all[name], enumerable: true });
+    };
+    var __copyProps = (to, from, except, desc) => {
+      if (from && typeof from === "object" || typeof from === "function") {
+        for (let key of __getOwnPropNames(from))
+          if (!__hasOwnProp.call(to, key) && key !== except)
+            __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+      }
+      return to;
+    };
+    var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+    // src/client.tsx
+    var client_exports = {};
+    __export(client_exports, {
+      OFFICE_PANEL_CONTENT_SLOT: () => OFFICE_PANEL_CONTENT_SLOT,
+      OFFICE_PANEL_FALLBACK_PRIORITY: () => OFFICE_PANEL_FALLBACK_PRIORITY,
+      OFFICE_PANEL_PRIMARY_PRIORITY: () => OFFICE_PANEL_PRIMARY_PRIORITY,
+      OfficeConversationContent: () => OfficeConversationContent,
+      apply: () => apply,
+      inject: () => inject
+    });
+    module.exports = __toCommonJS(client_exports);
+    var import_react = require("react");
+
+    // src/binding.ts
+    var bindingKey = Symbol.for("@nexusdesk/harness-office-panel-ui/binding");
+    function bindingGlobal() {
+      return globalThis;
+    }
+    function validateBinding(binding) {
+      if (binding.sessionId.trim() === "") {
+        throw new Error("Office panel binding sessionId must be a non-empty string");
+      }
+      if (typeof binding.captureSubmission !== "function") {
+        throw new Error("Office panel binding captureSubmission must be a function");
+      }
+    }
+    function requireOfficePanelBinding() {
+      const binding = bindingGlobal()[bindingKey]?.binding;
+      if (binding === void 0) {
+        throw new Error(
+          "Office panel binding must be installed by the authenticated carrier before native boot"
+        );
+      }
+      validateBinding(binding);
+      return binding;
+    }
+
+    // src/pending-submissions.ts
+    function asError(value) {
+      return value instanceof Error ? value : new Error(String(value));
+    }
+    var OfficePanelCaptureFailure = class {
+      value = null;
+      listeners = /* @__PURE__ */ new Set();
+      getSnapshot = () => this.value;
+      subscribe = (listener) => {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+      };
+      fail(error) {
+        if (this.value !== null) return;
+        this.value = asError(error);
+        for (const listener of this.listeners) listener();
+      }
+    };
+    function startPendingSubmissionCapture(options) {
+      const seen = /* @__PURE__ */ new Set();
+      let disposed = false;
+      let unsubscribe = () => {
+      };
+      const captureCurrent = () => {
+        const snapshot = options.session.getSnapshot();
+        if (snapshot.sessionId !== options.expectedSessionId) {
+          throw new Error(
+            `Office panel expected Session "${options.expectedSessionId}" but observed "${snapshot.sessionId}"`
+          );
+        }
+        for (const submission of snapshot.pendingSubmissions) {
+          const requestId = submission.requestId;
+          if (seen.has(requestId)) continue;
+          options.captureSubmission(requestId);
+          seen.add(requestId);
+        }
+      };
+      const fail = (error) => {
+        if (disposed) return;
+        disposed = true;
+        unsubscribe();
+        if (options.onError === void 0) throw asError(error);
+        options.onError(asError(error));
+      };
+      unsubscribe = options.session.subscribe(() => {
+        try {
+          captureCurrent();
+        } catch (error) {
+          fail(error);
+        }
+      });
+      try {
+        captureCurrent();
+      } catch (error) {
+        unsubscribe();
+        disposed = true;
+        throw error;
+      }
+      return {
+        dispose: () => {
+          if (disposed) return;
+          disposed = true;
+          unsubscribe();
+        }
+      };
+    }
+
+    // src/client.tsx
+    var import_jsx_runtime = require("react/jsx-runtime");
+    var OFFICE_PANEL_CONTENT_SLOT = "office.content";
+    var OFFICE_PANEL_PRIMARY_PRIORITY = -200;
+    var OFFICE_PANEL_FALLBACK_PRIORITY = -100;
+    function OfficeFailureScreen() {
+      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "div",
+        {
+          "data-nexusdesk-office-panel": "failed",
+          role: "alert",
+          style: {
+            alignItems: "center",
+            boxSizing: "border-box",
+            display: "flex",
+            justifyContent: "center",
+            minHeight: "100%",
+            padding: "24px",
+            textAlign: "center"
+          },
+          children: "The Office assistant is unavailable. Reopen this panel to reconnect safely."
+        }
+      );
+    }
+    var OfficePanelErrorBoundary = class extends import_react.Component {
+      state = { failed: false };
+      static getDerivedStateFromError() {
+        return { failed: true };
+      }
+      componentDidCatch(_error, _info) {
+      }
+      render() {
+        return this.state.failed ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficeFailureScreen, {}) : this.props.children;
+      }
+    };
+    function OfficePanelBody(props) {
+      const failure = (0, import_react.useSyncExternalStore)(
+        props.failure.subscribe,
+        props.failure.getSnapshot,
+        props.failure.getSnapshot
+      );
+      if (failure !== null) throw failure;
+      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "div",
+        {
+          "data-nexusdesk-office-panel": "ready",
+          style: { height: "100%", minHeight: 0, width: "100%" },
+          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(props.SessionProvider, { empty: OfficeFailureScreen, session: props.reference, children: props.renderSlot(
+            OFFICE_PANEL_CONTENT_SLOT,
+            {},
+            {
+              fallback: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficeFailureScreen, {})
+            }
+          ) })
+        }
+      );
+    }
+    function createOfficeRoot(ownership) {
+      return function OfficePanelRoot(props) {
+        (0, import_react.useEffect)(() => () => ownership.dispose(), []);
+        return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficePanelErrorBoundary, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficePanelBody, { ...props, failure: ownership.failure, reference: ownership.reference }) });
+      };
+    }
+    function OfficeFallbackRoot() {
+      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficeFailureScreen, {});
+    }
+    function OfficeConversationContent(props) {
+      return props.renderFactorySlot(
+        "conversation.content",
+        {
+          variant: "embedded",
+          phase: "active",
+          hero: false
+        },
+        {
+          fallback: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfficeFailureScreen, {})
+        }
+      );
+    }
+    function assertMatchingSession(expectedSessionId, reference, binding) {
+      const observed = [reference.sessionId, binding.sessionId, binding.session.getSnapshot().sessionId];
+      const mismatch = observed.find((sessionId) => sessionId !== expectedSessionId);
+      if (mismatch !== void 0) {
+        throw new Error(
+          `Office panel expected Session "${expectedSessionId}" but observed "${mismatch}"`
+        );
+      }
+    }
+    var inject = ["slots", "sessions", "uiSession", "uiConversation"];
+    async function apply(ctx) {
+      const carrier = requireOfficePanelBinding();
+      const reference = ctx.sessions.retain(carrier.sessionId, {
+        source: "officePanel"
+      });
+      let released = false;
+      let capture;
+      const release = () => {
+        if (released) return;
+        released = true;
+        capture?.dispose();
+        reference.release();
+      };
+      try {
+        const binding = await reference.ready;
+        assertMatchingSession(carrier.sessionId, reference, binding);
+        const failure = new OfficePanelCaptureFailure();
+        capture = startPendingSubmissionCapture({
+          expectedSessionId: carrier.sessionId,
+          session: binding.session,
+          captureSubmission: (requestId) => carrier.captureSubmission(requestId),
+          onError: (error) => failure.fail(error)
+        });
+        const ownership = { reference, failure, dispose: release };
+        ctx.effect(() => release, "office-panel-ui: Session reference and submission capture");
+        ctx.slots.register(
+          {
+            name: "root",
+            priority: OFFICE_PANEL_FALLBACK_PRIORITY
+          },
+          OfficeFallbackRoot
+        );
+        ctx.slots.register(
+          {
+            name: "root",
+            priority: OFFICE_PANEL_PRIMARY_PRIORITY,
+            children: {
+              [OFFICE_PANEL_CONTENT_SLOT]: { kind: "single", scope: "session-maybe" }
+            }
+          },
+          createOfficeRoot(ownership)
+        );
+        ctx.slots.register({ name: OFFICE_PANEL_CONTENT_SLOT }, OfficeConversationContent);
+      } catch (error) {
+        release();
+        throw error;
+      }
+    }
+
+    return module.exports;
+  }
+});
