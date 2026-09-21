@@ -1,6 +1,9 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { execFile, execFileSync } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 
 import type { Revision } from '@nexusdesk/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,6 +16,10 @@ import {
 } from '../src/office-session-binding'
 
 const directories: string[] = []
+const execFileAsync = promisify(execFile)
+const bindingModuleUrl = pathToFileURL(
+  fileURLToPath(new URL('../src/office-session-binding.ts', import.meta.url)),
+).href
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
@@ -22,6 +29,61 @@ async function stateDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'nexusdesk-office-session-test-'))
   directories.push(directory)
   return directory
+}
+
+async function installBindingLock(
+  directory: string,
+  owner: { token: string; pid: number },
+): Promise<void> {
+  const lockDirectory = join(directory, '.office-session-bindings.lock')
+  await mkdir(lockDirectory, { mode: 0o700 })
+  await writeFile(
+    join(lockDirectory, 'owner.json'),
+    `${JSON.stringify({ version: 1, ...owner })}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  )
+}
+
+async function bindFromIndependentRuntime(
+  directory: string,
+  documentId: string,
+  sessionId: string,
+  ownReadyFile: string,
+  otherReadyFile: string,
+): Promise<string> {
+  const script = `
+    import { existsSync, writeFileSync } from 'node:fs'
+    import { OfficeSessionBindingStore } from ${JSON.stringify(bindingModuleUrl)}
+    const waitArray = new Int32Array(new SharedArrayBuffer(4))
+    const store = new OfficeSessionBindingStore(
+      process.env.NEXUSDESK_TEST_STATE_DIRECTORY,
+      () => {
+        writeFileSync(process.env.NEXUSDESK_TEST_OWN_READY, '')
+        const deadline = Date.now() + 250
+        while (Date.now() < deadline && !existsSync(process.env.NEXUSDESK_TEST_OTHER_READY)) {
+          Atomics.wait(waitArray, 0, 0, 5)
+        }
+        return process.env.NEXUSDESK_TEST_SESSION_ID
+      },
+    )
+    process.stdout.write(await store.bindOfficeSession('host-a', process.env.NEXUSDESK_TEST_DOCUMENT_ID))
+  `
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ['--import', 'tsx/esm', '--input-type=module', '--eval', script],
+    {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env: {
+        ...process.env,
+        NEXUSDESK_TEST_STATE_DIRECTORY: directory,
+        NEXUSDESK_TEST_DOCUMENT_ID: documentId,
+        NEXUSDESK_TEST_SESSION_ID: sessionId,
+        NEXUSDESK_TEST_OWN_READY: ownReadyFile,
+        NEXUSDESK_TEST_OTHER_READY: otherReadyFile,
+      },
+    },
+  )
+  return stdout
 }
 
 describe('OfficeSessionBindingStore', () => {
@@ -55,6 +117,62 @@ describe('OfficeSessionBindingStore', () => {
     const persisted = JSON.parse(await readFile(join(directory, 'office-session-bindings.json'), 'utf8'))
     expect(persisted.bindings).toHaveLength(3)
   })
+
+  it('preserves concurrent bindings created by independent runtime processes', async () => {
+    const directory = await stateDirectory()
+    const readyA = join(directory, 'runtime-a.ready')
+    const readyB = join(directory, 'runtime-b.ready')
+
+    const [sessionA, sessionB] = await Promise.all([
+      bindFromIndependentRuntime(
+        directory, 'document-a', 'office-session-a', readyA, readyB,
+      ),
+      bindFromIndependentRuntime(
+        directory, 'document-b', 'office-session-b', readyB, readyA,
+      ),
+    ])
+
+    const restarted = new OfficeSessionBindingStore(directory, () => 'unexpected-session')
+    expect(await restarted.bindOfficeSession('host-a', 'document-a')).toBe(sessionA)
+    expect(await restarted.bindOfficeSession('host-a', 'document-b')).toBe(sessionB)
+  }, 10_000)
+
+  it('recovers a binding-map lock left by a crashed runtime', async () => {
+    const directory = await stateDirectory()
+    const deadPid = Number(execFileSync(
+      process.execPath,
+      ['-e', 'process.stdout.write(String(process.pid))'],
+      { encoding: 'utf8' },
+    ))
+    await installBindingLock(directory, { token: 'crashed-runtime', pid: deadPid })
+    const store = new OfficeSessionBindingStore(
+      directory,
+      () => 'office-session-recovered',
+      { lockTimeoutMs: 80, lockRetryMs: 5 },
+    )
+
+    await expect(store.bindOfficeSession('host-a', 'document-a'))
+      .resolves.toBe('office-session-recovered')
+  }, 10_000)
+
+  it('times out without deleting a lock owned by a live runtime', async () => {
+    const directory = await stateDirectory()
+    await installBindingLock(directory, { token: 'active-runtime', pid: process.pid })
+    const store = new OfficeSessionBindingStore(
+      directory,
+      () => 'must-not-be-created',
+      { lockTimeoutMs: 80, lockRetryMs: 5 },
+    )
+    const startedAt = Date.now()
+
+    await expect(store.bindOfficeSession('host-a', 'document-a'))
+      .rejects.toThrow(/timed out waiting for the Office Session binding map lock/i)
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(JSON.parse(await readFile(
+      join(directory, '.office-session-bindings.lock', 'owner.json'),
+      'utf8',
+    ))).toMatchObject({ token: 'active-runtime', pid: process.pid })
+  }, 10_000)
 
   it('fails closed when the durable binding map is corrupt', async () => {
     const directory = await stateDirectory()

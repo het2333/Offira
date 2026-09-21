@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import type { Revision } from '@nexusdesk/protocol'
 
@@ -52,7 +53,22 @@ interface PersistedBindingMap {
   bindings: PersistedBinding[]
 }
 
+interface BindingLockOwner {
+  version: 1
+  token: string
+  pid: number
+}
+
+interface BindingLockOptions {
+  lockTimeoutMs?: number
+  lockRetryMs?: number
+}
+
 const BINDING_FILE = 'office-session-bindings.json'
+const BINDING_LOCK_DIRECTORY = '.office-session-bindings.lock'
+const BINDING_LOCK_OWNER_FILE = 'owner.json'
+const BINDING_LOCK_TIMEOUT_MS = 5_000
+const BINDING_LOCK_RETRY_MS = 10
 const MAX_SHEET_SELECTION_CELLS = 10_000
 const MAX_SLIDE_SELECTION_ELEMENTS = 256
 const MAX_DOCUMENT_POSITION = 100_000_000
@@ -215,6 +231,38 @@ function validateBindingMap(value: unknown): PersistedBindingMap {
   return { version: 1, bindings }
 }
 
+function parseBindingLockOwner(value: unknown): BindingLockOwner | undefined {
+  if (!isRecord(value) || value.version !== 1) return undefined
+  if (
+    typeof value.token !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.token) ||
+    !Number.isSafeInteger(value.pid) ||
+    (value.pid as number) <= 0
+  ) {
+    return undefined
+  }
+  return { version: 1, token: value.token, pid: value.pid as number }
+}
+
+async function readBindingLockOwner(lockPath: string): Promise<BindingLockOwner | undefined> {
+  try {
+    return parseBindingLockOwner(JSON.parse(
+      await readFile(join(lockPath, BINDING_LOCK_OWNER_FILE), 'utf8'),
+    ))
+  } catch {
+    return undefined
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
 /** Durable identity map only; conversation history remains in official Session persistence. */
 export class OfficeSessionBindingStore {
   private queue: Promise<void> = Promise.resolve()
@@ -222,15 +270,86 @@ export class OfficeSessionBindingStore {
   constructor(
     private readonly stateDirectory: string,
     private readonly createSessionId: () => string = () => `office-${randomUUID()}`,
+    private readonly lockOptions: BindingLockOptions = {},
   ) {}
 
   bindOfficeSession(hostId: string, documentId: string): Promise<string> {
     const operation = this.queue.then(
-      () => this.bind(hostId, documentId),
-      () => this.bind(hostId, documentId),
+      () => this.bindWithLock(hostId, documentId),
+      () => this.bindWithLock(hostId, documentId),
     )
     this.queue = operation.then(() => undefined, () => undefined)
     return operation
+  }
+
+  private async bindWithLock(hostId: string, documentId: string): Promise<string> {
+    await mkdir(this.stateDirectory, { recursive: true })
+    const lockPath = join(this.stateDirectory, BINDING_LOCK_DIRECTORY)
+    const lockTimeoutMs = this.lockOptions.lockTimeoutMs ?? BINDING_LOCK_TIMEOUT_MS
+    const lockRetryMs = this.lockOptions.lockRetryMs ?? BINDING_LOCK_RETRY_MS
+    const startedAt = Date.now()
+    let release: (() => Promise<void>) | undefined
+    while (true) {
+      release = await this.tryAcquireBindingLock(lockPath)
+      if (release !== undefined) break
+      const owner = await readBindingLockOwner(lockPath)
+      if (owner !== undefined && !processIsAlive(owner.pid)) {
+        const recoveredPath = join(
+          this.stateDirectory,
+          `.office-session-bindings.recovered-${owner.token}`,
+        )
+        try {
+          await rename(lockPath, recoveredPath)
+          continue
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'ENOENT' && code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
+        }
+      }
+      if (Date.now() - startedAt >= lockTimeoutMs) {
+        throw new Error('Timed out waiting for the Office Session binding map lock.')
+      }
+      await delay(lockRetryMs)
+    }
+    try {
+      return await this.bind(hostId, documentId)
+    } finally {
+      await release()
+    }
+  }
+
+  private async tryAcquireBindingLock(
+    lockPath: string,
+  ): Promise<(() => Promise<void>) | undefined> {
+    const token = randomUUID()
+    const candidatePath = join(
+      this.stateDirectory,
+      `.office-session-bindings.candidate-${token}`,
+    )
+    await mkdir(candidatePath, { mode: 0o700 })
+    await writeFile(
+      join(candidatePath, BINDING_LOCK_OWNER_FILE),
+      `${JSON.stringify({ version: 1, token, pid: process.pid } satisfies BindingLockOwner)}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    )
+    try {
+      await rename(candidatePath, lockPath)
+    } catch (error) {
+      await rm(candidatePath, { recursive: true, force: true })
+      try {
+        await stat(lockPath)
+        return undefined
+      } catch {
+        throw error
+      }
+    }
+    return async () => {
+      const owner = await readBindingLockOwner(lockPath)
+      if (owner?.token !== token || owner.pid !== process.pid) {
+        throw new Error('Could not release the owned Office Session binding map lock.')
+      }
+      await rm(lockPath, { recursive: true })
+    }
   }
 
   private async bind(hostIdValue: string, documentIdValue: string): Promise<string> {
@@ -257,7 +376,6 @@ export class OfficeSessionBindingStore {
       version: 1,
       bindings: [...state.bindings, { hostId, documentId, sessionId }],
     }
-    await mkdir(this.stateDirectory, { recursive: true })
     const temporary = join(this.stateDirectory, `.${BINDING_FILE}.${randomUUID()}.tmp`)
     await writeFile(temporary, `${JSON.stringify(next)}\n`, { encoding: 'utf8', mode: 0o600 })
     await rename(temporary, path)
