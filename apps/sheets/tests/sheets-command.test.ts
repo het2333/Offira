@@ -136,6 +136,26 @@ describe('executeSheetsCommand', () => {
     expect(readCells).not.toHaveBeenCalled()
   })
 
+  it('rejects conflicting explicit worksheet ids in sheet and sheetId', async () => {
+    const readCells = vi.fn()
+    const result = await executeSheetsCommand(
+      handlersWith({
+        sheets: () => [
+          { id: 'sheet-1', name: 'Summary' },
+          { id: 'sheet-2', name: 'Details' },
+        ],
+        readCells,
+      }),
+      {
+        command: 'read_sheet',
+        arguments: { sheet: 'sheet-1', sheetId: 'sheet-2', addresses: ['A1'] },
+      },
+    )
+
+    expect(result).toMatchObject({ ok: false, warnings: [{ code: 'SHEET_NOT_FOUND' }] })
+    expect(readCells).not.toHaveBeenCalled()
+  })
+
   it('returns a specific diagnostic for an invalid workbook operation', async () => {
     const applyOps = vi.fn()
     const result = await executeSheetsCommand(handlersWith({ applyOps }), {

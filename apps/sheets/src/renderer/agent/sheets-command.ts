@@ -67,7 +67,15 @@ function resolveReadSheet(
       `no worksheet with id "${String(id)}" in this workbook (sheet ids: ${known})`,
     )
   }
-  if (sheets.some((sheet) => sheet.id === name)) return name
+  if (sheets.some((sheet) => sheet.id === name)) {
+    if (id !== undefined && id !== name) {
+      throw new SheetsCommandError(
+        'SHEET_NOT_FOUND',
+        `worksheet id "${name}" does not match "${id}"`,
+      )
+    }
+    return name
+  }
   const match = sheets.find(
     (sheet) => sheet.name.trim().toLowerCase() === name.trim().toLowerCase(),
   )

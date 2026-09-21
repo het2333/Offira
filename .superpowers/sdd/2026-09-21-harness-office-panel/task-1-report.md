@@ -77,3 +77,17 @@ This covers per-cell `C1/C2/C3` values `1/2/3`, delayed hydration ordering, hydr
 
 - The full Sheets suite is not globally green for the failures above; most are outside focused Task 1 coverage and their baseline status is unverified.
 - `App.tsx` had pre-existing edits; Task 1 uses a partial-index commit so those existing working-tree changes are not included.
+
+## Round 1 review fix: ID-form conflict
+
+The reviewer found that `sheet: "sheet-1"` took the direct ID branch before the simultaneously supplied `sheetId: "sheet-2"` was checked.
+
+RED command:
+
+`npx vitest run tests/read-targets.test.ts tests/sheets-command.test.ts`
+
+Observed result: **1 failed, 12 passed**. The new `rejects conflicting explicit worksheet ids in sheet and sheetId` regression received `{ ok: true }` instead of `SHEET_NOT_FOUND`.
+
+After resolving and comparing both explicit references before the direct-ID return, the same command was rerun.
+
+GREEN result: **2 files passed, 13 tests passed**.
