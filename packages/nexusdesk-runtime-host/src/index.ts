@@ -20,6 +20,7 @@ import { projectDurableEvent, projectStreamChunk } from './projection'
 import { OfficeRuntimeCarrier } from './office-runtime-carrier'
 import { createOfficeGatewayFetch } from './office-gateway-fetch'
 import { readOfficeResource } from './office-resource'
+import { waitForApproval } from './approval-wait'
 import {
   configureOfficeToolScope,
   DOCS_TOOL_NAMES,
@@ -59,9 +60,10 @@ interface AgentHandle {
 }
 
 interface RuntimeContext {
+  credentials: Pick<import('@deepseek-ai/dsh-credentials').CredentialProvider, 'describe' | 'set' | 'unset'>
   clientModules: Pick<import('@deepseek-ai/dsh-client-modules').ClientModuleRegistry, 'graph' | 'fetchBundle'>
   connection: { createSharedFetchHandler(channel: '/api'): { fetch(request: Request): Promise<Response> } }
-  typertGateway: { wireStream: { open(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown> } }
+  typertGateway: { wireStream: { open(endpoint: string, payload: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>> } }
   agentDefaultModel: {
     currentSelection(): { provider: string; model: string; reasoningEffort?: string }
   }
@@ -206,20 +208,12 @@ function requestParent(frame: ParentRequest, timeoutMs = 120_000): Promise<Runti
 
 function requestParentTracked(
   frame: ParentRequest,
-  timeoutMs = 120_000,
 ): { id: string; reply: Promise<RuntimeRequestFrame> } {
   const id = `request-${randomUUID()}`
   return {
     id,
-    reply: new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        replies.delete(id)
-        reject(new Error(`parent request timed out after ${String(timeoutMs)}ms`))
-      }, timeoutMs)
-      replies.set(id, (reply) => {
-        clearTimeout(timer)
-        resolve(reply)
-      })
+    reply: new Promise((resolve) => {
+      replies.set(id, resolve)
       send({ ...frame, protocolVersion: PROTOCOL_VERSION, id } as RuntimeResponseFrame)
     }),
   }
@@ -320,6 +314,27 @@ async function bindOfficeAgent(
 
 async function handle(frame: RuntimeRequestFrame): Promise<void> {
   switch (frame.type) {
+    case 'credential:request': {
+      try {
+        const { credentialRef } = await import('@deepseek-ai/dsh-credentials')
+        const credentials = asRuntimeContext((await boot).ctx).credentials
+        const ref = credentialRef(frame.ref)
+        const current = await credentials.describe(ref)
+        if (frame.action !== 'describe' && !current.writable) {
+          send({ type: 'credential:result', protocolVersion: PROTOCOL_VERSION, id: frame.id, error: 'READ_ONLY' })
+          return
+        }
+        if (frame.action === 'set') await credentials.set(ref, frame.value ?? '')
+        if (frame.action === 'unset') await credentials.unset(ref)
+        const info = await credentials.describe(ref)
+        send({ type: 'credential:result', protocolVersion: PROTOCOL_VERSION, id: frame.id,
+          info: { configured: info.configured, ...(info.source ? { source: info.source } : {}), writable: info.writable } })
+      } catch {
+        // Credential errors may include secret material. Never forward them to the parent/browser.
+        send({ type: 'credential:result', protocolVersion: PROTOCOL_VERSION, id: frame.id, error: 'UNAVAILABLE' })
+      }
+      return
+    }
     case 'office:resource': {
       const runtimeContext = asRuntimeContext((await boot).ctx)
       const resource = await readOfficeResource(runtimeContext.clientModules, frame.url).catch(() => ({ status: 503, contentType: 'text/plain', bodyBase64: Buffer.from('Office resource unavailable').toString('base64') }))
@@ -455,11 +470,12 @@ function createEditorToolBridge(
         reason: proposal.summary,
         proposal,
       })
-      const reply = await pending.reply
-      execution.signal.throwIfAborted()
-      return reply.type === 'approval:response' && reply.outcome === 'allowed-once'
-        ? { approved: true, approvalId: pending.id }
-        : { approved: false }
+      try {
+        const approved = await waitForApproval(pending.reply.then(reply =>
+          reply.type === 'approval:response' && reply.outcome === 'allowed-once'), execution.signal)
+        execution.signal.throwIfAborted()
+        return approved ? { approved: true, approvalId: pending.id } : { approved: false }
+      } finally { replies.delete(pending.id) }
     },
   }
 }

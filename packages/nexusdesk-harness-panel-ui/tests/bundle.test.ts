@@ -37,7 +37,7 @@ describe('published Client artifact', () => {
     })
 
     expect(registration.id).toBe('@nexusdesk/harness-office-panel-ui')
-    expect(exports.inject).toEqual(['slots', 'sessions', 'uiSession', 'uiConversation'])
+    expect(exports.inject).toEqual(['slots', 'sessions', 'uiSession', 'uiConversation', 'conversation'])
     expect(exports.apply).toEqual(expect.any(Function))
     expect([...new Set(requested)].sort()).toEqual(['react', 'react/jsx-runtime'])
   })

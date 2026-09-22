@@ -85,6 +85,26 @@ function operationsOf(plan: EditPlan): WorkbookOperation[] {
   return plan.operations as unknown as WorkbookOperation[]
 }
 
+function describeOperations(handlers: McpSheetHandlers, operations: readonly WorkbookOperation[]): string {
+  const preview = (value: unknown) => {
+    const text = typeof value === 'string' ? `“${value}”` : String(value)
+    return text.length > 180 ? `${text.slice(0, 180)}…` : text
+  }
+  return operations.map((op, index) => {
+    const target = operationTargets(handlers, [op]).join('、')
+    let action: string
+    switch (op.op) {
+      case 'set_cell': action = `在 ${target} 写入 ${preview(op.value)}`; break
+      case 'set_formula': action = `在 ${target} 设置公式 ${preview(op.formula)}`; break
+      case 'clear_cell': case 'clear_range': action = `清空 ${target} 的内容`; break
+      case 'add_chart': action = `在 ${target} 新建图表${op.title ? `“${op.title}”` : ''}，数据范围 ${op.dataRange}`; break
+      case 'rename_sheet': action = `将 ${target} 重命名为“${op.name}”`; break
+      default: action = `修改 ${target}（${op.op.replace(/_/g, ' ')}）`
+    }
+    return `${index + 1}. ${action}`
+  }).join('\n') + '\n只执行以上修改；保存文件需另行确认。'
+}
+
 async function hashPlan(plan: Pick<EditPlan, 'target' | 'operations'>): Promise<string> {
   return sha256({ target: plan.target, operations: plan.operations })
 }
@@ -174,7 +194,7 @@ class SheetsAdapter implements EditorAdapter {
       target,
       planId: `sheets-plan-${globalThis.crypto.randomUUID()}`,
       planHash,
-      summary: `Apply ${String(operations.length)} spreadsheet operation(s) to ${operationTargets(this.options.handlers, operations).join(', ')}.`,
+      summary: describeOperations(this.options.handlers, operations),
       operations: jsonOperations,
       warnings: [],
     }

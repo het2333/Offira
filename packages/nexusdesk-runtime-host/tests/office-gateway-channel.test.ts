@@ -22,6 +22,28 @@ function fixture(frames: unknown[] = []) {
 }
 
 describe('document-bound native Gateway channel', () => {
+  it('discovers only the bound session from the real catalog shape', async () => {
+    const { channel, dispatch } = fixture()
+    dispatch.mockResolvedValueOnce({ ok: true, value: { items: [{ sessionId: 's1' }, { sessionId: 'secret' }] } })
+    expect(await channel.call('session/list', { args: { _request: {} } })).toEqual({ ok: true, value: { items: [{ sessionId: 's1' }] } })
+  })
+  it('projects real workspace baselines to only the bound session', async () => {
+    const { channel } = fixture([{ type: 'baseline', value: {
+      items: [{ workspaceId: 'w1', path: '/allowed', title: 'A', sessionIds: ['s1', 's2'] },
+        { workspaceId: 'w2', path: '/private', sessionIds: ['s2'] }], archivedSessionIds: ['s1', 's2'],
+    } }])
+    const stream = channel.open('workspaces', 'workspace/follow', { args: {} })
+    expect((await stream.next()).value).toEqual({ type: 'baseline', value: {
+      items: [{ workspaceId: 'w1', path: '/allowed', title: 'A', sessionIds: ['s1'] }], archivedSessionIds: ['s1'],
+    } })
+    await stream.return(undefined)
+  })
+
+  it('reads official redacted settings but exposes no write controls', async () => {
+    const { channel, dispatch } = fixture()
+    dispatch.mockResolvedValueOnce({ ok: true, value: { writable: true, hasDocument: true, namespaces: [] } })
+    expect(await channel.call('settings/describe', { args: {} })).toEqual({ ok: true, value: { writable: false, hasDocument: false, namespaces: [] } })
+  })
   it('rejects a preparation hook that changes the native request identity', async () => {
     const { channel, preparePrompt, dispatch } = fixture()
     preparePrompt.mockResolvedValueOnce({ args: { request: { sessionId: 's1', requestId: 'replacement', mode: 'queue', content: [] } } })

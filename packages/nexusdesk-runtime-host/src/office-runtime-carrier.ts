@@ -1,5 +1,6 @@
 import type { ClientId, DocumentId, HarnessServerFrame, Revision } from '@nexusdesk/protocol'
 import { OfficeGatewayChannel } from './office-gateway-channel'
+import { projectOfficeDisplay } from './office-display'
 import type { OfficeGatewayResult } from './office-gateway-fetch'
 import { freezeOfficeTurnContext, officeTurnContextText, type OfficeTurnContext } from './office-session-binding'
 import type { RuntimeRequestFrame, RuntimeResponseFrame } from './protocol'
@@ -10,7 +11,7 @@ interface Options {
   target(sessionId: string): Target | undefined
   send(frame: RuntimeResponseFrame): void
   dispatch(endpoint: string, payload: unknown, signal: AbortSignal): Promise<OfficeGatewayResult>
-  open(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown>
+  open(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
 }
 interface ChannelEntry { clientId: ClientId; channel: OfficeGatewayChannel; contexts: Map<string, OfficeTurnContext> }
 
@@ -55,7 +56,7 @@ export class OfficeRuntimeCarrier {
   async handle(input: NativeRequest): Promise<void> {
     const frame = input.frame
     const base = { protocolVersion: 1 as const, id: frame.id, documentId: frame.documentId }
-    const send = (value: HarnessServerFrame) => this.options.send({ type: 'office:client-result', protocolVersion: 1, clientId: input.clientId, frame: value })
+    const send = (value: HarnessServerFrame) => this.options.send({ type: 'office:client-result', protocolVersion: 1, clientId: input.clientId, frame: projectOfficeDisplay(value, frame.documentId) })
     const fail = (_error: unknown) => send({ ...base, type: 'harness:error', message: '会话请求未能完成；如已提交修改，请先核实文档结果。' })
     try {
       const entry = this.entry(input)

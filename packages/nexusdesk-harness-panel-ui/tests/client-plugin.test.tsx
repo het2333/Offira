@@ -85,14 +85,15 @@ function referenceHarness(sessionId = 'session-1') {
   }
 }
 
-async function boot(reference: SessionReference) {
+async function boot(reference: SessionReference, blocks = { set: vi.fn() }, input = { for: vi.fn() }) {
   const slots = new SlotCore()
   const effects: Array<() => void> = []
   const retain = vi.fn(() => reference)
   const genericWorkbench = (): string => 'generic workbench'
   slots.register({ name: 'root', priority: 0 }, genericWorkbench)
   const ctx = {
-    sessions: { retain } as unknown as ISessions,
+    conversation: { blocks, input },
+    sessions: { retain, refresh: vi.fn(async () => {}) } as unknown as ISessions,
     slots: {
       register: (...args: unknown[]) => {
         const register = slots.register as unknown as (...values: unknown[]) => () => void
@@ -126,6 +127,40 @@ afterEach(() => {
 })
 
 describe('official Office conversation composition', () => {
+  it('routes toolbar text into the bound official composer without sending or erasing its draft', async () => {
+    const harness = referenceHarness()
+    let listener: ((text: string) => void) | undefined
+    bindingDisposers.push(installOfficePanelBinding({ sessionId: 'session-1', captureSubmission() {},
+      subscribeDraftRequests(fn: (text: string) => void) { listener = fn; return () => { listener = undefined } },
+    }))
+    const editor = { state: { getSnapshot: () => ({ draft: 'existing draft' }) }, setDraft: vi.fn(), focus: vi.fn() }
+    const input = { for: vi.fn(() => editor) }
+    const bench = await boot(harness.reference, { set: vi.fn() }, input)
+    listener?.('分析当前选区')
+    expect(input.for).toHaveBeenCalledWith(harness.reference.binding!.ctx)
+    expect(editor.setDraft).toHaveBeenCalledWith('existing draft\n分析当前选区')
+    expect(editor.focus).toHaveBeenCalled()
+    await bench.dispose()
+    expect(listener).toBeUndefined()
+  })
+  it('blocks the official composer while disconnected and clears it only on restored binding', async () => {
+    const harness = referenceHarness()
+    const listeners = new Set<() => void>()
+    let ready = true
+    bindingDisposers.push(installOfficePanelBinding({ sessionId: 'session-1', captureSubmission() {},
+      connection: { getSnapshot: () => ready, subscribe(fn: () => void) { listeners.add(fn); return () => listeners.delete(fn) } },
+    }))
+    const blocks = { set: vi.fn() }
+    const bench = await boot(harness.reference, blocks)
+    ready = false
+    for (const fn of listeners) fn()
+    expect(blocks.set).toHaveBeenLastCalledWith('session-1', { reason: expect.stringContaining('连接') })
+    ready = true
+    for (const fn of listeners) fn()
+    expect(blocks.set).toHaveBeenLastCalledWith('session-1', undefined)
+    await bench.dispose()
+    expect(listeners.size).toBe(0)
+  })
   it('retains the carrier Session and registers primary plus independent fallback roots ahead of AppFrame', async () => {
     const harness = referenceHarness()
     const captureSubmission = vi.fn()

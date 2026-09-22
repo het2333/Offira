@@ -115,7 +115,35 @@ function request(command: string, approval?: { id: RequestId; planHash: string }
 }
 
 describe('Docs browser Agent bridge', () => {
-  it('never upgrades an old success journal into durable apply success', async () => {
+  it('executes a freshly approved proposal while the Host reservation is pending exactly once', async () => {
+    const client = new FakeClient()
+    const state = { documentEpoch: 'epoch-1', workingRevision: 1, savedRevision: 1,
+      sourceContentId: 'a'.repeat(64), checkpointId: null, dirty: false,
+      recoveryState: 'ready' as const, contentUrl: '/source' }
+    const editor = adapterWith()
+    const checkpoint = vi.fn().mockResolvedValue({ operationId: 'operation-1', workingRevision: 2 })
+    const bridge = createDocsBrowserAgentBridge({ client, documentId, revision,
+      storage: new MemoryStorage(), workingCopy: { state: () => state,
+        capture: async () => ({ kind: 'docx-bytes', parts: new Map() }),
+        persistence: { lookup: async () => ({ state: 'pending' }), checkpoint },
+      } })
+    bridge.attachEditor(editor)
+    bridge.setHydrated(state)
+    const registration = client.sent.find((item) => item.type === 'editor:register')!
+    client.emit({ type: 'editor:registered', id: registration.id, documentId, revision,
+      documentEpoch: state.documentEpoch, sourceContentId: state.sourceContentId } as never)
+    client.emit(request('propose_ops'))
+    await vi.waitFor(() => expect(client.sent.some((f) => f.type === 'editor:result')).toBe(true))
+    const apply = request('apply_ops', { id: 'approval-1' as RequestId, planHash: 'exact-plan-hash' })
+    client.emit(apply)
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1))
+    client.emit(apply)
+    await vi.waitFor(() => expect(client.sent.filter((f) => f.type === 'editor:result' && f.id === apply.id)).toHaveLength(2))
+    expect(editor.apply).toHaveBeenCalledTimes(1)
+    bridge.dispose()
+  })
+
+  it.each(['not-found', 'pending'] as const)('never upgrades an old success journal into durable apply success (%s)', async (lookupState) => {
     const client = new FakeClient()
     const storage = new MemoryStorage()
     const state = {
@@ -149,7 +177,7 @@ describe('Docs browser Agent bridge', () => {
           throw Error('no mutation should run')
         },
         persistence: {
-          lookup: async () => ({ state: 'not-found' }),
+          lookup: async () => ({ state: lookupState }),
           checkpoint: async () => {
             throw Error('no upload')
           },

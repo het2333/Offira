@@ -7,6 +7,7 @@ import type { ClientId, DocumentId, JsonValue, Revision } from '@nexusdesk/proto
 import type { ApplyEditScriptOp, ApplyTxnOp, ApplyTxnResult, EditTextOp, OpenResult, SlidesApi, UiTheme } from '../shared/ipc'
 import { createSlidesBrowserAgentBridge, type SlidesBrowserAgentBridge } from './agent/browser-agent-api'
 import { createSlidesEditorAdapter } from './agent/slides-editor-adapter'
+import { showToast } from './components/toast-bus'
 
 type SlidesLanguage = Awaited<ReturnType<SlidesApi['getLanguage']>>
 
@@ -96,6 +97,7 @@ function contentState(value: unknown): { contentVersion: number } {
 export function createSlidesBrowserApi(
   handle: Pick<SlidesBrowserHostHandle, 'document' | 'settings' | 'updateRevision' | 'updateContentVersion'>,
   transport: SlidesBrowserTransport,
+  onDeckChanged: SlidesApi['onDeckChanged'] = noListener,
 ): SlidesApi {
   let pending = true
   let aiPanelPrefs: AiPanelPrefs = DEFAULT_AI_PANEL_PREFS
@@ -205,7 +207,7 @@ export function createSlidesBrowserApi(
     },
     onOpened: noListener,
     onRenamed: noListener,
-    onDeckChanged: noListener,
+    onDeckChanged,
     onHistoryChanged: noListener,
     getLayouts: async () => ({ layouts: [], size: { cx: 0, cy: 0 } }),
     getAiSettings: async () => defaultAiSettings(),
@@ -287,6 +289,20 @@ export function installSlidesBrowserHostApi(
   })
   let slidesApi: SlidesApi
   let disposed = false
+  const deckListeners = new Set<Parameters<SlidesApi['onDeckChanged']>[0]>()
+  const refreshDeck = async () => {
+    const current = await transport.execute('slides:read-presentation', {}) as Parameters<Parameters<SlidesApi['onDeckChanged']>[0]>[0]
+    if (disposed) return
+    if (!Array.isArray(current?.slides) || !current.size) throw Error('Invalid presentation render state.')
+    for (const listener of deckListeners) listener(current)
+  }
+  const refreshAfterConfirmedChange = async () => {
+    try {
+      await refreshDeck()
+    } catch {
+      if (!disposed) showToast('演示文稿操作已执行，但画布刷新失败。请重新打开并核对内容，不要重复提交修改。', 'error')
+    }
+  }
   const handle: SlidesBrowserHostHandle = {
     document: { documentId: bootstrap.documentId, title: bootstrap.title, revision: bootstrap.revision, contentVersion: bootstrap.contentVersion },
     settings: { language: bootstrap.language, theme: bootstrap.theme },
@@ -297,6 +313,7 @@ export function installSlidesBrowserHostApi(
     dispose() {
       if (disposed) return
       disposed = true
+      deckListeners.clear()
       bridge.dispose()
       client.close()
       if (target.slidesApi === slidesApi) delete target.slidesApi
@@ -304,7 +321,10 @@ export function installSlidesBrowserHostApi(
       if (target.nexusdeskSlidesHost === handle) delete target.nexusdeskSlidesHost
     },
   }
-  slidesApi = createSlidesBrowserApi(handle, transport)
+  slidesApi = createSlidesBrowserApi(handle, transport, listener => {
+    deckListeners.add(listener)
+    return () => { deckListeners.delete(listener) }
+  })
   bridge.attachEditor(createSlidesEditorAdapter({
     document: () => {
       const state = bridge.client()
@@ -318,22 +338,31 @@ export function installSlidesBrowserHostApi(
       }
     },
     read: async () => (await transport.execute('slides:read-presentation', {})) as JsonValue,
+    validateOperations: async (operations) => {
+      const checked = await transport.execute('slides:apply-txn', { ops: operations, dryRun: true }) as { dryRun?: boolean; failures?: Array<{ error: string }> }
+      if (!checked?.dryRun || checked.failures?.length) {
+        throw new Error(checked?.failures?.map(item => item.error).join('\n') || 'Unable to validate presentation operations.')
+      }
+    },
     runTransaction: async (operations) => {
       const result = await transport.execute('slides:apply-txn', { ops: operations }) as { applied: boolean; contentVersion?: number; records?: Array<{ op: string; target?: string }>; failures?: Array<{ error: string }> }
       if (result.applied && result.contentVersion !== undefined) handle.updateContentVersion(result.contentVersion)
+      if (result.applied) await refreshAfterConfirmedChange()
       return result
     },
-    save: async () => { await slidesApi.save() },
+    save: async () => { await slidesApi.save(); await refreshAfterConfirmedChange() },
     async undo() {
       const result = await transport.execute('slides:undo', {}) as { contentVersion?: number } | null
       if (result?.contentVersion === undefined) return null
       handle.updateContentVersion(result.contentVersion)
+      await refreshAfterConfirmedChange()
       return { contentVersion: result.contentVersion }
     },
     async redo() {
       const result = await transport.execute('slides:redo', {}) as { contentVersion?: number } | null
       if (result?.contentVersion === undefined) return null
       handle.updateContentVersion(result.contentVersion)
+      await refreshAfterConfirmedChange()
       return { contentVersion: result.contentVersion }
     },
     consumeApproval: (approvalId, planHash) => bridge.consumeApproval(approvalId, planHash),

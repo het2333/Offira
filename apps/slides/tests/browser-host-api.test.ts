@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   createSlidesBrowserApi,
@@ -6,6 +6,7 @@ import {
   type SlidesBrowserBootstrap,
   type SlidesBrowserTransport,
 } from '../src/renderer/browser-host-api'
+import { setToastEmitter, type ToastData } from '../src/renderer/components/toast-bus'
 
 function bootstrap(): SlidesBrowserBootstrap {
   return {
@@ -40,6 +41,93 @@ function transport(): SlidesBrowserTransport & { calls: Array<{ action: string; 
 }
 
 describe('Slides browser host API', () => {
+  it('reports an applied Agent edit as successful when only the canvas refresh fails', async () => {
+    const listeners = new Set<(frame: any) => void>()
+    const sent: any[] = []
+    const toasts: ToastData[] = []
+    setToastEmitter(toast => toasts.push(toast))
+    const client = { state: 'ready', clientId: 'client', connect() {}, close() {}, send(frame: any) { sent.push(frame) },
+      onState() { return () => {} }, onFrame(fn: any) { listeners.add(fn); return () => listeners.delete(fn) } } as any
+    const host = { async execute(action: string, payload: any) {
+      if (action === 'slides:apply-txn') return payload.dryRun ? { dryRun: true } : { applied: true, contentVersion: 2, records: [{ op: 'setText' }] }
+      if (action === 'slides:read-presentation') throw Error('render endpoint unavailable')
+      throw Error(action)
+    } }
+    const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host, client })
+    try {
+      const emit = (frame: any) => { for (const fn of listeners) fn(frame) }
+      emit({ type: 'editor:attached', documentId: 'slides-1234' })
+      const target = { sessionId: 'session', clientId: 'client', documentId: 'slides-1234', editorType: 'slides', revision: 1, operationId: 'refresh-failure' }
+      emit({ type: 'editor:request', protocolVersion: 1, id: 'proposal', target, command: 'propose_ops', arguments: { ops: [{ op: 'setText', target: { slide: 0, el: 'e_2' }, paragraphs: [{ runs: [{ text: '新标题' }] }] }] } })
+      await vi.waitFor(() => expect(sent.some(frame => frame.id === 'proposal')).toBe(true))
+      const proposal = sent.find(frame => frame.id === 'proposal').result.data
+      emit({ type: 'editor:request', protocolVersion: 1, id: 'apply', target, command: 'apply_ops', arguments: {}, approval: { id: 'approval', planHash: proposal.planHash } })
+      await vi.waitFor(() => expect(sent.some(frame => frame.id === 'apply')).toBe(true))
+
+      expect(sent.find(frame => frame.id === 'apply').result).toMatchObject({ ok: true, data: { contentVersion: 2 } })
+      expect(handle.document.contentVersion).toBe(2)
+      expect(toasts).toEqual([expect.objectContaining({ kind: 'error', text: expect.stringContaining('刷新') })])
+    } finally {
+      handle.dispose()
+      setToastEmitter(null)
+    }
+  })
+  it('reports an approved save as successful when only the canvas refresh fails', async () => {
+    const listeners = new Set<(frame: any) => void>()
+    const sent: any[] = []
+    const toasts: ToastData[] = []
+    setToastEmitter(toast => toasts.push(toast))
+    const client = { state: 'ready', clientId: 'client', connect() {}, close() {}, send(frame: any) { sent.push(frame) },
+      onState() { return () => {} }, onFrame(fn: any) { listeners.add(fn); return () => listeners.delete(fn) } } as any
+    const host = { async execute(action: string) {
+      if (action === 'slides:save') return { ok: true, revision: 2, slides: [] }
+      if (action === 'slides:read-presentation') throw Error('render endpoint unavailable')
+      throw Error(action)
+    } }
+    const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host, client })
+    try {
+      const emit = (frame: any) => { for (const fn of listeners) fn(frame) }
+      emit({ type: 'editor:attached', documentId: 'slides-1234' })
+      const target = { sessionId: 'session', clientId: 'client', documentId: 'slides-1234', editorType: 'slides', revision: 1, operationId: 'save-refresh-failure' }
+      emit({ type: 'editor:request', protocolVersion: 1, id: 'propose-save', target, command: 'propose_save', arguments: {} })
+      await vi.waitFor(() => expect(sent.some(frame => frame.id === 'propose-save')).toBe(true))
+      const proposal = sent.find(frame => frame.id === 'propose-save').result.data
+      emit({ type: 'editor:request', protocolVersion: 1, id: 'save', target, command: 'save_presentation', arguments: { inPlace: true, contentVersion: proposal.contentVersion }, approval: { id: 'approval', planHash: proposal.planHash } })
+      await vi.waitFor(() => expect(sent.some(frame => frame.id === 'save')).toBe(true))
+
+      expect(sent.find(frame => frame.id === 'save').result).toMatchObject({ ok: true })
+      expect(handle.document.revision).toBe(2)
+      expect(toasts).toEqual([expect.objectContaining({ kind: 'error', text: expect.stringContaining('刷新') })])
+    } finally {
+      handle.dispose()
+      setToastEmitter(null)
+    }
+  })
+  it('publishes refreshed render state to the canvas after an approved native Agent edit', async () => {
+    const listeners = new Set<(frame: any) => void>()
+    const sent: any[] = []
+    const client = { state: 'ready', clientId: 'client', connect() {}, close() {}, send(frame: any) { sent.push(frame) },
+      onState() { return () => {} }, onFrame(fn: any) { listeners.add(fn); return () => listeners.delete(fn) } } as any
+    const updated = { slides: [{ index: 0, nodes: [{ text: '新标题' }] }], size: { cx: 100, cy: 60 } }
+    const host = { async execute(action: string, payload: any) {
+      if (action === 'slides:apply-txn') return payload.dryRun ? { dryRun: true } : { applied: true, contentVersion: 2, records: [{ op: 'setText' }] }
+      if (action === 'slides:read-presentation') return updated
+      throw Error(action)
+    } }
+    const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host, client })
+    const changed: unknown[] = []
+    const off = handle.slidesApi.onDeckChanged(value => changed.push(value))
+    const emit = (frame: any) => { for (const fn of listeners) fn(frame) }
+    emit({ type: 'editor:attached', documentId: 'slides-1234' })
+    const target = { sessionId: 'session', clientId: 'client', documentId: 'slides-1234', editorType: 'slides', revision: 1, operationId: 'operation' }
+    emit({ type: 'editor:request', protocolVersion: 1, id: 'proposal', target, command: 'propose_ops', arguments: { ops: [{ op: 'setText', target: { slide: 0, el: 'e_2' }, paragraphs: [{ runs: [{ text: '新标题' }] }] }] } })
+    await vi.waitFor(() => expect(sent.some(frame => frame.id === 'proposal')).toBe(true))
+    const proposal = sent.find(frame => frame.id === 'proposal').result.data
+    emit({ type: 'editor:request', protocolVersion: 1, id: 'apply', target, command: 'apply_ops', arguments: {}, approval: { id: 'approval', planHash: proposal.planHash } })
+    await vi.waitFor(() => expect(sent.some(frame => frame.id === 'apply')).toBe(true))
+    expect(changed).toEqual([updated])
+    off(); handle.dispose()
+  })
   it('opens once, sends text edits to the Host session, and saves with the current revision', async () => {
     const host = transport()
     const handle = installSlidesBrowserHostApi(bootstrap(), { target: {}, transport: host })

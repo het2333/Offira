@@ -1,7 +1,10 @@
 import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
+import { createAgentLoopRuntime, type AgentLoopLike } from '@nexusdesk/web-client'
+import { NativeOfficePanel } from '@nexusdesk/web-client/native-office-panel'
+import type { Revision } from '@nexusdesk/protocol'
+import type { SlidesBrowserHostHandle } from '../browser-host-api'
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
-  AgentLoop,
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
   type AgentImage,
@@ -375,7 +378,28 @@ function clampPanelWidth(w: number): number {
   return Math.min(Math.max(w, PANEL_WIDTH_MIN), max)
 }
 
-export function AiPanel({
+export function AiPanel(props: AiPanelProps) {
+  const host = (window as Window & { nexusdeskSlidesHost?: SlidesBrowserHostHandle }).nexusdeskSlidesHost
+  return host ? <NativeSlidesPanel {...props} host={host} /> : <LegacyAiPanel {...props} />
+}
+
+function NativeSlidesPanel(props: AiPanelProps & { host: SlidesBrowserHostHandle }) {
+  const [dismissed, setDismissed] = useState<string | null>(null)
+  const key = `${props.current}:${props.selectedIds.join(',')}`
+  const elements = dismissed === key ? [] : props.selectedIds
+  const request = props.preset
+  const draftRequest = useRef<{ id: number; text: string } | null>(null)
+  if (request && draftRequest.current?.id !== request.nonce) draftRequest.current = { id: request.nonce, text: request.text }
+  return <NativeOfficePanel host={props.host} isOpen={props.open ?? true}
+    onExpand={() => props.onExpand?.()} onCollapse={() => props.onCollapse?.()}
+    draftRequest={draftRequest.current}
+    scopeLabel={`第 ${props.current + 1} 页${elements.length ? ` · 已选中 ${elements.length} 个元素` : ''}`}
+    onScopeDismiss={() => setDismissed(key)}
+    captureSnapshot={() => ({ revision: props.host.document.revision as Revision,
+      selection: { kind: 'slides', slide: props.current, elements: [...elements] } })} />
+}
+
+function LegacyAiPanel({
   slides,
   current,
   selectedIds,
@@ -790,7 +814,7 @@ export function AiPanel({
     )
   }
 
-  const loopRef = useRef<AgentLoop | null>(null)
+  const loopRef = useRef<AgentLoopLike | null>(null)
   if (!loopRef.current) {
     // The three slides generation steps (style/planning/per-page HTML) force the high-quality model (only with the anthropic provider;
     // other providers keep the user setting, avoiding passing nonexistent model names). Chat/fine-tuning still uses the user's configured model.
@@ -1363,7 +1387,8 @@ export function AiPanel({
       },
     }
     accessRef.current = access
-    loopRef.current = new AgentLoop({
+    loopRef.current = createAgentLoopRuntime({
+      getDocumentId: () => new URLSearchParams(window.location.search).get('documentId'),
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
@@ -1482,7 +1507,7 @@ export function AiPanel({
           })
           // Signed-out failures get an inline sign-in button; detected via
           // gsk status rather than matching the localized error text
-          void window.slidesApi
+          if (new URLSearchParams(window.location.search).get('host') !== 'local-web') void window.slidesApi
             .aiGskStatus()
             .then((status) => {
               if (status.loggedIn) return
@@ -2294,6 +2319,7 @@ export function AiPanel({
             </div>
           )
         })}
+        <div data-agent-approval-slot />
         {activeClarify && (
           <div className="ai-clarify-chip" role="status">
             <span className="ai-clarify-chip-eyebrow">{t('aiClarifyTitle')}</span>

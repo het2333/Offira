@@ -15,7 +15,7 @@ describe('NexusDesk Web bootstrap', () => {
 
     expect(state).toEqual({
       kind: 'unauthenticated',
-      message: 'Your local NexusDesk session has expired.',
+      message: 'Your local Offira session has expired.',
       reconnectHref: '/bootstrap/reconnect',
     })
   })

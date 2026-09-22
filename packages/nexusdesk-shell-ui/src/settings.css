@@ -511,6 +511,20 @@
   line-height: 1.5;
 }
 
+.set-model-api {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.set-model-api-intro { margin: -8px 0 8px; }
+.set-model-api-label { font-size: 13px; color: var(--text-primary); }
+.set-model-api-control { width: min(100%, 430px); min-width: 0; }
+.set-model-api-state { min-height: 20px; margin: 2px 0; font-size: 13px; color: var(--text-secondary); }
+.set-model-api .set-pane-footer { width: 100%; }
+
 /* footer feedback pill: spinner while testing, green on success/saved, red on failure */
 .set-ai-status {
   display: inline-flex;

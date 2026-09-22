@@ -92,6 +92,20 @@ afterEach(() => {
 })
 
 describe('Docs editor adapter', () => {
+  it('rejects an invented operation before approving or changing content', async () => {
+    const { adapter, ctx } = setup()
+    await expect(adapter.propose(editRequest({ arguments: { ops: [{ op: 'replaceText', block: 2, text: 'August' }] } }))).rejects.toThrow()
+    expect(ctx.editor!.getText()).toBe('Original text.')
+  })
+
+  it('advertises canonical operation signatures with the document readout', async () => {
+    const { adapter } = setup()
+    const result = await adapter.read({ documentId, command: 'read_document', arguments: {} })
+    expect((result.data as { operationSignatures: string[] }).operationSignatures).toEqual(
+      expect.arrayContaining([expect.stringContaining('op: "findReplace"')]),
+    )
+  })
+
   it('proposes a canonical bounded plan without mutating the document', async () => {
     const { adapter, ctx } = setup()
     const before = ctx.editor?.state.doc.textContent
@@ -101,6 +115,7 @@ describe('Docs editor adapter', () => {
     expect(plan.planHash).toMatch(/^[a-f0-9]{64}$/)
     expect(plan.operations).toEqual([{ op: 'findReplace', find: 'Original', replace: 'Approved' }])
     expect(plan.summary).toContain('1')
+    expect(plan.summary).toContain('「Original」 → 「Approved」')
     expect(ctx.editor?.state.doc.textContent).toBe(before)
   })
 

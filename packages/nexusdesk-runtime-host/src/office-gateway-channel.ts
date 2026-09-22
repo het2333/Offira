@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { WorkspaceFollowFrame, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/types'
 import type { OfficeGatewayResult } from './office-gateway-fetch'
 import {
   authorizeOfficeGatewayRequest,
@@ -17,7 +18,7 @@ interface OfficeGatewayChannelOptions {
     payload: unknown,
     signal: AbortSignal,
   ) => Promise<OfficeGatewayResult>
-  readonly open: (endpoint: string, payload: unknown, signal: AbortSignal) => AsyncIterable<unknown>
+  readonly open: (endpoint: string, payload: unknown, signal: AbortSignal) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
 }
 
 /** A single authenticated document client. Transport disconnect must close this object.
@@ -63,7 +64,15 @@ export class OfficeGatewayChannel {
       }
     }
     combined.throwIfAborted()
-    return this.options.dispatch(endpoint, payload, combined)
+    const result = await this.options.dispatch(endpoint, payload, combined)
+    if (endpoint === 'session/list' && result.ok) {
+      const value = result.value as { items: { sessionId: string }[] }
+      return { ok: true, value: { items: value.items.filter((item) => item.sessionId === this.options.sessionId) } }
+    }
+    if (endpoint === 'settings/describe' && result.ok) {
+      return { ok: true, value: { ...(result.value as object), writable: false, hasDocument: false } }
+    }
+    return result
   }
 
   async *open(
@@ -90,8 +99,13 @@ export class OfficeGatewayChannel {
     const events = token ? new OfficeRemoteEventFilter(this.options.sessionId, token) : undefined
     const stream = { abort, ...(events ? { events, token: token! } : {}) }
     this.streams.set(streamId, stream)
+    const visibleWorkspaces = new Set<string>()
+    const projectWorkspace = (workspace: WorkspaceView) => ({ ...workspace,
+      sessionIds: workspace.sessionIds.filter((id) => id === this.options.sessionId) })
     try {
-      for await (const value of this.options.open(endpoint, payload, combined)) {
+      const source = await this.options.open(endpoint, payload, combined)
+      combined.throwIfAborted()
+      for await (const value of source) {
         this.assertLive()
         combined.throwIfAborted()
         if (events) {
@@ -108,6 +122,26 @@ export class OfficeGatewayChannel {
         } else if (endpoint === 'session/control') {
           const filtered = filterOfficeControlFrame(this.options.sessionId, value)
           if (filtered) yield filtered
+        } else if (endpoint === 'workspace/follow') {
+          const frame = value as WorkspaceFollowFrame
+          if (frame.type === 'baseline') {
+            visibleWorkspaces.clear()
+            const items = frame.value.items.filter((w) => w.sessionIds.includes(this.options.sessionId as never)).map(projectWorkspace)
+            for (const item of items) visibleWorkspaces.add(item.workspaceId)
+            yield { type: 'baseline', value: { items, archivedSessionIds: frame.value.archivedSessionIds.filter((id) => id === this.options.sessionId) } }
+          } else if (frame.type === 'upsert') {
+            const workspace = projectWorkspace(frame.workspace)
+            if (workspace.sessionIds.length) {
+              visibleWorkspaces.add(workspace.workspaceId)
+              yield { type: 'upsert', workspace }
+            } else if (visibleWorkspaces.delete(workspace.workspaceId)) yield { type: 'remove', workspaceId: workspace.workspaceId }
+          } else if (frame.type === 'remove') {
+            if (visibleWorkspaces.delete(frame.workspaceId)) yield frame
+          } else if (frame.type === 'order') {
+            yield { type: 'order', workspaceIds: frame.workspaceIds.filter((id) => visibleWorkspaces.has(id)) }
+          } else if (frame.type === 'archived') {
+            yield { type: 'archived', archivedSessionIds: frame.archivedSessionIds.filter((id) => id === this.options.sessionId) }
+          }
         } else {
           // session/follow is opened with an exact ordinary Session address.
           yield value

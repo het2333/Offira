@@ -89,6 +89,7 @@ import { CutoutDialog } from './components/CutoutDialog'
 import { useAutoSavePref, type AiScopeQuoteData, type WordArtPreset } from '@genoffice/ui'
 import type { ChartPresetDef, IconDef, SmartArtDef } from './insert-presets'
 import { GensparkMark, IconAiBeautify, IconAiFactCheck, IconAiImage } from './components/icons'
+import offiraMark from '../../../../packages/nexusdesk-shell-ui/src/assets/offira-mark.svg'
 import { ToastHost } from './components/toast'
 import { showToast } from './components/toast-bus'
 import { t, useI18n } from './i18n/locale'
@@ -3287,7 +3288,7 @@ export function App() {
                 data-tip={t('appAiRailExpand')}
                 aria-label={t('appAiRailExpand')}
               >
-                <GensparkMark size={22} />
+                {window.nexusdeskSlidesHost ? <img className="offira-ai-mark" src={offiraMark} alt="" /> : <GensparkMark size={22} />}
               </button>
             )}
           </div>
@@ -3621,12 +3622,13 @@ export function App() {
                         <div className="stage-ai-bar">
                           <div className="stage-ai-group">
                             <button
-                              className={`stage-ai-btn${showAi ? ' active' : ''}`}
+                              className={`stage-ai-btn${window.nexusdeskSlidesHost ? ' offira-ai-entry' : ''}${showAi ? ' active' : ''}`}
                               data-tip={t('aiOpenAssistant')}
+                              aria-pressed={showAi}
                               onClick={toggleAi}
                             >
-                              <GensparkMark size={14} />
-                              <span>Genspark AI</span>
+                              {window.nexusdeskSlidesHost ? <img className="offira-ai-mark" src={offiraMark} alt="" /> : <GensparkMark size={14} />}
+                              <span>{window.nexusdeskSlidesHost ? 'Offira AI' : 'Genspark AI'}</span>
                             </button>
                             {/* Same one-click presets as the Home tab; hidden instead of
                         disabled while the deck has no real content */}

@@ -32,10 +32,15 @@ export function authorizeOfficeGatewayRequest(
   const envelope = record(payload)
   exactKeys(envelope, ['args'])
   const args = record(envelope.args)
+  if (mode === 'call' && endpoint === 'session/list') {
+    exactKeys(args, ['_request'])
+    exactKeys(record(args._request), [])
+    return structuredClone(envelope)
+  }
   const noArgs =
     mode === 'call'
-      ? endpoint === 'session/modelCatalog'
-      : endpoint === '$events' || endpoint === 'session/control'
+      ? endpoint === 'session/modelCatalog' || endpoint === 'settings/describe'
+      : endpoint === '$events' || endpoint === 'session/control' || endpoint === 'workspace/follow'
   if (noArgs) {
     exactKeys(args, [])
     return structuredClone(envelope)

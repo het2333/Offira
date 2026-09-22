@@ -14,6 +14,7 @@ import {
 } from '../src/index'
 
 it('advertises all Web editors in the NexusDesk product configuration', () => {
+  expect(NEXUSDESK_PRODUCT_CONFIG.name).toBe('Offira')
   expect(NEXUSDESK_PRODUCT_CONFIG.editors).toEqual([
     'docs',
     'sheets',
@@ -96,6 +97,8 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
       onFolderChanged: () => () => {},
       starPromptShouldShow: async () => ({ show: false, docOpens: 0 }),
       getTheme: async () => 'system',
+      getModelCredential: async (ref: string) => ({ ref, configured: false, writable: true }),
+      setModelCredential: async (ref: string) => ({ ref, configured: true, source: 'stored', writable: true }),
       getAiProviders: unsupported('getAiProviders'),
       getAiSettings: unsupported('getAiSettings'),
       getDefaultSaveDir: unsupported('getDefaultSaveDir'),
@@ -118,14 +121,16 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
   await act(async () => {
     root.render(
       <OfficeHostProvider host={host} platform={platform}>
-        <SharedShell product={NEXUSDESK_PRODUCT_CONFIG} initialOnboardingSeen />
+        <SharedShell product={NEXUSDESK_PRODUCT_CONFIG} initialOnboardingSeen={false} />
       </OfficeHostProvider>,
     )
     await Promise.resolve()
     await Promise.resolve()
   })
 
-  expect(container.textContent).toContain('NexusDesk')
+  expect(container.textContent).toContain('Offira')
+  expect(container.querySelector<HTMLImageElement>('.sidebar-logo img[alt="Offira"]')?.getAttribute('src')).toContain('offira-gradient')
+  expect(container.querySelector('.onb-overlay')).toBeNull()
   expect(container.textContent).not.toContain('Genspark Projects')
   expect(container.querySelector('.account-entry')).toBeNull()
   expect(container.querySelector('.tab-app-menu-btn')).toBeNull()
@@ -145,6 +150,14 @@ it('hides unsupported browser and GenOffice-only actions in NexusDesk', async ()
   await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.click())
   expect(container.querySelector('[role="dialog"]')).not.toBeNull()
   expect(container.textContent).toContain('通用')
-  expect(container.textContent).not.toContain('AI 模型')
+  expect(container.textContent).toContain('AI 模型')
+  await act(async () => {
+    const modelButton = [...container.querySelectorAll<HTMLButtonElement>('.set-nav-item')]
+      .find((button) => button.textContent?.includes('AI 模型'))
+    modelButton!.click()
+    await Promise.resolve()
+  })
+  expect(container.textContent).toContain('DeepSeek')
+  expect(container.querySelector('input[type="password"]')).not.toBeNull()
   expect(unsupportedCalls).toEqual([])
 })

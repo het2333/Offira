@@ -64,6 +64,17 @@ function adapterWith(overrides: Partial<EditorAdapter> = {}): EditorAdapter {
 }
 
 describe('Slides browser Agent bridge', () => {
+  it('does not advertise attachment before its own Host registration acknowledgement', () => {
+    const client = new FakeClient()
+    const bridge = createSlidesBrowserAgentBridge({ client, documentId, revision })
+    bridge.attachEditor(adapterWith())
+    expect(bridge.client().attached).toBe(false)
+    client.emit({ type: 'editor:attached', protocolVersion: 1, id: 'register' as RequestId, documentId: 'other' as DocumentId, revision })
+    expect(bridge.client().attached).toBe(false)
+    client.emit({ type: 'editor:attached', protocolVersion: 1, id: 'register' as RequestId, documentId, revision })
+    expect(bridge.client().attached).toBe(true)
+    bridge.dispose()
+  })
   it('binds an approved presentation transaction to its proposal and replays the result once', async () => {
     const client = new FakeClient()
     const apply = vi.fn().mockResolvedValue({ ok: true, summary: 'applied once', warnings: [] })

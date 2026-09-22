@@ -11,6 +11,6 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node22',
-  external: ['@deepseek-ai/*'],
+  external: ['@deepseek-ai/*', 'postcss'],
   logLevel: 'warning',
 })

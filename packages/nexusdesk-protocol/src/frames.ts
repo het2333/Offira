@@ -155,6 +155,14 @@ export interface EditorRegisteredFrame extends FrameBase {
   sourceContentId: string
 }
 
+/** Non-durable registration acknowledgement; does not assert checkpoint persistence. */
+export interface EditorAttachedFrame extends FrameBase {
+  type: 'editor:attached'
+  id: RequestId
+  documentId: DocumentId
+  revision: Revision
+}
+
 export interface RecoveryRequiredFrame extends FrameBase {
   type: 'recovery:required'
   id: RequestId
@@ -172,4 +180,5 @@ export type AgentServerFrame =
   | EditorRequestFrame
   | OperationResultFrame
   | EditorRegisteredFrame
+  | EditorAttachedFrame
   | RecoveryRequiredFrame

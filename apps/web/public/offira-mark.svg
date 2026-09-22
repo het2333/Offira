@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="offira-gradient" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3059E8"/>
+      <stop offset="1" stop-color="#7250DA"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="44" height="44" rx="14" fill="url(#offira-gradient)"/>
+  <circle cx="23" cy="25" r="11" stroke="white" stroke-width="5"/>
+  <path d="m35 5 2.1 5.9L43 13l-5.9 2.1L35 21l-2.1-5.9L27 13l5.9-2.1L35 5Z" fill="#A7F4FF"/>
+</svg>

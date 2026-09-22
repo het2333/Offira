@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { scopeOfficeModule } from './office-css'
 import { bootInjections, type ClientModuleRegistry } from '@deepseek-ai/dsh-client-modules'
 import { renderIndexInjections, type IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 
@@ -41,6 +42,16 @@ try {
 }
 
 export async function readOfficeResource(modules: Pick<ClientModuleRegistry, 'graph' | 'fetchBundle'>, url: string): Promise<OfficeResource> {
+  if (url === '/harness/boot.json' || url === '/harness/loader.js') {
+    const graph = modules.graph()
+    if (!graph.entries.some((entry) => entry.id === '@nexusdesk/harness-office-panel-ui')) throw new Error('Office Client graph is missing its restricted root.')
+    const rows = bootInjections(graph)
+    const scripts = rows.filter((row) => row.kind === 'script')
+    const body = url.endsWith('.js')
+      ? scripts.map((row) => row.text).join('\n')
+      : JSON.stringify(rows.map((row) => row.kind === 'script' ? { kind: 'script-src', placement: row.placement, src: '/harness/loader.js' } : row))
+    return { status: 200, contentType: url.endsWith('.js') ? 'application/javascript' : 'application/json', bodyBase64: Buffer.from(body).toString('base64') }
+  }
   if (url === '/harness/index.html') {
     const graph = modules.graph()
     if (!graph.entries.some((entry) => entry.id === '@nexusdesk/harness-office-panel-ui')) throw new Error('Office Client graph is missing its restricted root.')
@@ -51,5 +62,7 @@ export async function readOfficeResource(modules: Pick<ClientModuleRegistry, 'gr
   }
   if (!url.startsWith('/plugins/') || url.length > 16384 || url.includes('.map')) throw new Error('Invalid Office resource URL.')
   const response = await modules.fetchBundle(new Request(new URL(url, 'http://office.invalid')))
-  return { status: response.status, contentType: response.headers.get('content-type') ?? 'application/javascript', bodyBase64: Buffer.from(await response.arrayBuffer()).toString('base64') }
+  const contentType = response.headers.get('content-type') ?? 'application/javascript'
+  const body = Buffer.from(await response.arrayBuffer())
+  return { status: response.status, contentType, bodyBase64: (contentType.includes('javascript') ? Buffer.from(scopeOfficeModule(body.toString('utf8'))) : body).toString('base64') }
 }

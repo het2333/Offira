@@ -26,6 +26,7 @@ export interface SlidesBrowserAgentBridge {
   readonly agentApi: AgentApi
   attachEditor(adapter: EditorAdapter): () => void
   client(): { clientId: ClientId | undefined; attached: boolean }
+  transportClient(): NexusClient
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
   dispose(): void
@@ -108,6 +109,10 @@ export function createSlidesBrowserAgentBridge(
 ): SlidesBrowserAgentBridge {
   let adapter: EditorAdapter | undefined
   let disposed = false
+  let registered = false
+  const unsubscribeState = options.client.onState(state => {
+    if (state !== 'ready') registered = false
+  })
   // Serialize only fingerprint/registration, not execution, to preserve first-arrival ownership.
   let requestQueue: Promise<void> = Promise.resolve()
   const releasedProposals = new BoundedEditorCache<string, boolean>()
@@ -394,6 +399,10 @@ export function createSlidesBrowserAgentBridge(
   }
   const unsubscribe = options.client.onFrame((frame) => {
     if (disposed) return
+    if (frame.type === 'editor:attached' && frame.documentId === options.documentId) {
+      registered = true
+      return
+    }
     if (frame.type === 'agent:event' && frame.event.type === 'editor:proposal-released') {
       const data = frame.event.data
       if (
@@ -427,8 +436,9 @@ export function createSlidesBrowserAgentBridge(
         if (adapter === nextAdapter) adapter = undefined
       }
     },
+    transportClient: () => options.client,
     client() {
-      return { clientId: options.client.clientId, attached: options.client.state === 'ready' }
+      return { clientId: options.client.clientId, attached: registered && options.client.state === 'ready' }
     },
     consumeApproval(approvalId, planHash) {
       if (approvals.get(approvalId) !== planHash) return false
@@ -449,6 +459,7 @@ export function createSlidesBrowserAgentBridge(
       historyProposals.clear()
       adapter = undefined
       unsubscribe()
+      unsubscribeState()
       registration.dispose()
     },
   }

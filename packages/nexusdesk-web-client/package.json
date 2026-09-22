@@ -4,17 +4,23 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./harness-inline-panel": "./src/harness-inline-panel.ts",
+    "./native-office-panel": "./src/native-office-panel.tsx"
   },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nexusdesk/harness-office-panel-ui": "*",
+    "@genoffice/agent-core": "*",
     "@nexusdesk/protocol": "*"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  }
+  },
+  "peerDependencies": { "react": ">=18" }
 }

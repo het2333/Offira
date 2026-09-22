@@ -44,6 +44,14 @@ export interface AutoSaveDefault {
   updatedAt: number
 }
 
+/** Safe-to-display Harness API-key status. The secret value is never returned. */
+export interface ModelCredentialStatus {
+  ref: string
+  configured: boolean
+  source?: string
+  writable: boolean
+}
+
 /** local MCP server state (persisted in userData/app-settings.json) */
 export interface McpStatus {
   running: boolean
@@ -97,6 +105,10 @@ export interface RecentPage {
 }
 
 export interface HomeApi {
+  /** Offira Web: status and private storage for Harness model-provider API keys. */
+  getModelCredential?(ref: string): Promise<ModelCredentialStatus>
+  /** A null value removes a stored key. Launch-environment keys are read-only. */
+  setModelCredential?(ref: string, value: string | null): Promise<ModelCredentialStatus>
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
   /** starred files (independent of the recent list), newest first (paged) */

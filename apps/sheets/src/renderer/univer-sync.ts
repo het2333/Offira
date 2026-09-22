@@ -2824,6 +2824,10 @@ export function nextIndexWaitStall(
   return next >= INDEX_WAIT_STALL_LIMIT ? null : next
 }
 
+// Initial hydration owns its range until installation completes. Scroll events
+// must not replace its loading key while the editor is being registered.
+const recoveryRangeOwners = new WeakMap<LazyWorkbookState, Set<string>>()
+
 async function loadRange(
   runtime: UniverRuntime,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
@@ -2841,6 +2845,7 @@ async function loadRange(
   if (!state) return
   const sheetId = worksheet.getSheetId()
   const loaded = state.loadedRanges.get(sheetId)
+  if (!recovery && recoveryRangeOwners.get(state)?.has(sheetId)) return
   // A range loaded before the sidecar finished indexing came without the
   // sheet's decorations (conditional formats, filters, validations) — those
   // only exist post-indexing. Keep reading until a post-indexing result
@@ -2853,8 +2858,15 @@ async function loadRange(
   ) {
     return
   }
-  const requestKey = `${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`
-  if (!isRetry && state.loadingKeys.get(sheetId) === requestKey) return
+  // A preceding viewport request can have identical coordinates. Give the
+  // recovery owner a distinct key so that request's finally cannot release it.
+  const requestKey = `${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}${recovery ? ':recovery:' + crypto.randomUUID() : ''}`
+  if (!recovery && !isRetry && state.loadingKeys.get(sheetId) === requestKey) return
+  if (recovery) {
+    const owners = recoveryRangeOwners.get(state) ?? new Set<string>()
+    owners.add(sheetId)
+    recoveryRangeOwners.set(state, owners)
+  }
   const previousTimer = state.retryTimers.get(sheetId)
   if (previousTimer) clearTimeout(previousTimer)
   state.retryTimers.delete(sheetId)
@@ -3147,6 +3159,7 @@ async function loadRange(
     }
     if (recovery) throw error
   } finally {
+    if (recovery) recoveryRangeOwners.get(state)?.delete(sheetId)
     if (state.loadingKeys.get(sheetId) === requestKey) {
       state.loadingKeys.delete(sheetId)
     }

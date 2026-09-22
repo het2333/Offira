@@ -32,6 +32,7 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
     description:
       'Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.',
     parameters: {
+      operationSchema: { type: 'string', description: 'Read canonical DSL input fields for an operation (e.g. add_chart), or "*" to list all available operations. This returns guidance, not cell data.' },
       sheet: {
         type: 'string',
         description: 'Worksheet name. Prefer this stable identifier when known.',
@@ -49,6 +50,7 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
       const result = await bridge.request(
         'read_sheet',
         {
+          ...(args.operationSchema === undefined ? {} : { operationSchema: args.operationSchema }),
           ...(args.sheet === undefined ? {} : { sheet: args.sheet }),
           ...(args.sheetId === undefined ? {} : { sheetId: args.sheetId }),
           ...(args.addresses === undefined ? {} : { addresses: args.addresses }),
@@ -62,14 +64,14 @@ export function createSheetsTools(bridge: SheetsToolBridge): ToolDefinition[] {
   const apply = defineTool({
     name: 'apply_sheet_operations',
     description:
-      'Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.',
+      'Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval. Before calling, briefly explain the intended changes and affected range in the user\'s language. Read operation fields with read_sheet(operationSchema) instead of guessing. Do not repeat a mutation whose outcome is unknown; read its state first.',
     parameters: {
       operations: {
         type: 'array',
         required: true,
         items: { type: 'json' },
         description:
-          'Ordered GenOffice spreadsheet DSL operations. Use worksheet names from read_sheet.',
+          'Ordered GenOffice DSL operations. Basic shapes: {op:"set_cell",sheetId,address,value}, {op:"set_formula",sheetId,address,formula}, {op:"clear_cell",sheetId,address}. Use actual sheetId from read_sheet. For other operations call read_sheet with operationSchema; "*" lists capabilities. Do not invent API fields.',
       },
     },
     output: agentOutput,

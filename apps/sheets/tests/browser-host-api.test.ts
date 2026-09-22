@@ -188,6 +188,31 @@ describe('Sheets host selection', () => {
 })
 
 describe('browser agent bridge', () => {
+  it('executes a newly approved pending reservation once, but never resumes one without a local proposal', async () => {
+    const client = new FakeClient()
+    const adapter = adapterWith()
+    const state = { documentEpoch: 'epoch', sourceContentId: 'a'.repeat(64), checkpointId: 'cp', workingRevision: 1, savedRevision: 1, dirty: false, recoveryState: 'ready' as const, contentUrl: '/source' }
+    const checkpoint = vi.fn(async () => ({ documentEpoch: 'epoch', operationId: 'operation-1', checkpointId: 'cp2', workingRevision: 2, savedRevision: 1, requestFingerprint: 'f'.repeat(64) }) as any)
+    const bridge = createBrowserAgentBridge({ client, documentId, revision, workingCopy: {
+      state: () => state, persistence: { lookup: async () => ({ state: 'pending' }), checkpoint },
+      capture: async () => ({ kind: 'xlsx' as any, parts: new Map() }),
+      lane: { run: async (task) => task() }, committed() {},
+    } })
+    bridge.setHydrated(state)
+    bridge.attachEditor(adapter)
+    const target = { sessionId: 'session-1' as SessionId, documentId, editorType: 'sheets' as const, revision, operationId: 'operation-1' as OperationId, clientId: 'client-1' as ClientId }
+    client.emit({ type: 'editor:request', protocolVersion: 1, id: 'propose' as RequestId, target, command: 'propose_ops', arguments: { ops: [] } })
+    await vi.waitFor(() => expect(client.sent.filter((f) => f.type === 'editor:result')).toHaveLength(1))
+    const apply = { type: 'editor:request' as const, protocolVersion: 1 as const, id: 'apply' as RequestId, target, command: 'apply_ops', arguments: { ops: [] }, approval: { id: 'approval-1' as RequestId, planHash: 'exact-plan-hash' } }
+    client.emit(apply)
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1))
+    client.emit(apply)
+    client.emit({ ...apply, id: 'unknown' as RequestId, target: { ...target, operationId: 'unknown-op' as OperationId } })
+    await vi.waitFor(() => expect(client.sent.some((f) => f.type === 'editor:result' && f.id === 'unknown')).toBe(true))
+    expect(adapter.apply).toHaveBeenCalledTimes(1)
+    expect(checkpoint).toHaveBeenCalledTimes(1)
+    bridge.dispose()
+  })
   it('proposes first and applies only the exact Host-approved plan hash', async () => {
     const client = new FakeClient()
     const adapter = adapterWith()
@@ -765,11 +790,13 @@ describe('browser Agent loop runtime', () => {
     expect(startTurn).toHaveBeenCalledWith({
       prompt: 'Update the forecast',
       documentId,
-      sessionId: expect.stringMatching(/^sheets-/),
+      sessionId: expect.stringMatching(/^office-/),
     })
   })
 
-  it('shows the exact structured proposal that is bound to approval', () => {
+  it('shows the exact structured proposal that is bound to approval', async () => {
+    const { JSDOM } = await import('jsdom')
+    vi.stubGlobal('document', new JSDOM('<div data-agent-approval-slot></div>').window.document)
     let receive: ((frame: AgentServerFrame) => void) | undefined
     const respondApproval = vi.fn()
     const startTurn = vi.fn()
@@ -807,11 +834,18 @@ describe('browser Agent loop runtime', () => {
       },
     })
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Apply 2 operations'))
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Summary!B2'))
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Formula will recalculate.'))
-    expect(confirm.mock.calls[0]?.[0]).not.toContain('[object Object]')
+    const dialog = document.querySelector('[role="group"]')!
+    expect(dialog?.textContent).toContain('Apply 2 operations')
+    expect(dialog.textContent).toContain('Summary!B2')
+    expect(dialog.textContent).toContain('Formula will recalculate.')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(respondApproval).not.toHaveBeenCalled()
+    const approve = [...dialog.querySelectorAll('button')].find(b => b.textContent === '批准本次操作')!
+    approve.click()
+    approve.click()
     expect(respondApproval).toHaveBeenCalledWith('approval-1', 'allowed-once')
+    expect(respondApproval).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
     vi.unstubAllGlobals()
   })
 })

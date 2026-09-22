@@ -37,11 +37,11 @@ function renderStatus(root: HTMLElement, title: string, message: string): void {
 
 async function start(): Promise<void> {
   const root = document.getElementById('root')
-  if (root === null) throw new Error('Missing NexusDesk root element')
+  if (root === null) throw new Error('Missing Offira root element')
 
   const directLaunch = fileLaunchMessage(new URL(window.location.href))
   if (directLaunch !== undefined) {
-    renderStatus(root, 'Open NexusDesk through Local Host', directLaunch)
+    renderStatus(root, '请通过本地服务打开 Offira', directLaunch)
     return
   }
 
@@ -71,7 +71,7 @@ async function start(): Promise<void> {
   } catch (error: unknown) {
     renderStatus(
       root,
-      'NexusDesk could not connect to Local Host',
+      'Offira 无法连接本地服务',
       error instanceof Error ? error.message : 'The Local Host connection failed.',
     )
   }

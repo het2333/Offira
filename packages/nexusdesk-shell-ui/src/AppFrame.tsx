@@ -6,7 +6,7 @@ import { TabBar } from './TabBar'
 import { EditorFrame } from './EditorFrame'
 import { useOfficeHost, useShellPlatform } from './office-host-context'
 import type { ProductConfig } from '@nexusdesk/office-host'
-import { GENOFFICE_PRODUCT_CONFIG, ProductConfigProvider } from './product-config'
+import { GENOFFICE_PRODUCT_CONFIG, ProductConfigProvider, useProductConfig } from './product-config'
 
 interface AppFrameProps {
   /** resolved before first paint (main.tsx) so home never flashes under the overlay */
@@ -16,10 +16,11 @@ interface AppFrameProps {
 
 function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
   const host = useOfficeHost()
+  const product = useProductConfig()
   const { home: homeApi } = useShellPlatform()
   const [homeActive, setHomeActive] = useState<boolean | null>(null)
   const [bootstrap, setBootstrap] = useState<Awaited<ReturnType<typeof host.bootstrap>>>()
-  const [showOnboarding, setShowOnboarding] = useState(!initialOnboardingSeen)
+  const [showOnboarding, setShowOnboarding] = useState(product.id === 'genoffice' && !initialOnboardingSeen)
   const [starPromptDocOpens, setStarPromptDocOpens] = useState<number | null>(null)
 
   useEffect(() => {
@@ -39,7 +40,7 @@ function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
   // process; ask once per session, and never while onboarding is up — a
   // first-run user can't have met the value threshold anyway.
   useEffect(() => {
-    if (showOnboarding) return
+    if (product.id !== 'genoffice' || showOnboarding) return
     let alive = true
     void homeApi.starPromptShouldShow?.().then((result) => {
       if (alive && result.show) setStarPromptDocOpens(result.docOpens)
@@ -47,7 +48,7 @@ function AppFrameContent({ initialOnboardingSeen = true }: AppFrameProps) {
     return () => {
       alive = false
     }
-  }, [showOnboarding])
+  }, [product.id, showOnboarding])
 
   const finishOnboarding = async (): Promise<boolean> => {
     try {

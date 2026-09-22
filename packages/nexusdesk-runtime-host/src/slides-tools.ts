@@ -29,6 +29,11 @@ function result(value: AgentToolResult): AgentToolResult {
   })
 }
 
+function approvalDenied(): AgentToolResult {
+  const summary = '未获批准，演示文稿未修改。'
+  return result({ ok: false, summary, warnings: [{ code: 'APPROVAL_DENIED', message: summary }] })
+}
+
 function proposal(value: AgentToolResult): { operationId: string; proposal: ReplayableApprovalProposal } {
   const data = (value.data ?? {}) as Record<string, JsonValue>
   if (typeof data.planHash !== 'string' || typeof data.operationId !== 'string') {
@@ -70,7 +75,7 @@ function historyTool(name: 'undo_presentation' | 'redo_presentation', action: 'u
       if (!proposed.ok) return proposed as unknown as JsonValue
       const pending = proposal(proposed)
       const approval = await bridge.approve(name, pending.proposal, execution)
-      if (!approval.approved || approval.approvalId === undefined) throw new Error(`presentation ${action} was not approved`)
+      if (!approval.approved || approval.approvalId === undefined) return approvalDenied() as unknown as JsonValue
       return result(await bridge.request('apply_history', { action }, execution, {
         approvalId: approval.approvalId,
         planHash: pending.proposal.planHash,
@@ -98,7 +103,7 @@ export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
         if (!proposed.ok) return proposed as unknown as JsonValue
         const pending = proposal(proposed)
         const approval = await bridge.approve('apply_presentation_operations', pending.proposal, execution)
-        if (!approval.approved || approval.approvalId === undefined) throw new Error('presentation mutation was not approved')
+        if (!approval.approved || approval.approvalId === undefined) return approvalDenied() as unknown as JsonValue
         return result(await bridge.request('apply_ops', { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: pending.proposal.planHash, operationId: pending.operationId })) as unknown as JsonValue
       },
     }),
@@ -111,7 +116,7 @@ export function createSlidesTools(bridge: SlidesToolBridge): ToolDefinition[] {
         if (!proposed.ok) return proposed as unknown as JsonValue
         const pending = saveProposal(proposed)
         const approval = await bridge.approve('save_presentation', pending.proposal, execution)
-        if (!approval.approved || approval.approvalId === undefined) throw new Error('presentation save was not approved')
+        if (!approval.approved || approval.approvalId === undefined) return approvalDenied() as unknown as JsonValue
         return result(await bridge.request('save_presentation', { inPlace: true, contentVersion: pending.contentVersion }, execution, {
           approvalId: approval.approvalId,
           planHash: pending.proposal.planHash,

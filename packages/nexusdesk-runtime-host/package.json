@@ -17,10 +17,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "postcss": "^8.5.6",
     "@deepseek-ai/cordis": "4.0.2",
     "@deepseek-ai/dsh": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-app-boot": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-brand": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-credentials": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-llm": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-tools": "0.1.6-alpha.2",
     "@nexusdesk/protocol": "*"

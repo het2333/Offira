@@ -23,6 +23,39 @@ function request(overrides: Partial<EditRequest> = {}): EditRequest {
 }
 
 describe('Slides editor adapter', () => {
+  it('describes the exact Slides edit and save in the approval card without API jargon', async () => {
+    const adapter = createSlidesEditorAdapter({
+      document: () => ({ documentId, clientId, revision, contentVersion: 2, title: 'Deck.pptx', attached: true }),
+      read: async () => ({ slides: [] }),
+      runTransaction: async () => ({ applied: true }),
+      save: async () => undefined, undo: async () => null, redo: async () => null,
+      consumeApproval: () => false,
+    })
+    const edit = await adapter.propose(request({ arguments: { ops: [
+      { op: 'setText', target: { slide: 0, el: 'e_3' }, paragraphs: [{ runs: [{ text: '同步刷新验收' }] }] },
+      { op: 'setFill', target: { slide: 1, el: 'e_4' }, fill: '#FF0000' },
+    ] } }))
+    const save = await adapter.proposeSave(request({ command: 'save_presentation', arguments: {} }))
+
+    expect(edit.summary).toContain('第 1 页元素 e_3：文本改为「同步刷新验收」')
+    expect(edit.summary).toContain('第 2 页元素 e_4：调整填充')
+    expect(edit.summary).not.toContain('Apply 2 presentation operations')
+    expect(save.summary).toBe('将当前演示文稿保存到原文件')
+  })
+  it('provides canonical operation signatures and rejects invalid proposals before approval', async () => {
+    const adapter = createSlidesEditorAdapter({
+      document: () => ({ documentId, clientId, revision, contentVersion: 1, title: 'Deck.pptx', attached: true }),
+      read: async () => ({ slides: [] }),
+      validateOperations: async () => { throw new Error('setText requires target and paragraphs') },
+      runTransaction: async () => { throw new Error('must not execute during proposal') },
+      save: async () => {}, undo: async () => null, redo: async () => null,
+      consumeApproval: () => false,
+    })
+    const read = await adapter.read({ documentId, command: 'read_presentation', arguments: {} })
+    expect((read.data as any).operationSignatures).toContain('setText')
+    expect((read.data as any).operationSignatures).toContain('paragraphs')
+    await expect(adapter.propose(request({ arguments: { ops: [{ op: 'set_text', text: 'bad' }] } }))).rejects.toThrow('requires target')
+  })
   it('requires exact one-time approval and replays an applied presentation transaction', async () => {
     const runTransaction = vi.fn().mockResolvedValue({
       applied: true,

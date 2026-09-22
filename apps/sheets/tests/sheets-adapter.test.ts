@@ -74,6 +74,13 @@ async function approvedPlan(options: Partial<SheetsAdapterOptions> = {}) {
 }
 
 describe('Sheets editor adapter', () => {
+  it('describes the exact cell edit in user-facing approval language', async () => {
+    const { adapter } = setup()
+    const plan = await adapter.propose(editRequest())
+    expect(plan.summary).toContain('Summary!B2')
+    expect(plan.summary).toContain('写入 5')
+    expect(plan.summary).not.toContain('set_cell')
+  })
   it('proposes normalized operations without mutating the workbook', async () => {
     const applyOps = vi.fn()
     const { adapter } = setup({ handlers: handlersWith({ applyOps }) })

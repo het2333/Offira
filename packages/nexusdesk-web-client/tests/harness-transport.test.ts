@@ -45,6 +45,76 @@ function fixture() {
 }
 
 describe('Harness browser transport on the existing authenticated socket', () => {
+  it('keeps a disconnected read subscription recoverable beyond 30 seconds and releases it on close', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      const bound = f.transport.bind()
+      f.emit({ protocolVersion: 1, type: 'harness:bound', id: f.sent[0]!.id, documentId: 'doc1' as DocumentId, sessionId: 'session1' as any })
+      await bound
+      for (const listener of f.states) listener('reconnecting')
+      const iterator = f.transport.rpc.open('/api', 'session/follow', { args: {} }, new AbortController().signal)
+      let settled = false
+      const pending = iterator.next().then(() => { settled = true }, () => { settled = true })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(settled).toBe(false)
+      expect(f.sent).toHaveLength(1)
+      f.transport.dispose()
+      await pending
+      expect(settled).toBe(true)
+    } finally { f.transport.dispose(); vi.useRealTimers() }
+  })
+  it('recovers an interrupted read-only history page after rebinding', async () => {
+    const f = fixture()
+    const bound = f.transport.bind()
+    f.emit({ protocolVersion: 1, type: 'harness:bound', id: f.sent[0]!.id, documentId: 'doc1' as DocumentId, sessionId: 'session1' as any })
+    await bound
+    const page = f.transport.rpc.call('/api', 'session/page', { args: {} }).then(value => value, error => ({ error: error.message }))
+    for (const listener of f.states) listener('reconnecting')
+    const rebound = f.transport.bind()
+    f.emit({ protocolVersion: 1, type: 'harness:bound', id: f.sent.at(-1)!.id, documentId: 'doc1' as DocumentId, sessionId: 'session1' as any })
+    await rebound
+    await vi.waitFor(() => expect(f.sent.filter(frame => frame.type === 'harness:rpc' && frame.endpoint === 'session/page')).toHaveLength(2))
+    f.emit({ protocolVersion: 1, type: 'harness:result', id: f.sent.at(-1)!.id, documentId: 'doc1' as DocumentId, result: { ok: true, value: { messages: [] } } })
+    expect(await page).toEqual({ ok: true, value: { messages: [] } })
+    f.transport.dispose()
+  })
+  it('marks a lost read stream as a carrier failure so the official gateway recovers its cursor', async () => {
+    const f = fixture()
+    const iterator = f.transport.rpc.open('/api', 'session/follow', { args: {} }, new AbortController().signal)
+    const first = iterator.next()
+    f.emit({ protocolVersion: 1, type: 'harness:stream-item', id: f.sent[0]!.id, documentId: 'doc1' as DocumentId, value: { type: 'opened', cursor: 0 } })
+    await first
+    const next = iterator.next()
+    const outcome = next.then(value => value, error => error.dshRemoteStreamFailure)
+    for (const listener of f.states) listener('reconnecting')
+    expect(await outcome).toEqual({ kind: 'carrier' })
+    f.transport.dispose()
+  })
+  it.each(['editor:registered', 'editor:attached'])('rebinds after %s before reopening reads, without replaying a prompt', async (receiptType) => {
+    const f = fixture()
+    const bound = f.transport.bind()
+    f.emit({ protocolVersion: 1, type: 'harness:bound', id: f.sent[0]!.id, documentId: 'doc1' as DocumentId, sessionId: 'session1' as any })
+    await bound
+    for (const listener of f.states) listener('reconnecting')
+    for (const listener of f.states) listener('ready')
+    const iterator = f.transport.rpc.open('/api', '$events', { args: {} }, new AbortController().signal)
+    const next = iterator.next()
+    expect(f.sent).toHaveLength(1)
+    f.emit({ protocolVersion: 1, type: receiptType, documentId: 'other' as DocumentId } as any)
+    expect(f.sent).toHaveLength(1)
+    f.emit({ protocolVersion: 1, type: receiptType, documentId: 'doc1' as DocumentId } as any)
+    await vi.waitFor(() => expect(f.sent).toHaveLength(2))
+    expect(f.sent.at(-1)).toMatchObject({ type: 'harness:bind' })
+    expect(f.sent).toHaveLength(2)
+    f.emit({ protocolVersion: 1, type: 'harness:bound', id: f.sent[1]!.id, documentId: 'doc1' as DocumentId, sessionId: 'session1' as any })
+    await vi.waitFor(() => expect(f.sent.at(-1)).toMatchObject({ type: 'harness:stream-open' }))
+    f.emit({ protocolVersion: 1, type: 'harness:stream-item', id: f.sent.at(-1)!.id, documentId: 'doc1' as DocumentId, value: { type: 'ready' } })
+    expect((await next).value).toEqual({ type: 'ready' })
+    expect(f.sent.some(frame => frame.type === 'harness:rpc' && frame.endpoint === 'session/prompt')).toBe(false)
+    await iterator.return(undefined)
+    f.transport.dispose()
+  })
   it('ends an unanswered admission without retrying or claiming it was not applied', async () => {
     vi.useFakeTimers()
     const f = fixture()

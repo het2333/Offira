@@ -803,6 +803,36 @@ html.genoffice-popover-open .ribbon-tabs {
   background: transparent;
 }
 
+/* Local-Web Offira entry; legacy Electron branding remains unchanged. */
+.rb-big.ai-entry.offira-ai-entry {
+  min-width: 82px;
+  border: 1px solid rgb(66 85 211 / 20%);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgb(48 89 232 / 7%), rgb(114 80 218 / 9%));
+  font-weight: 600;
+}
+
+.rb-big.ai-entry.offira-ai-entry:hover:not(:disabled) {
+  border-color: rgb(66 85 211 / 42%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 13%), rgb(114 80 218 / 16%));
+}
+
+.rb-big.ai-entry.offira-ai-entry.active {
+  border-color: rgb(66 85 211 / 55%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 17%), rgb(114 80 218 / 20%));
+}
+
+.rb-big.ai-entry.offira-ai-entry .offira-ai-mark {
+  display: block;
+  width: 27px;
+  height: 27px;
+}
+
+.rb-big.ai-entry.offira-ai-entry:focus-visible {
+  outline: 2px solid #5967dc;
+  outline-offset: 2px;
+}
+
 .rb-col {
   display: flex;
   flex-direction: column;
@@ -7376,6 +7406,29 @@ body.docs-crop-active
 
 .ai-scope-row {
   margin-bottom: 7px;
+}
+
+.native-harness-panel .native-harness-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 36px 8px 12px;
+  border-bottom: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  font-size: var(--text-caption);
+}
+
+.native-harness-panel .native-harness-scope span {
+  flex: 1;
+}
+
+.native-harness-panel .native-harness-scope button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .ai-scope-hint .ai-scope-label,

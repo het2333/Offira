@@ -119,6 +119,8 @@ export function installWsSessionServer(
               options.documents.refreshFromHost(authorized, frame.rendererInstanceId)
             }
             options.documents.register(frame)
+            socket.send(JSON.stringify({ type: 'editor:attached', protocolVersion: 1,
+              id: frame.id, documentId: frame.documentId, revision: frame.revision }))
             break
           }
           case 'editor:revision':

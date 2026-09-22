@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
         "div",
         {
           "data-nexusdesk-office-panel": "ready",
-          style: { height: "100%", minHeight: 0, width: "100%" },
+          style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, width: "100%", overflow: "hidden" },
           children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(props.SessionProvider, { empty: OfficeFailureScreen, session: props.reference, children: props.renderSlot(
             OFFICE_PANEL_CONTENT_SLOT,
             {},
@@ -214,9 +214,10 @@ window.__ModuleLoader__.load({
         );
       }
     }
-    var inject = ["slots", "sessions", "uiSession", "uiConversation"];
+    var inject = ["slots", "sessions", "uiSession", "uiConversation", "conversation"];
     async function apply(ctx) {
       const carrier = requireOfficePanelBinding();
+      await ctx.sessions.refresh();
       const reference = ctx.sessions.retain(carrier.sessionId, {
         source: "officePanel"
       });
@@ -231,6 +232,33 @@ window.__ModuleLoader__.load({
       try {
         const binding = await reference.ready;
         assertMatchingSession(carrier.sessionId, reference, binding);
+        if (carrier.subscribeDraftRequests) {
+          ctx.effect(() => carrier.subscribeDraftRequests((text) => {
+            const input = ctx.conversation.input.for(binding.ctx);
+            const draft = input.state.getSnapshot().draft;
+            input.setDraft(draft ? `${draft}
+    ${text}` : text);
+            input.focus();
+          }), "office-panel-ui: editor toolbar draft requests");
+        }
+        if (carrier.connection) {
+          const connection = carrier.connection;
+          ctx.effect(() => {
+            const update = () => {
+              const ready = connection.getSnapshot();
+              ctx.conversation.blocks.set(
+                carrier.sessionId,
+                ready ? void 0 : { reason: "\u672C\u5730\u8FDE\u63A5\u6B63\u5728\u6062\u590D\uFF0C\u8349\u7A3F\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u7A0D\u540E\u53D1\u9001\u3002" }
+              );
+            };
+            const off = connection.subscribe(update);
+            update();
+            return () => {
+              off();
+              ctx.conversation.blocks.set(carrier.sessionId, void 0);
+            };
+          }, "office-panel-ui: connection composer gate");
+        }
         const failure = new OfficePanelCaptureFailure();
         capture = startPendingSubmissionCapture({
           expectedSessionId: carrier.sessionId,

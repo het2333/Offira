@@ -122,7 +122,7 @@ const KIND_ICON: Record<ShellTabSummary['kind'], ReactElement> = {
 }
 
 export function TabBar() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const host = useOfficeHost()
   const platform = useShellPlatform()
   const tabApi = { ...platform.tabs, ...host.tabs }
@@ -284,7 +284,7 @@ export function TabBar() {
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
               // long file names ellipsize in the strip — hover reveals the
               // full title (the close button's own tooltip still wins there)
-              title={tab.title}
+              title={tab.kind === 'home' && lang === 'zh' ? '首页' : tab.title}
               style={dragStyle}
               onPointerDown={(event) => {
                 if (event.button !== 0) return
@@ -378,7 +378,7 @@ export function TabBar() {
               {/* highlight plate behind the content — hover capsule / active white body */}
               <span className="tab-plate" aria-hidden="true" />
               <span className="tab-icon">{KIND_ICON[tab.kind]}</span>
-              <span className="tab-title">{tab.title}</span>
+              <span className="tab-title">{tab.kind === 'home' && lang === 'zh' ? '首页' : tab.title}</span>
               {tab.closable && (
                 <button
                   className="tab-close"

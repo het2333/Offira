@@ -11503,8 +11503,8 @@ function process2(schema, ctx2, _params = { path: [], schemaPath: [] }) {
   return _result.schema;
 }
 function extractDefs(ctx2, schema) {
-  const root = ctx2.seen.get(schema);
-  if (!root)
+  const root2 = ctx2.seen.get(schema);
+  if (!root2)
     throw new Error("Unprocessed schema. This is a bug in Zod.");
   const idToSchema = /* @__PURE__ */ new Map();
   for (const entry of ctx2.seen.entries()) {
@@ -11529,7 +11529,7 @@ function extractDefs(ctx2, schema) {
       entry[1].defId = id2;
       return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id2}` };
     }
-    if (entry[1] === root) {
+    if (entry[1] === root2) {
       return { ref: "#" };
     }
     const uriPrefix = `#`;
@@ -11593,8 +11593,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   }
 }
 function finalize(ctx2, schema) {
-  const root = ctx2.seen.get(schema);
-  if (!root)
+  const root2 = ctx2.seen.get(schema);
+  if (!root2)
     throw new Error("Unprocessed schema. This is a bug in Zod.");
   const flattenRef = (zodSchema) => {
     const seen = ctx2.seen.get(zodSchema);
@@ -11677,7 +11677,7 @@ function finalize(ctx2, schema) {
       throw new Error("Schema is missing an `id` property");
     result2.$id = ctx2.external.uri(id2);
   }
-  Object.assign(result2, root.def ?? root.schema);
+  Object.assign(result2, root2.def ?? root2.schema);
   const rootMetaId = ctx2.metadataRegistry.get(schema)?.id;
   if (rootMetaId !== void 0 && result2.id === rootMetaId)
     delete result2.id;
@@ -14930,7 +14930,12 @@ function authorizeOfficeGatewayRequest(binding, mode2, endpoint2, payload) {
   const envelope = record2(payload);
   exactKeys(envelope, ["args"]);
   const args = record2(envelope.args);
-  const noArgs = mode2 === "call" ? endpoint2 === "session/modelCatalog" : endpoint2 === "$events" || endpoint2 === "session/control";
+  if (mode2 === "call" && endpoint2 === "session/list") {
+    exactKeys(args, ["_request"]);
+    exactKeys(record2(args._request), []);
+    return structuredClone(envelope);
+  }
+  const noArgs = mode2 === "call" ? endpoint2 === "session/modelCatalog" || endpoint2 === "settings/describe" : endpoint2 === "$events" || endpoint2 === "session/control" || endpoint2 === "workspace/follow";
   if (noArgs) {
     exactKeys(args, []);
     return structuredClone(envelope);
@@ -15098,7 +15103,15 @@ var OfficeGatewayChannel = class {
       }
     }
     combined.throwIfAborted();
-    return this.options.dispatch(endpoint2, payload, combined);
+    const result2 = await this.options.dispatch(endpoint2, payload, combined);
+    if (endpoint2 === "session/list" && result2.ok) {
+      const value = result2.value;
+      return { ok: true, value: { items: value.items.filter((item) => item.sessionId === this.options.sessionId) } };
+    }
+    if (endpoint2 === "settings/describe" && result2.ok) {
+      return { ok: true, value: { ...result2.value, writable: false, hasDocument: false } };
+    }
+    return result2;
   }
   async *open(streamId, endpoint2, input, signal) {
     this.assertLive();
@@ -15119,8 +15132,15 @@ var OfficeGatewayChannel = class {
     const events = token ? new OfficeRemoteEventFilter(this.options.sessionId, token) : void 0;
     const stream = { abort, ...events ? { events, token } : {} };
     this.streams.set(streamId, stream);
+    const visibleWorkspaces = /* @__PURE__ */ new Set();
+    const projectWorkspace = (workspace) => ({
+      ...workspace,
+      sessionIds: workspace.sessionIds.filter((id2) => id2 === this.options.sessionId)
+    });
     try {
-      for await (const value of this.options.open(endpoint2, payload, combined)) {
+      const source = await this.options.open(endpoint2, payload, combined);
+      combined.throwIfAborted();
+      for await (const value of source) {
         this.assertLive();
         combined.throwIfAborted();
         if (events) {
@@ -15137,6 +15157,26 @@ var OfficeGatewayChannel = class {
         } else if (endpoint2 === "session/control") {
           const filtered = filterOfficeControlFrame(this.options.sessionId, value);
           if (filtered) yield filtered;
+        } else if (endpoint2 === "workspace/follow") {
+          const frame = value;
+          if (frame.type === "baseline") {
+            visibleWorkspaces.clear();
+            const items = frame.value.items.filter((w) => w.sessionIds.includes(this.options.sessionId)).map(projectWorkspace);
+            for (const item of items) visibleWorkspaces.add(item.workspaceId);
+            yield { type: "baseline", value: { items, archivedSessionIds: frame.value.archivedSessionIds.filter((id2) => id2 === this.options.sessionId) } };
+          } else if (frame.type === "upsert") {
+            const workspace = projectWorkspace(frame.workspace);
+            if (workspace.sessionIds.length) {
+              visibleWorkspaces.add(workspace.workspaceId);
+              yield { type: "upsert", workspace };
+            } else if (visibleWorkspaces.delete(workspace.workspaceId)) yield { type: "remove", workspaceId: workspace.workspaceId };
+          } else if (frame.type === "remove") {
+            if (visibleWorkspaces.delete(frame.workspaceId)) yield frame;
+          } else if (frame.type === "order") {
+            yield { type: "order", workspaceIds: frame.workspaceIds.filter((id2) => visibleWorkspaces.has(id2)) };
+          } else if (frame.type === "archived") {
+            yield { type: "archived", archivedSessionIds: frame.archivedSessionIds.filter((id2) => id2 === this.options.sessionId) };
+          }
         } else {
           yield value;
         }
@@ -15158,6 +15198,30 @@ var OfficeGatewayChannel = class {
     for (const streamId of this.streams.keys()) this.cancel(streamId);
   }
 };
+
+// src/office-display.ts
+var PREFIX = "NexusDesk Office context (Host-validated and frozen at submission):\n";
+function isOfficeContext(part, documentId) {
+  if (!part || typeof part !== "object") return false;
+  const text2 = part.text;
+  if (part.type !== "text" || typeof text2 !== "string" || !text2.startsWith(PREFIX)) return false;
+  try {
+    const value = JSON.parse(text2.slice(PREFIX.length));
+    return value.documentId === documentId && typeof value.editorType === "string" && Number.isInteger(value.revision) && Object.hasOwn(value, "selection") && Object.keys(value).sort().join(",") === "documentId,editorType,revision,selection";
+  } catch {
+    return false;
+  }
+}
+function projectOfficeDisplay(value, documentId) {
+  if (Array.isArray(value)) return value.map((item) => projectOfficeDisplay(item, documentId));
+  if (!value || typeof value !== "object") return value;
+  const record3 = value;
+  const copy = Object.fromEntries(Object.entries(record3).map(([key, item]) => [key, projectOfficeDisplay(item, documentId)]));
+  if (record3.role === "user" && Array.isArray(record3.content) && record3.content.length > 1 && isOfficeContext(record3.content[0], documentId)) {
+    copy.content = record3.content.slice(1);
+  }
+  return copy;
+}
 
 // src/office-session-binding.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -15523,7 +15587,7 @@ var OfficeRuntimeCarrier = class {
   async handle(input) {
     const frame = input.frame;
     const base2 = { protocolVersion: 1, id: frame.id, documentId: frame.documentId };
-    const send2 = (value) => this.options.send({ type: "office:client-result", protocolVersion: 1, clientId: input.clientId, frame: value });
+    const send2 = (value) => this.options.send({ type: "office:client-result", protocolVersion: 1, clientId: input.clientId, frame: projectOfficeDisplay(value, frame.documentId) });
     const fail = (_error) => send2({ ...base2, type: "harness:error", message: "\u4F1A\u8BDD\u8BF7\u6C42\u672A\u80FD\u5B8C\u6210\uFF1B\u5982\u5DF2\u63D0\u4EA4\u4FEE\u6539\uFF0C\u8BF7\u5148\u6838\u5B9E\u6587\u6863\u7ED3\u679C\u3002" });
     try {
       const entry = this.entry(input);
@@ -15624,6 +15688,44 @@ function createOfficeGatewayFetch(handler) {
 import { readFile as readFile2 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join as join2 } from "node:path";
+
+// src/office-css.ts
+import postcss from "postcss";
+var root = ".native-harness-panel-host";
+function scopeOfficeCss(css) {
+  const ast = postcss.parse(css);
+  ast.walkRules((rule) => {
+    if (rule.parent?.type === "atrule" && /keyframes$/i.test(rule.parent.name)) return;
+    rule.selectors = rule.selectors.map((selector) => {
+      if (/^(body|html|:root)(?=[\s.#[:]|$)/.test(selector)) {
+        return selector.replace(/^(body|html|:root)/, root);
+      }
+      return `${root} ${selector}`;
+    });
+  });
+  return ast.toString();
+}
+function scopeOfficeModule(source) {
+  if (source.includes('id: "@deepseek-ai/dsh-client-ui-theme"')) {
+    let sheets = 0;
+    source = source.replace(/(var \w+_css_default = )("(?:[^"\\]|\\.)*");/g, (_match, declaration, value) => {
+      sheets++;
+      return `${declaration}${JSON.stringify(scopeOfficeCss(JSON.parse(value)))};`;
+    });
+    if (sheets !== 6) throw Error("Unsupported official theme CSS layout.");
+    source = source.replaceAll("document.body.style", '(document.querySelector("[data-nexusdesk-theme-root]") ?? document.body).style');
+  }
+  if (source.includes('id: "@deepseek-ai/dsh-client-ui-layout"')) {
+    const select = '(document.querySelector("[data-nexusdesk-theme-root]") ?? document.body)';
+    for (const original of ["document.documentElement.style", "document.documentElement.setAttribute(THEME_SOURCE_ATTRIBUTE,", "document.documentElement.removeAttribute(THEME_SOURCE_ATTRIBUTE)", "const body = document.body;"]) {
+      if (!source.includes(original)) throw Error("Unsupported official theme presenter layout.");
+    }
+    source = source.replaceAll("document.documentElement.style", `${select}.style`).replaceAll("document.documentElement.setAttribute(THEME_SOURCE_ATTRIBUTE,", `${select}.setAttribute(THEME_SOURCE_ATTRIBUTE,`).replaceAll("document.documentElement.removeAttribute(THEME_SOURCE_ATTRIBUTE)", `${select}.removeAttribute(THEME_SOURCE_ATTRIBUTE)`).replaceAll("const body = document.body;", `const body = ${select};`);
+  }
+  return source;
+}
+
+// src/office-resource.ts
 import { bootInjections } from "@deepseek-ai/dsh-client-modules";
 import { renderIndexInjections } from "@deepseek-ai/dsh-host-webserver";
 function createOfficeIndexHtml(source, injections) {
@@ -15655,6 +15757,14 @@ try {
   return renderIndexInjections(html, injections);
 }
 async function readOfficeResource(modules, url2) {
+  if (url2 === "/harness/boot.json" || url2 === "/harness/loader.js") {
+    const graph = modules.graph();
+    if (!graph.entries.some((entry) => entry.id === "@nexusdesk/harness-office-panel-ui")) throw new Error("Office Client graph is missing its restricted root.");
+    const rows = bootInjections(graph);
+    const scripts = rows.filter((row) => row.kind === "script");
+    const body2 = url2.endsWith(".js") ? scripts.map((row) => row.text).join("\n") : JSON.stringify(rows.map((row) => row.kind === "script" ? { kind: "script-src", placement: row.placement, src: "/harness/loader.js" } : row));
+    return { status: 200, contentType: url2.endsWith(".js") ? "application/javascript" : "application/json", bodyBase64: Buffer.from(body2).toString("base64") };
+  }
   if (url2 === "/harness/index.html") {
     const graph = modules.graph();
     if (!graph.entries.some((entry) => entry.id === "@nexusdesk/harness-office-panel-ui")) throw new Error("Office Client graph is missing its restricted root.");
@@ -15665,7 +15775,31 @@ async function readOfficeResource(modules, url2) {
   }
   if (!url2.startsWith("/plugins/") || url2.length > 16384 || url2.includes(".map")) throw new Error("Invalid Office resource URL.");
   const response = await modules.fetchBundle(new Request(new URL(url2, "http://office.invalid")));
-  return { status: response.status, contentType: response.headers.get("content-type") ?? "application/javascript", bodyBase64: Buffer.from(await response.arrayBuffer()).toString("base64") };
+  const contentType = response.headers.get("content-type") ?? "application/javascript";
+  const body = Buffer.from(await response.arrayBuffer());
+  return { status: response.status, contentType, bodyBase64: (contentType.includes("javascript") ? Buffer.from(scopeOfficeModule(body.toString("utf8"))) : body).toString("base64") };
+}
+
+// src/approval-wait.ts
+function waitForApproval(reply, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    };
+    const finish = (approved) => {
+      cleanup();
+      resolve(approved);
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => finish(false), 13e4);
+    signal.addEventListener("abort", abort, { once: true });
+    void reply.then(finish, () => finish(false));
+  });
 }
 
 // src/runtime-policy.ts
@@ -16729,6 +16863,7 @@ function createSheetsTools(bridge) {
     name: "read_sheet",
     description: "Read a scoped set of spreadsheet cells or, when addresses are omitted, a bounded workbook summary.",
     parameters: {
+      operationSchema: { type: "string", description: 'Read canonical DSL input fields for an operation (e.g. add_chart), or "*" to list all available operations. This returns guidance, not cell data.' },
       sheet: {
         type: "string",
         description: "Worksheet name. Prefer this stable identifier when known."
@@ -16746,6 +16881,7 @@ function createSheetsTools(bridge) {
       const result2 = await bridge.request(
         "read_sheet",
         {
+          ...args.operationSchema === void 0 ? {} : { operationSchema: args.operationSchema },
           ...args.sheet === void 0 ? {} : { sheet: args.sheet },
           ...args.sheetId === void 0 ? {} : { sheetId: args.sheetId },
           ...args.addresses === void 0 ? {} : { addresses: args.addresses }
@@ -16757,13 +16893,13 @@ function createSheetsTools(bridge) {
   });
   const apply = defineTool5({
     name: "apply_sheet_operations",
-    description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval.",
+    description: "Apply one ordered, atomic batch of semantic spreadsheet operations after explicit user approval. Before calling, briefly explain the intended changes and affected range in the user's language. Read operation fields with read_sheet(operationSchema) instead of guessing. Do not repeat a mutation whose outcome is unknown; read its state first.",
     parameters: {
       operations: {
         type: "array",
         required: true,
         items: { type: "json" },
-        description: "Ordered GenOffice spreadsheet DSL operations. Use worksheet names from read_sheet."
+        description: 'Ordered GenOffice DSL operations. Basic shapes: {op:"set_cell",sheetId,address,value}, {op:"set_formula",sheetId,address,formula}, {op:"clear_cell",sheetId,address}. Use actual sheetId from read_sheet. For other operations call read_sheet with operationSchema; "*" lists capabilities. Do not invent API fields.'
       }
     },
     output: agentOutput4,
@@ -16861,6 +16997,10 @@ function result(value) {
     ...value.data === void 0 ? {} : { data: value.data }
   });
 }
+function approvalDenied3() {
+  const summary = "\u672A\u83B7\u6279\u51C6\uFF0C\u6F14\u793A\u6587\u7A3F\u672A\u4FEE\u6539\u3002";
+  return result({ ok: false, summary, warnings: [{ code: "APPROVAL_DENIED", message: summary }] });
+}
 function proposal2(value) {
   const data = value.data ?? {};
   if (typeof data.planHash !== "string" || typeof data.operationId !== "string") {
@@ -16897,7 +17037,7 @@ function historyTool(name, action, bridge) {
       if (!proposed.ok) return proposed;
       const pending = proposal2(proposed);
       const approval = await bridge.approve(name, pending.proposal, execution);
-      if (!approval.approved || approval.approvalId === void 0) throw new Error(`presentation ${action} was not approved`);
+      if (!approval.approved || approval.approvalId === void 0) return approvalDenied3();
       return result(await bridge.request("apply_history", { action }, execution, {
         approvalId: approval.approvalId,
         planHash: pending.proposal.planHash,
@@ -16928,7 +17068,7 @@ function createSlidesTools(bridge) {
         if (!proposed.ok) return proposed;
         const pending = proposal2(proposed);
         const approval = await bridge.approve("apply_presentation_operations", pending.proposal, execution);
-        if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation mutation was not approved");
+        if (!approval.approved || approval.approvalId === void 0) return approvalDenied3();
         return result(await bridge.request("apply_ops", { ops: args.operations }, execution, { approvalId: approval.approvalId, planHash: pending.proposal.planHash, operationId: pending.operationId }));
       }
     }),
@@ -16942,7 +17082,7 @@ function createSlidesTools(bridge) {
         if (!proposed.ok) return proposed;
         const pending = saveProposal(proposed);
         const approval = await bridge.approve("save_presentation", pending.proposal, execution);
-        if (!approval.approved || approval.approvalId === void 0) throw new Error("presentation save was not approved");
+        if (!approval.approved || approval.approvalId === void 0) return approvalDenied3();
         return result(await bridge.request("save_presentation", { inPlace: true, contentVersion: pending.contentVersion }, execution, {
           approvalId: approval.approvalId,
           planHash: pending.proposal.planHash,
@@ -17040,19 +17180,12 @@ function requestParent(frame, timeoutMs = 12e4) {
     send({ ...frame, protocolVersion: PROTOCOL_VERSION, id: id2 });
   });
 }
-function requestParentTracked(frame, timeoutMs = 12e4) {
+function requestParentTracked(frame) {
   const id2 = `request-${randomUUID4()}`;
   return {
     id: id2,
-    reply: new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        replies.delete(id2);
-        reject(new Error(`parent request timed out after ${String(timeoutMs)}ms`));
-      }, timeoutMs);
-      replies.set(id2, (reply) => {
-        clearTimeout(timer);
-        resolve(reply);
-      });
+    reply: new Promise((resolve) => {
+      replies.set(id2, resolve);
       send({ ...frame, protocolVersion: PROTOCOL_VERSION, id: id2 });
     })
   };
@@ -17134,6 +17267,30 @@ async function bindOfficeAgent(frame) {
 }
 async function handle(frame) {
   switch (frame.type) {
+    case "credential:request": {
+      try {
+        const { credentialRef } = await import("@deepseek-ai/dsh-credentials");
+        const credentials = asRuntimeContext((await boot).ctx).credentials;
+        const ref = credentialRef(frame.ref);
+        const current = await credentials.describe(ref);
+        if (frame.action !== "describe" && !current.writable) {
+          send({ type: "credential:result", protocolVersion: PROTOCOL_VERSION, id: frame.id, error: "READ_ONLY" });
+          return;
+        }
+        if (frame.action === "set") await credentials.set(ref, frame.value ?? "");
+        if (frame.action === "unset") await credentials.unset(ref);
+        const info = await credentials.describe(ref);
+        send({
+          type: "credential:result",
+          protocolVersion: PROTOCOL_VERSION,
+          id: frame.id,
+          info: { configured: info.configured, ...info.source ? { source: info.source } : {}, writable: info.writable }
+        });
+      } catch {
+        send({ type: "credential:result", protocolVersion: PROTOCOL_VERSION, id: frame.id, error: "UNAVAILABLE" });
+      }
+      return;
+    }
     case "office:resource": {
       const runtimeContext = asRuntimeContext((await boot).ctx);
       const resource = await readOfficeResource(runtimeContext.clientModules, frame.url).catch(() => ({ status: 503, contentType: "text/plain", bodyBase64: Buffer.from("Office resource unavailable").toString("base64") }));
@@ -17253,9 +17410,13 @@ function createEditorToolBridge(editorType) {
         reason: proposal3.summary,
         proposal: proposal3
       });
-      const reply = await pending.reply;
-      execution.signal.throwIfAborted();
-      return reply.type === "approval:response" && reply.outcome === "allowed-once" ? { approved: true, approvalId: pending.id } : { approved: false };
+      try {
+        const approved = await waitForApproval(pending.reply.then((reply) => reply.type === "approval:response" && reply.outcome === "allowed-once"), execution.signal);
+        execution.signal.throwIfAborted();
+        return approved ? { approved: true, approvalId: pending.id } : { approved: false };
+      } finally {
+        replies.delete(pending.id);
+      }
     }
   };
 }

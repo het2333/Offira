@@ -24,6 +24,7 @@ export interface MountHarnessPanelOptions {
   readonly clientId: ClientId
   readonly documentId: DocumentId
   readonly captureSnapshot: () => HarnessPanelSnapshot
+  readonly subscribeDraftRequests?: (listener: (text: string) => void) => () => void
   readonly document?: Pick<Document, 'createElement'>
   readonly readyTimeoutMs?: number
   readonly signal?: AbortSignal

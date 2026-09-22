@@ -1,4 +1,5 @@
 import react from '@vitejs/plugin-react'
+import { inlineHarnessBuild } from '../../packages/nexusdesk-harness-panel-ui/src/vite-inline'
 import { defineConfig, type ServerOptions } from 'vite'
 
 interface RendererEnvironment {
@@ -30,6 +31,6 @@ export function createRendererServerOptions(environment: RendererEnvironment): S
 export default defineConfig({
   root: 'src/renderer',
   base: '/sheets/',
-  plugins: [react()],
+  plugins: [inlineHarnessBuild(), react()],
   server: createRendererServerOptions(process.env),
 })

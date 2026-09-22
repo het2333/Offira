@@ -92,7 +92,7 @@ it('renders the original home and tab chrome through an injected host', async ()
 
   expect(container.querySelector('img[alt="GenOffice"]')).not.toBeNull()
   expect([...container.querySelectorAll('.tab-title')].map((node) => node.textContent)).toEqual([
-    'Home',
+    '首页',
     'Forecast.xlsx',
   ])
 })

@@ -12,6 +12,18 @@ const success: AgentToolResult = {
 }
 
 describe('official Harness Slides tools', () => {
+  it.each(['apply_presentation_operations', 'save_presentation', 'undo_presentation', 'redo_presentation'])('%s returns a readable denial without sending a mutation', async (name) => {
+    const request = vi.fn().mockResolvedValue({ ok: true, summary: '提案', warnings: [], data: {
+      operationId: 'operation-1', planHash: 'plan-hash-1', summary: '提案', targets: ['第 1 页'], contentVersion: 1,
+    } })
+    const approve = vi.fn().mockResolvedValue({ approved: false })
+    const tool = createSlidesTools({ request, approve }).find(item => item.name === name)!
+
+    const response = await tool.execute(name === 'apply_presentation_operations' ? { operations: [{ op: 'setText' }] } : {}, { signal: new AbortController().signal } as never)
+
+    expect(response).toMatchObject({ ok: false, summary: '未获批准，演示文稿未修改。', warnings: [{ code: 'APPROVAL_DENIED' }] })
+    expect(request).toHaveBeenCalledTimes(1)
+  })
   it('registers curated presentation tools rather than Electron or engine methods', () => {
     const tools = createSlidesTools({
       request: vi.fn().mockResolvedValue(success),

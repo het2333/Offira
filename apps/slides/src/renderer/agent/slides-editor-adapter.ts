@@ -16,6 +16,7 @@ import type {
   TransactionId,
   VerificationResult,
 } from '@nexusdesk/protocol'
+import { OP_DOCS, opSignatureIndex } from '@genoffice/pptx-ops/op-docs'
 
 const MAX_OPERATIONS = 50
 const MAX_PAYLOAD_BYTES = 256 * 1024
@@ -33,6 +34,7 @@ export interface SlidesDocumentState {
 export interface SlidesEditorAdapterOptions {
   document(): SlidesDocumentState
   read(): Promise<JsonValue>
+  validateOperations?(operations: JsonValue[]): Promise<void>
   runTransaction(operations: JsonValue[]): Promise<{ applied: boolean; contentVersion?: number; records?: Array<{ op: string; target?: string }>; failures?: Array<{ error: string }> }>
   save(): Promise<void>
   undo(): Promise<{ contentVersion: number } | null>
@@ -104,6 +106,33 @@ function targets(ops: JsonValue[]): string[] {
   })
 }
 
+function describeOperation(operation: JsonValue): string {
+  const value = operation as Record<string, JsonValue>
+  const target = value.target && typeof value.target === 'object' && !Array.isArray(value.target)
+    ? value.target : {}
+  const page = typeof target.slide === 'number' ? `第 ${target.slide + 1} 页` : '演示文稿'
+  const location = typeof target.el === 'string' ? `${page}元素 ${target.el}` : page
+  if (value.op === 'setText') {
+    const paragraphs = Array.isArray(value.paragraphs) ? value.paragraphs : []
+    const text = paragraphs.map(paragraph => {
+      if (!paragraph || typeof paragraph !== 'object' || Array.isArray(paragraph) || !Array.isArray(paragraph.runs)) return ''
+      return paragraph.runs.map(run => run && typeof run === 'object' && !Array.isArray(run) && typeof run.text === 'string' ? run.text : '').join('')
+    }).join('\n')
+    const preview = [...text].slice(0, 80).join('') + ([...text].length > 80 ? '…' : '')
+    return `${location}：${preview ? `文本改为「${preview}」` : '清空文本'}`
+  }
+  const labels: Record<string, string> = {
+    setFill: '调整填充', setStroke: '调整描边', setFont: '调整字体',
+    setParagraphFormat: '调整段落格式', setTransform: '调整位置和尺寸',
+    deleteElement: '删除元素', deleteSlide: '删除页面', moveSlide: '移动页面',
+    addSlide: '新增页面', insertSlide: '插入页面',
+  }
+  const op = typeof value.op === 'string' ? value.op : '未知操作'
+  const groupLabels: Record<string, string> = { text: '文本', element: '元素', insert: '插入内容', table: '表格', slide: '页面', deck: '演示文稿' }
+  const group = OP_DOCS[op]?.group
+  return `${location}：${labels[op] ?? `调整${group ? groupLabels[group] : '内容'}（${op}）`}`
+}
+
 function sameTarget(left: EditPlan, right: SlidesDocumentState): boolean {
   return left.target.documentId === right.documentId && left.target.clientId === right.clientId && left.target.revision === right.revision && left.target.editorType === 'slides'
 }
@@ -135,16 +164,22 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
     async read(request): Promise<AgentReadResult> {
       const current = options.document()
       if (request.documentId !== current.documentId || request.command !== 'read_presentation') return failure('INVALID_REQUEST', 'This presentation read request is not supported.')
-      return { ok: true, summary: 'Read the current presentation.', warnings: [], data: await options.read() }
+      const content = await options.read()
+      return { ok: true, summary: 'Read the current presentation.', warnings: [], data: {
+        ...(content && typeof content === 'object' && !Array.isArray(content) ? content : { content }),
+        operationSignatures: opSignatureIndex(),
+        operationTarget: 'Use target:{slide:0,el:"e_2"} with actual identities from this read. setText uses paragraphs:[{runs:[{text:"new text"}]}]; it does not accept a top-level text field. Slide indexes are zero-based.',
+      } }
     },
     async propose(request): Promise<EditPlan> {
       const current = options.document()
       if (request.command !== 'apply_ops') throw new Error('Presentation editor supports only apply_ops proposals')
       if (!sameRequestTarget(request, current) || !current.attached) throw new Error('Presentation is no longer attached at the requested revision')
       const ops = operations(request)
+      await options.validateOperations?.(ops)
       const planHash = await hash({ target: { documentId: request.documentId, clientId: request.clientId, revision: request.revision, editorType: request.editorType }, contentVersion: current.contentVersion, operations: ops })
       proposedContentVersions.set(request.operationId, { planHash, contentVersion: current.contentVersion })
-      return { target: { sessionId: request.sessionId, documentId: request.documentId, clientId: request.clientId, editorType: 'slides', revision: request.revision, operationId: request.operationId }, planId: `slides-${request.operationId}`, planHash, summary: `Apply ${String(ops.length)} presentation operation${ops.length === 1 ? '' : 's'}.`, operations: ops, warnings: [] }
+      return { target: { sessionId: request.sessionId, documentId: request.documentId, clientId: request.clientId, editorType: 'slides', revision: request.revision, operationId: request.operationId }, planId: `slides-${request.operationId}`, planHash, summary: ops.map(describeOperation).join('\n'), operations: ops, warnings: [] }
     },
     async proposeSave(request): Promise<SlidesSavePlan> {
       const current = options.document()
@@ -164,7 +199,7 @@ export function createSlidesEditorAdapter(options: SlidesEditorAdapterOptions): 
       return {
         planHash,
         contentVersion: current.contentVersion,
-        summary: 'Save the current presentation in place.',
+        summary: '将当前演示文稿保存到原文件',
         targets: ['current presentation'],
         warnings: [],
       }

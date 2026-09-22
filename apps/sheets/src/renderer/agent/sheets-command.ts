@@ -155,6 +155,17 @@ export async function executeSheetsCommand(
   try {
     const payload = command.arguments
     if (command.command === 'read_sheet') {
+      if (typeof payload.operationSchema === 'string') {
+        const schema = workbookOperationSchema.options.find(option => option.shape.op.value === payload.operationSchema)
+        if (payload.operationSchema === '*') return {
+          ok: true, summary: 'Available spreadsheet editing operations.', warnings: [],
+          data: { operations: workbookOperationSchema.options.map(option => option.shape.op.value) },
+        }
+        if (!schema) return failure('UNKNOWN_OPERATION', 'Unknown operation. Read operationSchema="*" for available operations.')
+        return { ok: true, summary: 'Canonical input fields for the requested editing operation. Read current document data separately before proposing changes.', warnings: [],
+          data: jsonValue({ schema: z.toJSONSchema(schema, { io: 'input' }) }),
+        }
+      }
       const addresses = Array.isArray(payload.addresses)
         ? payload.addresses.filter((address): address is string => typeof address === 'string')
         : []

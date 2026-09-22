@@ -18,6 +18,8 @@ import type {
   VerificationResult,
 } from '@nexusdesk/protocol'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { describeDocumentOperation } from './operation-description'
+import { opSignatures, executeOps } from '../ai/ops'
 
 import {
   executeDocsCommand,
@@ -255,7 +257,7 @@ class DocsEditorAdapter implements EditorAdapter {
             },
           ]
         : [],
-      data: bounded.data,
+      data: { ...bounded.data as Record<string, JsonValue>, operationSignatures: opSignatures() },
     }
   }
 
@@ -278,6 +280,8 @@ class DocsEditorAdapter implements EditorAdapter {
     }
     const editor = this.options.context().editor
     if (!editor) throw new Error('the document editor is not ready')
+    const validation = executeOps(editor, operations, { dryRun: true })
+    if (!validation.ok) throw new Error(validation.error)
     const contentDocument = editor.state.doc
     const contentVersion = contentGeneration(editor).value
     const contentHash = await sha256(contentDocument.toJSON())
@@ -287,7 +291,7 @@ class DocsEditorAdapter implements EditorAdapter {
       target,
       planId: `docs-plan-${globalThis.crypto.randomUUID()}`,
       planHash,
-      summary: `Apply ${String(operations.length)} document operation(s) to ${targets.join(', ')}.`,
+      summary: `将进行 ${operations.length} 项文档修改：\n${operations.map(operation => describeDocumentOperation(operation as JsonValue)).join('\n')}`,
       operations,
       warnings: [],
     }

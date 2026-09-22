@@ -39,6 +39,7 @@ interface RuntimeFrameBase {
 }
 
 export type RuntimeRequestFrame =
+  | (RuntimeFrameBase & { type: 'credential:request'; ref: string; action: 'describe' | 'set' | 'unset'; value?: string })
   | (RuntimeFrameBase & { type: 'office:resource'; url: string })
   | (RuntimeFrameBase & {
       type: 'office:client'
@@ -77,6 +78,7 @@ export type RuntimeRequestFrame =
   | (RuntimeFrameBase & { type: 'shutdown' })
 
 export type RuntimeResponseFrame =
+  | { type: 'credential:result'; protocolVersion: number; id: string; info?: { configured: boolean; source?: string; writable: boolean }; error?: 'READ_ONLY' | 'UNAVAILABLE' }
   | { type: 'office:resource-result'; protocolVersion: number; id: string; resource: import('./office-resource').OfficeResource }
   | { type: 'office:client-result'; protocolVersion: number; clientId: ClientId; frame: HarnessServerFrame }
   | {

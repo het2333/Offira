@@ -18,6 +18,16 @@ function handlersWith(overrides: Partial<McpSheetHandlers> = {}): McpSheetHandle
 }
 
 describe('executeSheetsCommand', () => {
+  it('exposes the real chart DSL fields without editing the workbook', async () => {
+    const applyOps = vi.fn()
+    const result = await executeSheetsCommand(handlersWith({ applyOps }), {
+      command: 'read_sheet', arguments: { operationSchema: 'add_chart' },
+    })
+    expect(result).toMatchObject({ ok: true, data: { schema: { properties: {
+      op: { const: 'add_chart' }, dataRange: { type: 'string' }, chartType: { enum: expect.arrayContaining(['column', 'line']) },
+    }, required: expect.arrayContaining(['op', 'sheetId', 'chartType', 'dataRange']) } } })
+    expect(applyOps).not.toHaveBeenCalled()
+  })
   it('reads cells from a worksheet addressed by name', async () => {
     const readCells = vi.fn().mockReturnValue({ A1: { value: 12 } })
     const result = await executeSheetsCommand(handlersWith({ readCells }), {

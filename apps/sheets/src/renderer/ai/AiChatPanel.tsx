@@ -107,6 +107,7 @@ function truncateCardName(name: string): string {
 /** Name the scope the way the user thinks of it: by column header when the
  *  selection covers whole columns, by range only when it cannot be named. */
 export function scopeLabel(range: string, columns: readonly string[] | null, t: TFunc): string {
+  if (!/^\$?[A-Z]+:\$?[A-Z]+$/i.test(range)) return t('aiScopeRange', { range })
   if (columns?.length === 1) return t('aiScopeColumn', { name: columns[0] ?? '' })
   if (columns && columns.length > 1) {
     return t('aiScopeColumns', { names: columns.join(', '), count: columns.length })
@@ -695,6 +696,7 @@ export function AiChatPanel({
             ))}
           </section>
         )}
+        <div data-agent-approval-slot />
       </div>
 
       <div className="ai-composer">

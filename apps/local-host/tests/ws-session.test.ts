@@ -120,6 +120,8 @@ describe('authenticated WebSocket session', () => {
       documents: [{ documentId, title: 'Forecast.xlsx', editorType: 'sheets', revision }],
     })
     const { socket, clientId } = await openSession(running)
+    const receipts: unknown[] = []
+    socket.on('message', data => receipts.push(JSON.parse(data.toString())))
     socket.send(
       JSON.stringify({
         type: 'editor:register',
@@ -140,6 +142,8 @@ describe('authenticated WebSocket session', () => {
         return false
       }
     })
+    expect(receipts).toContainEqual({ type: 'editor:attached', protocolVersion: 1,
+      id: 'register-1', documentId, revision })
     socket.close()
     await until(() => {
       try {

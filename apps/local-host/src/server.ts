@@ -26,6 +26,7 @@ import { expectedRevision, readBinaryBody } from './document-content'
 import { DocumentDriverRegistry, type LocalDocument } from './document-driver'
 import { HarnessSupervisor } from './harness-supervisor'
 import { NativeOfficeCarrier } from './native-office-carrier'
+import { isModelCredentialRef } from './model-credential-ref'
 import type { ClientId, DocumentId, HarnessClientFrame } from '@nexusdesk/protocol'
 import { OperationStore } from './operation-store'
 import { acceptHttpOrigin } from './origin-policy'
@@ -42,6 +43,9 @@ export interface RunningLocalHost {
 }
 
 export interface StartLocalHostOptions {
+  /** Direct loopback access; cookies identify browsers, not authenticate users. */
+  localAccess?: boolean
+  port?: number
   documentRegistry?: DocumentRegistry
   agentRouter?: AgentRouter
   documentDrivers?: DocumentDriverRegistry
@@ -52,6 +56,8 @@ export interface StartLocalHostOptions {
     editorRoots: Partial<Record<EditorKind, string>>
   }
   runtimeCommand?: { entry: string; args?: string[]; nodeExecutable?: string }
+  /** Imported once into Harness's private credential store if no stored key exists. */
+  legacyProviderKeys?: Readonly<Record<string, string>>
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -196,7 +202,7 @@ async function readJsonBody(request: import('node:http').IncomingMessage, limit 
 export async function startLocalHost(
   options: StartLocalHostOptions = {},
 ): Promise<RunningLocalHost> {
-  const auth = createBootstrapAuth()
+  let auth: ReturnType<typeof createBootstrapAuth> | undefined = undefined
   const sessions = new Set<string>()
   const documents = options.documentRegistry ?? new DocumentRegistry()
   const localDocuments =
@@ -274,9 +280,9 @@ export async function startLocalHost(
         sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION })
         return
       }
-      if (url.pathname === '/bootstrap') {
-        const exchanged = auth.exchange(url.searchParams.get('token') ?? '')
-        if (!exchanged.ok) {
+      if (url.pathname === '/bootstrap' && !options.localAccess) {
+        const exchanged = auth?.exchange(url.searchParams.get('token') ?? '')
+        if (!exchanged?.ok) {
           sendJson(response, 401, { error: 'invalid or expired bootstrap token' })
           return
         }
@@ -289,16 +295,22 @@ export async function startLocalHost(
         response.end()
         return
       }
-      const sessionId = cookieSession(request.headers.cookie)
+      let sessionId = cookieSession(request.headers.cookie)
+      if (options.localAccess && (sessionId === undefined || !sessions.has(sessionId))) {
+        sessionId = randomUUID()
+        sessions.add(sessionId)
+        response.setHeader('Set-Cookie', `nexusdesk_session=${sessionId}; HttpOnly; SameSite=Strict; Path=/`)
+        response.setHeader('Cache-Control', 'no-store')
+      }
       if (sessionId === undefined || !sessions.has(sessionId)) {
         sendJson(response, 401, { error: 'authentication required' })
         return
       }
-      if (url.pathname === '/harness/index.html' || url.pathname.startsWith('/plugins/')) {
+      if (['/harness/index.html', '/harness/boot.json', '/harness/loader.js'].includes(url.pathname) || url.pathname.startsWith('/plugins/')) {
         if (request.method !== 'GET' || !supervisor || !nativeCarrier) {
           sendJson(response, 404, { error: 'Office frontend is unavailable' }); return
         }
-        if (url.pathname === '/harness/index.html') {
+        if (url.pathname === '/harness/index.html' || url.pathname === '/harness/boot.json') {
           const clientId = url.searchParams.get('clientId') ?? ''
           const documentId = url.searchParams.get('documentId') ?? ''
           try {
@@ -306,7 +318,7 @@ export async function startLocalHost(
             nativeCarrier.assertBound(clientId as ClientId, documentId as DocumentId)
           } catch { sendJson(response, 403, { error: 'Office document binding required' }); return }
         }
-        const resource = await supervisor.officeResource(url.pathname === '/harness/index.html' ? url.pathname : `${url.pathname}${url.search}`)
+        const resource = await supervisor.officeResource(url.pathname.startsWith('/harness/') ? url.pathname : `${url.pathname}${url.search}`)
         const body = Buffer.from(resource.bodyBase64, 'base64')
         response.writeHead(resource.status, { 'Content-Type': resource.contentType, 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
         response.end(body)
@@ -407,6 +419,54 @@ export async function startLocalHost(
           wsSessions.broadcastShellChanged()
         } catch (error: unknown) {
           sendHostError(response, error)
+        }
+        return
+      }
+      if (url.pathname === '/api/shell/model-credentials') {
+        if (request.method !== 'GET' && request.method !== 'POST') {
+          sendJson(response, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!supervisor) {
+          sendJson(response, 503, { error: 'Harness is unavailable' })
+          return
+        }
+        try {
+          const input = request.method === 'GET' ? { ref: url.searchParams.get('ref') } : await readJsonBody(request, 8_192)
+          if (typeof input !== 'object' || input === null || !('ref' in input) || !isModelCredentialRef(input.ref)) {
+            sendJson(response, 400, { error: 'Invalid API key reference' })
+            return
+          }
+          let action: 'describe' | 'set' | 'unset' = 'describe'
+          let value: string | undefined
+          if (request.method === 'POST') {
+            if (!('value' in input) || (input.value !== null && typeof input.value !== 'string')) {
+              sendJson(response, 400, { error: 'Invalid API key value' })
+              return
+            }
+            if (input.value === null) action = 'unset'
+            else {
+              value = input.value.trim()
+              if (!value || value.length > 4_096) {
+                sendJson(response, 400, { error: 'Invalid API key value' })
+                return
+              }
+              action = 'set'
+            }
+          }
+          const result = await supervisor.modelCredential(input.ref, action, value)
+          if (result.error) {
+            sendJson(response, result.error === 'READ_ONLY' ? 409 : 503, { error: result.error })
+            return
+          }
+          if (!result.info) {
+            sendJson(response, 503, { error: 'Harness credential status unavailable' })
+            return
+          }
+          sendJson(response, 200, { ref: input.ref, ...result.info })
+        } catch {
+          // A lower-level credential failure can quote the supplied key; do not expose it.
+          sendJson(response, 503, { error: 'Harness credential service unavailable' })
         }
         return
       }
@@ -620,6 +680,10 @@ export async function startLocalHost(
           let result = action === 'bootstrap'
             ? await driver.bootstrap(origin)
             : await driver.execute(action, await readJsonBody(request))
+          if (action === 'bootstrap') {
+            const { language, theme } = shellState.bootstrap().settings
+            result = { ...(result as Record<string, unknown>), language, theme }
+          }
           if (action === 'bootstrap' && driver.workingCopy && workingCopy) {
             const nativeSession = (result as { workbook?: { sessionId?: string } }).workbook?.sessionId
             const state = await workingCopy.bootstrap(documentId, origin, sessionId, nativeSession)
@@ -697,7 +761,13 @@ export async function startLocalHost(
 
   const wsSessions = installWsSessionServer(server, {
     origin: () => origin,
-    hasSession: (sessionId) => sessions.has(sessionId),
+    hasSession: (sessionId) => {
+      // Explicit local mode has no login gate. Restore the browser's existing
+      // opaque identity after restart; ws-session still enforces Host + Origin.
+      // Authenticated mode must never accept a session unknown to this process.
+      if (options.localAccess && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) sessions.add(sessionId)
+      return sessions.has(sessionId)
+    },
     documents,
     authorizedDocument,
     workingCopy,
@@ -717,7 +787,7 @@ export async function startLocalHost(
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen({ host: '127.0.0.1', port: 0 }, () => {
+    server.listen({ host: '127.0.0.1', port: options.port ?? 0 }, () => {
       server.off('error', reject)
       resolve()
     })
@@ -729,10 +799,30 @@ export async function startLocalHost(
   }
   origin = `http://127.0.0.1:${String(address.port)}`
   await supervisor?.ready()
+  if (supervisor && options.legacyProviderKeys) {
+    try {
+      for (const [ref, value] of Object.entries(options.legacyProviderKeys)) {
+        if (!isModelCredentialRef(ref) || !value.trim()) continue
+        const current = await supervisor.modelCredential(ref, 'describe')
+        if (current.error || !current.info) throw new Error('Could not inspect a legacy provider credential')
+        // Preserve a key already changed through Settings. An inherited process
+        // environment key remains intentionally read-only and wins for this run.
+        if (current.info.source === 'file' || !current.info.writable) continue
+        const imported = await supervisor.modelCredential(ref, 'set', value)
+        if (imported.error || !imported.info?.configured) throw new Error('Could not import a legacy provider credential')
+      }
+    } catch {
+      await wsSessions.close()
+      await supervisor.shutdown()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      throw new Error('Could not migrate existing model API keys; the Local Host did not start.')
+    }
+  }
+  auth = createBootstrapAuth()
 
   return {
     origin,
-    bootstrapUrl: `${origin}/bootstrap?token=${encodeURIComponent(auth.token)}`,
+    bootstrapUrl: options.localAccess ? `${origin}/` : `${origin}/bootstrap?token=${encodeURIComponent(auth.token)}`,
     close: () =>
       (closing ??= (async () => {
         await wsSessions.close()

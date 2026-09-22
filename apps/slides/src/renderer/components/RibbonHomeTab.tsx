@@ -7,6 +7,7 @@ import { armColorInput } from '../color-input'
 import { displayFontFamily } from '../konva-adapter'
 import { useSystemFontFamilies } from '../system-fonts'
 import { useFontCatalog } from '../font-manager'
+import offiraMark from '../../../../../packages/nexusdesk-shell-ui/src/assets/offira-mark.svg'
 import {
   GensparkMark,
   IconAiBeautify,
@@ -75,6 +76,7 @@ const fontPreviewFamily = (f: string): string | undefined =>
   isSymbolFontFamily(f) ? undefined : displayFontFamily(f)
 
 export function RibbonHomeTab({ rb }: { rb: RibbonTabCtx }) {
+  const localWeb = Boolean(window.nexusdeskSlidesHost)
   const {
     aiOpen,
     brushMode,
@@ -216,16 +218,18 @@ export function RibbonHomeTab({ rb }: { rb: RibbonTabCtx }) {
   }
   return (
     <>
-      <Group label="Genspark AI">
+      <Group label={localWeb ? 'Offira AI' : 'Genspark AI'}>
         <button
-          className={`rb-big ai-entry${aiOpen ? ' active' : ''}`}
-          data-tip={t('aiOpenAssistant')}
+          className={`rb-big ai-entry${localWeb ? ' offira-ai-entry' : ''}${aiOpen ? ' active' : ''}`}
+          data-tip={localWeb ? (aiOpen ? '收起 Offira 助手' : '打开 Offira 助手') : t('aiOpenAssistant')}
+          aria-label={localWeb ? (aiOpen ? '收起 Offira 助手' : '打开 Offira 助手') : undefined}
+          aria-pressed={aiOpen}
           onClick={onToggleAi}
         >
           <span className="rb-big-icon">
-            <GensparkMark size={26} />
+            {localWeb ? <img className="offira-ai-mark" src={offiraMark} alt="" /> : <GensparkMark size={26} />}
           </span>
-          <span>Genspark AI</span>
+          <span>{localWeb ? 'Offira AI' : 'Genspark AI'}</span>
         </button>
         <button
           className="rb-big ai-entry"

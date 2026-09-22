@@ -2,6 +2,11 @@
 export interface OfficePanelBinding {
     readonly sessionId: string;
     captureSubmission(requestId: string): void;
+    readonly connection?: {
+        getSnapshot(): boolean;
+        subscribe(listener: () => void): () => void;
+    };
+    subscribeDraftRequests?(listener: (text: string) => void): () => void;
 }
 /**
  * Install the browser capability before AppWebEntry starts the native Client graph.

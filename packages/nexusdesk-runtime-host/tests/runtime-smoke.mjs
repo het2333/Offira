@@ -90,12 +90,14 @@ writeFileSync(patchFile, `- id: llm-pi-ai
     model: smoke-model
 `)
 
+const providerEnvironment = { ...process.env }
+delete providerEnvironment.NEXUSD_SMOKE_API_KEY
 const child = fork(
   join(packageRoot, 'lib/index.mjs'),
   [repositoryRoot, join(packageRoot, 'profile'), 'runtime', patchFile],
   {
     execArgv: ['--expose-internals'],
-    env: { ...process.env, NEXUSD_SMOKE_API_KEY: 'smoke' },
+    env: providerEnvironment,
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   },
 )
@@ -127,6 +129,15 @@ child.on('message', (frame) => {
   if (frame?.type === 'ready') {
     ready = true
     toolCatalogs = frame.toolCatalogs
+    child.send({ type: 'credential:request', protocolVersion, id: 'smoke-credential', ref: 'NEXUSD_SMOKE_API_KEY', action: 'set', value: 'smoke' })
+    return
+  }
+  if (frame?.type === 'credential:result' && frame.id === 'smoke-credential') {
+    if (frame.error || !frame.info?.configured) {
+      fatal = 'could not configure the local smoke provider'
+      child.send({ type: 'shutdown', protocolVersion, id: 'smoke-shutdown' })
+      return
+    }
     child.send({
       type: 'agent:start', protocolVersion, id: 'smoke-start', sessionId: 'smoke-session', documentId: 'smoke-document', clientId: 'smoke-client',
       editorType: 'slides', revision: 1, cwd: repositoryRoot, prompt: 'Apply the title change and save it.',
@@ -210,12 +221,13 @@ if (
 if (providerRequests.length < 5 || agentStep !== 4) fail(`local provider did not complete the tool sequence (${String(providerRequests.length)} requests, ${String(agentStep)} calls)`)
 if (approvalFrames.length !== 2 || approvalFrames[0]?.toolName !== 'apply_presentation_operations' || approvalFrames[1]?.toolName !== 'save_presentation') fail(`approval chain=${JSON.stringify(approvalFrames)}`)
 const [read, propose, apply, proposeSave, save] = editorFrames
+const operationId = /^operation-[a-f0-9]{64}$/
 if (
-  read?.target.operationId !== 'operation-smoke-read-call' ||
-  propose?.target.operationId !== 'operation-smoke-apply-call' ||
-  apply?.target.operationId !== 'operation-smoke-apply-call' ||
-  proposeSave?.target.operationId !== 'operation-smoke-save-call' ||
-  save?.target.operationId !== 'operation-smoke-save-call' ||
+  !operationId.test(read?.target.operationId ?? '') ||
+  !operationId.test(propose?.target.operationId ?? '') ||
+  apply?.target.operationId !== propose?.target.operationId ||
+  !operationId.test(proposeSave?.target.operationId ?? '') ||
+  save?.target.operationId !== proposeSave?.target.operationId ||
   JSON.stringify(apply?.arguments) !== JSON.stringify({ ops: toolCalls[1].arguments.operations }) ||
   JSON.stringify(save?.arguments) !== JSON.stringify({ inPlace: true, contentVersion: 2 }) ||
   apply?.approval?.planHash !== 'apply-plan' ||

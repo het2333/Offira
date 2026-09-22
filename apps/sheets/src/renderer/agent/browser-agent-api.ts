@@ -170,13 +170,13 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
       })
       return {
         ok: true,
-        summary: 'Save the proposed document snapshot in place.',
+        summary: '将当前已核验的工作簿保存到原文件。不会重新执行之前的编辑。',
         warnings: [],
         data: {
           operationId: frame.target.operationId,
           planHash,
           snapshotHash,
-          summary: 'Save the proposed document snapshot in place.',
+          summary: '将当前已核验的工作簿保存到原文件。不会重新执行之前的编辑。',
           targets: ['current document'],
         },
       }
@@ -352,7 +352,13 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
             receipts.set(frame.target.operationId, previous.persistence)
             return previous.result
           }
-          if (previous.state === 'pending')
+          // Host reserves before dispatch. A proposal retained by this live renderer
+          // identifies first execution; after reload/lost state we must not replay it.
+          const localPlan = frame.command === 'apply_ops'
+            ? proposals.get(frame.target.operationId)
+            : saveProposals.get(frame.target.operationId)
+          const freshApproval = localPlan && frame.approval?.planHash === localPlan.planHash
+          if (previous.state === 'pending' && !freshApproval)
             return failure(
               'WORKING_COPY_OUTCOME_UNKNOWN',
               'The previous operation is still pending; restore and query it before continuing.',

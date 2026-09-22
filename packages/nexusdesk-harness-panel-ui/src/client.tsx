@@ -107,7 +107,7 @@ function OfficePanelBody(
   return (
     <div
       data-nexusdesk-office-panel="ready"
-      style={{ height: '100%', minHeight: 0, width: '100%' }}
+      style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', overflow: 'hidden' }}
     >
       <props.SessionProvider empty={OfficeFailureScreen} session={props.reference}>
         {props.renderSlot(
@@ -165,11 +165,12 @@ function assertMatchingSession(
   }
 }
 
-export const inject = ['slots', 'sessions', 'uiSession', 'uiConversation']
+export const inject = ['slots', 'sessions', 'uiSession', 'uiConversation', 'conversation']
 
 /** Activate the Office-only root after retaining and validating its exact Session. */
 export async function apply(ctx: Context): Promise<void> {
   const carrier = requireOfficePanelBinding()
+  await ctx.sessions.refresh()
   const reference = ctx.sessions.retain(carrier.sessionId as SessionId, {
     source: 'officePanel',
   })
@@ -186,6 +187,27 @@ export async function apply(ctx: Context): Promise<void> {
   try {
     const binding = await reference.ready
     assertMatchingSession(carrier.sessionId, reference, binding)
+    if (carrier.subscribeDraftRequests) {
+      ctx.effect(() => carrier.subscribeDraftRequests!((text) => {
+        const input = ctx.conversation.input.for(binding.ctx)
+        const draft = input.state.getSnapshot().draft
+        input.setDraft(draft ? `${draft}\n${text}` : text)
+        input.focus()
+      }), 'office-panel-ui: editor toolbar draft requests')
+    }
+    if (carrier.connection) {
+      const connection = carrier.connection
+      ctx.effect(() => {
+        const update = () => {
+          const ready = connection.getSnapshot()
+          ctx.conversation.blocks.set(carrier.sessionId as SessionId,
+            ready ? undefined : { reason: '本地连接正在恢复，草稿已保留，请稍后发送。' })
+        }
+        const off = connection.subscribe(update)
+        update()
+        return () => { off(); ctx.conversation.blocks.set(carrier.sessionId as SessionId, undefined) }
+      }, 'office-panel-ui: connection composer gate')
+    }
     const failure = new OfficePanelCaptureFailure()
     capture = startPendingSubmissionCapture({
       expectedSessionId: carrier.sessionId,

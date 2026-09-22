@@ -1,3 +1,4 @@
+import { describeDocumentOperation } from './operation-description'
 import {
   BoundedEditorCache,
   createEditorResultJournal,
@@ -31,6 +32,7 @@ export interface DocsBrowserAgentBridge {
   readonly agentApi: AgentApi
   attachEditor(adapter: EditorAdapter): () => void
   client(): { clientId: ClientId | undefined; attached: boolean }
+  transportClient(): NexusClient
   consumeApproval(approvalId: string, planHash: string): boolean
   updateRevision(revision: Revision): void
   setHydrated(state: WorkingCopyBootstrap | null): void
@@ -241,13 +243,7 @@ export function createDocsBrowserAgentBridge(
           operationId: frame.target.operationId,
           planHash: plan.planHash,
           summary: plan.summary,
-          targets: plan.operations.flatMap((operation) => {
-            if (typeof operation !== 'object' || operation === null || Array.isArray(operation)) {
-              return []
-            }
-            const value = operation as Record<string, JsonValue>
-            return [String(value.op ?? 'change')]
-          }),
+          targets: plan.operations.map(describeDocumentOperation),
         },
       }
     }
@@ -295,7 +291,14 @@ export function createDocsBrowserAgentBridge(
         // Historical terminal replay never moves the renderer's current head backward.
         return found.result
       }
-      if (found.state === 'pending' || uncertain.has(frame.target.operationId)) {
+      // The Host reserves an operation before its first delivery. A live exact
+      // proposal distinguishes that initial delivery from an orphaned retry.
+      const livePlan = frame.command === 'apply_ops'
+        ? proposals.get(frame.target.operationId)
+        : saveProposals.get(frame.target.operationId)
+      const freshApproval = livePlan !== undefined && frame.approval !== undefined &&
+        livePlan.planHash === frame.approval.planHash
+      if ((found.state === 'pending' && !freshApproval) || uncertain.has(frame.target.operationId)) {
         return failure(
           'WORKING_COPY_OUTCOME_UNKNOWN',
           'The earlier attempt needs recovery before another mutation.',
@@ -431,6 +434,7 @@ export function createDocsBrowserAgentBridge(
         if (adapter === nextAdapter) adapter = undefined
       }
     },
+    transportClient: () => options.client,
     client() {
       return {
         clientId: options.client.clientId,

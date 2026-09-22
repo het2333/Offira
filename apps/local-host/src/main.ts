@@ -1,4 +1,7 @@
 import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { parseEnv } from 'node:util'
+import { fileURLToPath } from 'node:url'
 
 import { nexusdeskAppDataDirectory } from './app-data'
 import { DocumentDriverRegistry } from './document-driver'
@@ -6,11 +9,16 @@ import { createDocsDocumentDriver } from './docs-document-driver'
 import { createPdfDocumentDriver } from './pdf-document-driver'
 import { createSlidesDocumentDriver } from './slides-document-driver'
 import { startLocalHost } from './server'
+import { prepareLegacyProviderEnvironment } from './model-credential-ref'
 import { createSheetsDocumentService } from './sheets-document-service'
 import { startupDocumentPaths } from './startup'
 import { createTextDocumentDriver } from './text-document-driver'
 
-const repositoryRoot = process.cwd()
+const providerEnvPath = resolve(nexusdeskAppDataDirectory(), 'providers.env')
+const legacyProviderKeys = existsSync(providerEnvPath)
+  ? prepareLegacyProviderEnvironment(parseEnv(readFileSync(providerEnvPath, 'utf8')), process.env)
+  : {}
+const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const runtimePackage = resolve(repositoryRoot, 'packages/nexusdesk-runtime-host')
 const startupDocuments = startupDocumentPaths(process.argv.slice(2), repositoryRoot)
 const drivers = []
@@ -29,16 +37,17 @@ for (const startup of startupDocuments) {
   }
 }
 const running = await startLocalHost({
+  localAccess: true,
   shellStatePath: resolve(nexusdeskAppDataDirectory(), 'shell-state.json'),
   staticAssets: {
-    webRoot: resolve(process.cwd(), 'apps/web/dist'),
+    webRoot: resolve(repositoryRoot, 'apps/web/dist'),
     editorRoots: {
-      docs: resolve(process.cwd(), 'apps/docs/out/web'),
-      sheets: resolve(process.cwd(), 'apps/sheets/out/web'),
-      slides: resolve(process.cwd(), 'apps/slides/out/web'),
-      pdf: resolve(process.cwd(), 'apps/pdf/out/web'),
-      markdown: resolve(process.cwd(), 'apps/markdown/out/web'),
-      html: resolve(process.cwd(), 'apps/html/out/web'),
+      docs: resolve(repositoryRoot, 'apps/docs/out/web'),
+      sheets: resolve(repositoryRoot, 'apps/sheets/out/web'),
+      slides: resolve(repositoryRoot, 'apps/slides/out/web'),
+      pdf: resolve(repositoryRoot, 'apps/pdf/out/web'),
+      markdown: resolve(repositoryRoot, 'apps/markdown/out/web'),
+      html: resolve(repositoryRoot, 'apps/html/out/web'),
     },
   },
   runtimeCommand: {
@@ -50,6 +59,7 @@ const running = await startLocalHost({
       `--state-dir=${resolve(nexusdeskAppDataDirectory(), 'harness-runtime')}`,
     ],
   },
+  legacyProviderKeys,
   documentDrivers: new DocumentDriverRegistry(drivers),
 })
 process.stdout.write(`${JSON.stringify({ bootstrapUrl: running.bootstrapUrl })}\n`)

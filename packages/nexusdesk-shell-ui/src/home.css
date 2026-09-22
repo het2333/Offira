@@ -123,6 +123,20 @@ body.vib .home {
   filter: invert(var(--logo-invert));
 }
 
+.offira-mark {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.product-wordmark {
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
+
 .sidebar-nav {
   display: flex;
   flex-direction: column;

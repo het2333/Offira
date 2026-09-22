@@ -51,6 +51,7 @@ export interface RuntimeExit {
 
 type FrameListener = (frame: RuntimeResponseFrame) => void
 type ExitListener = (exit: RuntimeExit) => void
+type CredentialResult = Extract<RuntimeResponseFrame, { type: 'credential:result' }>
 
 /** Owns one restartable Harness child without replaying interrupted turns. */
 export class HarnessSupervisor {
@@ -69,6 +70,10 @@ export class HarnessSupervisor {
   >()
   private readonly pendingOfficeResources = new Map<string, {
     resolve(value: Extract<RuntimeResponseFrame, { type: 'office:resource-result' }>['resource']): void
+    reject(error: Error): void
+  }>()
+  private readonly pendingCredentials = new Map<string, {
+    resolve(value: CredentialResult): void
     reject(error: Error): void
   }>()
   private readyPromise!: Promise<void>
@@ -91,6 +96,27 @@ export class HarnessSupervisor {
 
   ready(): Promise<void> {
     return this.readyPromise
+  }
+
+  modelCredential(ref: string, action: 'describe' | 'set' | 'unset', value?: string): Promise<CredentialResult> {
+    const id = `credential-${randomUUID()}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCredentials.delete(id)
+        reject(new Error('Harness credential request timed out.'))
+      }, 15_000)
+      this.pendingCredentials.set(id, {
+        resolve(result) { clearTimeout(timer); resolve(result) },
+        reject(error) { clearTimeout(timer); reject(error) },
+      })
+      try {
+        this.send({ type: 'credential:request', protocolVersion: PROTOCOL_VERSION, id, ref, action, value })
+      } catch {
+        this.pendingCredentials.delete(id)
+        clearTimeout(timer)
+        reject(new Error('Harness runtime is unavailable.'))
+      }
+    })
   }
 
   officeResource(url: string): Promise<Extract<RuntimeResponseFrame, { type: 'office:resource-result' }>['resource']> {
@@ -188,6 +214,10 @@ export class HarnessSupervisor {
     })
     this.child = child
     child.on('message', (frame: RuntimeResponseFrame) => {
+      if (frame.type === 'credential:result') {
+        this.pendingCredentials.get(frame.id)?.resolve(frame)
+        this.pendingCredentials.delete(frame.id)
+      }
       if (frame.type === 'office:resource-result') {
         this.pendingOfficeResources.get(frame.id)?.resolve(frame.resource)
         this.pendingOfficeResources.delete(frame.id)
@@ -215,6 +245,8 @@ export class HarnessSupervisor {
       this.pendingBindings.clear()
       for (const pending of this.pendingOfficeResources.values()) pending.reject(new Error('Office runtime disconnected.'))
       this.pendingOfficeResources.clear()
+      for (const pending of this.pendingCredentials.values()) pending.reject(new Error('Harness runtime disconnected.'))
+      this.pendingCredentials.clear()
       for (const listener of this.exits) listener({ code, signal, activeSessions })
       if (!this.stopping) {
         this.restartTimer = setTimeout(() => this.launch(), this.options.restartDelayMs ?? 1_000)

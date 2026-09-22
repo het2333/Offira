@@ -20,7 +20,6 @@ import {
   BorderThickOuterIcon,
   BorderTopIcon,
   CaretIcon,
-  GensparkMark,
   RIBBON_GLYPH_ICONS,
   RedoIcon,
   SaveAsIcon,
@@ -43,7 +42,7 @@ import { isGridKeyTarget, shouldInterceptClearSelection } from './clear-selectio
 import type { ChartSeriesVisualState } from '@genoffice/xlsx-gateway/domain/chart-visual'
 import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import type { AttachmentMeta } from '../shared/desktop-api'
-import { AiChatPanel, type AiChatMessage } from './ai/AiChatPanel'
+import { AiChatPanel, scopeLabel, type AiChatMessage } from './ai/AiChatPanel'
 import { AiSelectionAsk } from './ai/AiSelectionAsk'
 import type { SelectionAskAnchor } from './ai/selection-ask'
 import {
@@ -62,6 +61,7 @@ import { HeaderFooterDialog, type HeaderFooterResult } from './HeaderFooterDialo
 import type { HeaderFooterParts } from './edit-journal'
 import type { HarnessPanelSnapshot } from '@nexusdesk/web-client'
 import { NativeHarnessPanel } from './native-harness'
+import { AiRibbonEntry } from './AiRibbonEntry'
 
 // No File tab: file commands live in the macOS
 // application menu (File → Open/Save/Save As) and the toolbar icons.
@@ -390,6 +390,7 @@ export function ExcelShell({
   const [activeTab, setActiveTab] = useState<RibbonTab>('Home')
   const collapse = useRibbonCollapse('ai-sheets-ribbon-collapsed')
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
+  const [nativeDraftRequest, setNativeDraftRequest] = useState<{ id: number; text: string } | null>(null)
   const [isCopilotOpen, setIsCopilotOpen] = useState(
     () => localStorage.getItem('ai-sheets-show-ai') !== '0',
   )
@@ -689,8 +690,10 @@ export function ExcelShell({
           }}
           onAiRun={(nextPrompt) => {
             setIsCopilotOpen(true)
-            onSend(nextPrompt)
+            if (nativeHarnessCaptureSnapshot) setNativeDraftRequest(previous => ({ id: (previous?.id ?? 0) + 1, text: nextPrompt }))
+            else onSend(nextPrompt)
           }}
+          nativeHarness={!!nativeHarnessCaptureSnapshot}
           aiOpen={isCopilotOpen}
           onAiToggle={() => setIsCopilotOpen((open) => !open)}
         />
@@ -708,6 +711,9 @@ export function ExcelShell({
             onExpand={() => setIsCopilotOpen(true)}
             onCollapse={() => setIsCopilotOpen(false)}
             captureSnapshot={nativeHarnessCaptureSnapshot}
+            draftRequest={nativeDraftRequest}
+            scopeLabel={aiScopeRange ? scopeLabel(aiScopeRange, aiScopeColumns, t) : null}
+            onScopeDismiss={onAiScopeDismiss}
           />
         ) : (
           <AiChatPanel
@@ -1256,6 +1262,7 @@ function Ribbon({
   selectedChart,
   onCommand,
   onAiRun,
+  nativeHarness,
   aiOpen,
   onAiToggle,
   onListNames,
@@ -1280,6 +1287,7 @@ function Ribbon({
   readonly calcManual: boolean
   /** Open the AI panel and immediately send the given prompt */
   readonly onAiRun: (prompt: string) => void
+  readonly nativeHarness: boolean
   /** AI side panel visibility (docs/slides parity: the entry button toggles it) */
   readonly aiOpen: boolean
   readonly onAiToggle: () => void
@@ -2531,18 +2539,12 @@ function Ribbon({
   return (
     <div className="ribbon" data-ribbon-body="">
       <RibbonGroup label={t('appGroupAiAssistant')}>
-        <button
-          className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
-          data-tip={t('aiOpenAssistant')}
-          onClick={onAiToggle}
-        >
-          <span className="tool-icon-row">
-            <GensparkMark size={26} />
-          </span>
-          <span>
-            <strong>Genspark AI</strong>
-          </span>
-        </button>
+        <AiRibbonEntry
+          nativeHarness={nativeHarness}
+          open={aiOpen}
+          onToggle={onAiToggle}
+          assistantTitle={t('aiOpenAssistant')}
+        />
         <button
           className="ribbon-tool as-button large ai-entry"
           disabled={!sheetHasContent}

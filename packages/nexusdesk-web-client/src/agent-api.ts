@@ -7,13 +7,14 @@ import {
   type SessionId,
 } from '@nexusdesk/protocol'
 
-import type { NexusClient } from './client'
+import type { NexusClient, NexusClientState } from './client'
 
 export interface AgentApi {
   startTurn(input: { prompt: string; documentId: string; sessionId: string; provider?: string; model?: string }): void
   cancelTurn(sessionId: string): void
   respondApproval(id: string, outcome: ApprovalOutcome): void
   onFrame(callback: (frame: AgentServerFrame) => void): () => void
+  onState?(callback: (state: NexusClientState) => void): () => void
 }
 
 function requestId(prefix: string): RequestId {
@@ -22,6 +23,7 @@ function requestId(prefix: string): RequestId {
 
 export function createAgentApi(client: NexusClient): AgentApi {
   return {
+    onState(callback) { return client.onState(callback) },
     startTurn(input) {
       client.send({
         type: 'agent:start',

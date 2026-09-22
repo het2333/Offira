@@ -1,4 +1,5 @@
 export * from './agent-api'
+export * from './agent-loop-runtime'
 export * from './client'
 export * from './editor-registration'
 export * from './harness-panel'

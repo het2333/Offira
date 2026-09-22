@@ -81,6 +81,7 @@ import {
   setParaAttrs,
 } from './ribbon-tabs'
 import { WRAP_OPTIONS } from './ContextMenu'
+import offiraMark from '../../../../../packages/nexusdesk-shell-ui/src/assets/offira-mark.svg'
 import { CropDialog, CutoutDialog } from './PictureDialogs'
 import {
   GensparkMark,
@@ -2851,18 +2852,20 @@ function RibbonInner({
           </div>
         ) : tab === 'home' ? (
           <>
-            {/* ---- Genspark AI (first slot: entry + one-click AI actions) ---- */}
+            {/* ---- AI assistant (first slot: entry + one-click AI actions) ---- */}
             <div className="ribbon-group">
               <div className="ribbon-group-items">
                 <button
-                  className={`rb-big ai-entry ${showAi ? 'active' : ''}`}
-                  data-tip={t('aiOpenAssistant')}
+                  className={`rb-big ai-entry ${nativeCapabilities ? 'offira-ai-entry ' : ''}${showAi ? 'active' : ''}`}
+                  data-tip={nativeCapabilities ? (showAi ? '收起 Offira 助手' : '打开 Offira 助手') : t('aiOpenAssistant')}
+                  aria-label={nativeCapabilities ? (showAi ? '收起 Offira 助手' : '打开 Offira 助手') : undefined}
+                  aria-pressed={showAi}
                   onClick={onToggleAi}
                 >
                   <span className="rb-big-icon">
-                    <GensparkMark size={26} />
+                    {nativeCapabilities ? <img className="offira-ai-mark" src={offiraMark} alt="" /> : <GensparkMark size={26} />}
                   </span>
-                  <span>Genspark AI</span>
+                  <span>{nativeCapabilities ? 'Offira AI' : 'Genspark AI'}</span>
                 </button>
                 <button
                   className="rb-big ai-entry"
@@ -2962,7 +2965,7 @@ function RibbonInner({
                   <span>{t('aiTidyBtn')}</span>
                 </button>
               </div>
-              <div className="ribbon-group-label">Genspark AI</div>
+              <div className="ribbon-group-label">{nativeCapabilities ? 'Offira AI' : 'Genspark AI'}</div>
             </div>
 
             <div className="ribbon-sep" />

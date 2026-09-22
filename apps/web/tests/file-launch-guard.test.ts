@@ -3,6 +3,7 @@ import { expect, it } from 'vitest'
 import { fileLaunchMessage } from '../src/file-launch-guard'
 
 it('explains direct file launch instead of rendering an empty root', () => {
+  expect(fileLaunchMessage(new URL('file:///repo/apps/web/index.html'))).toContain('Offira')
   expect(fileLaunchMessage(new URL('file:///repo/apps/web/index.html'))).toMatch(
     /npm run start:web/i,
   )

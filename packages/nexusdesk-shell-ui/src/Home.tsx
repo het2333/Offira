@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
+import offiraMark from './assets/offira-mark.svg'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
@@ -2860,7 +2861,10 @@ export function Home() {
           {product.id === 'genoffice' ? (
             <img className="logo-lockup" src={logoLockup} alt={product.name} />
           ) : (
-            <strong className="product-wordmark">{product.name}</strong>
+            <>
+              <img className="offira-mark" src={offiraMark} alt={product.name} />
+              <strong className="product-wordmark" aria-hidden="true">{product.name}</strong>
+            </>
           )}
         </div>
         <nav className="sidebar-nav">

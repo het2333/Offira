@@ -1,5 +1,6 @@
 let activeSession
 let activeTurn
+const credentials = new Map()
 
 process.send?.({
   type: 'ready',
@@ -18,7 +19,16 @@ if (process.argv[2] === 'idle-crash') {
 }
 
 process.on('message', (frame) => {
-  if (frame.type === 'office:bind') {
+  if (frame.type === 'credential:request') {
+    if (frame.ref === 'READ_ONLY_API_KEY' && frame.action !== 'describe') {
+      process.send?.({ type: 'credential:result', protocolVersion: 1, id: frame.id, error: 'READ_ONLY' })
+      return
+    }
+    if (frame.action === 'set') credentials.set(frame.ref, frame.value)
+    if (frame.action === 'unset') credentials.delete(frame.ref)
+    process.send?.({ type: 'credential:result', protocolVersion: 1, id: frame.id,
+      info: { configured: credentials.has(frame.ref), ...(credentials.has(frame.ref) ? { source: 'stored' } : {}), writable: frame.ref !== 'READ_ONLY_API_KEY' } })
+  } else if (frame.type === 'office:bind') {
     if (frame.documentId === 'crash-bind') {
       process.exit(20)
       return

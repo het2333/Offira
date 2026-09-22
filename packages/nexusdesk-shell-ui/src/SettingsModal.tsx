@@ -28,6 +28,7 @@ import type { StringKey, TFunc } from './locale'
 import type { AccountStatus, AiCatalogEntry, UiTheme } from './platform/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
+import { HarnessModelApiPane } from './HarnessModelApiPane'
 import './settings.css'
 import { useOfficeHost, useShellPlatform } from './office-host-context'
 import { useProductConfig } from './product-config'
@@ -1015,7 +1016,7 @@ export function SettingsModal({
   const product = useProductConfig()
   const { home: homeApi } = useShellPlatform()
   const sections = SECTIONS.filter((candidate) => {
-    if (product.id === 'nexusdesk') return candidate.id === 'general' || candidate.id === 'about'
+    if (product.id === 'nexusdesk') return candidate.id === 'aiModel' || candidate.id === 'general' || candidate.id === 'about'
     if (candidate.id === 'account') return product.features.account
     if (candidate.id === 'integrations') {
       return product.features.integrations || product.features.mcp
@@ -1184,7 +1185,7 @@ export function SettingsModal({
                 </div>
               </>
             )}
-            {section === 'aiModel' && <AiModelPane t={t} />}
+            {section === 'aiModel' && (product.id === 'nexusdesk' ? <HarnessModelApiPane /> : <AiModelPane t={t} />)}
             {section === 'aiMedia' && <AiMediaPane t={t} />}
             {section === 'general' && (
               <>

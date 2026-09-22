@@ -825,6 +825,37 @@ button {
   background: transparent;
 }
 
+/* Local-Web Offira entry; legacy Electron branding remains unchanged. */
+.rb-big.ai-entry.offira-ai-entry {
+  min-width: 82px;
+  border: 1px solid rgb(66 85 211 / 20%);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgb(48 89 232 / 7%), rgb(114 80 218 / 9%));
+  font-weight: 600;
+}
+
+.rb-big.ai-entry.offira-ai-entry:hover:not(:disabled) {
+  border-color: rgb(66 85 211 / 42%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 13%), rgb(114 80 218 / 16%));
+}
+
+.rb-big.ai-entry.offira-ai-entry.active {
+  border-color: rgb(66 85 211 / 55%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 17%), rgb(114 80 218 / 20%));
+}
+
+.rb-big.ai-entry.offira-ai-entry .offira-ai-mark {
+  display: block;
+  width: 27px;
+  height: 27px;
+}
+
+.rb-big.ai-entry.offira-ai-entry:focus-visible,
+.stage-ai-btn.offira-ai-entry:focus-visible {
+  outline: 2px solid #5967dc;
+  outline-offset: 2px;
+}
+
 /* hover/open paint only the icon row — the label below
 
 /* AI button: brand logo only — no gray plate behind the icon, label stays black */
@@ -5602,6 +5633,28 @@ body.vib .slide-list {
 
 .stage-ai-btn.active {
   background: var(--hover);
+}
+
+.stage-ai-btn.offira-ai-entry {
+  border: 1px solid rgb(66 85 211 / 20%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 7%), rgb(114 80 218 / 9%));
+  font-weight: 600;
+}
+
+.stage-ai-btn.offira-ai-entry:hover,
+.stage-ai-btn.offira-ai-entry.active {
+  border-color: rgb(66 85 211 / 42%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 13%), rgb(114 80 218 / 16%));
+}
+
+.stage-ai-btn.offira-ai-entry .offira-ai-mark {
+  width: 17px;
+  height: 17px;
+}
+
+.ai-rail .offira-ai-mark {
+  width: 22px;
+  height: 22px;
 }
 
 .stage-ai-divider {

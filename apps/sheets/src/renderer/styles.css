@@ -1130,6 +1130,47 @@ html.genoffice-popover-open .ribbon-tabs {
   background: var(--ribbon-active);
 }
 
+/* Offira's local-Web assistant is a single, recognizable entry point; keep
+   the legacy GenOffice/Genspark ribbon unchanged in Electron mode. */
+.ribbon-tool.large.as-button.offira-ai-entry {
+  min-width: 82px;
+  padding: 4px 8px 6px;
+  border: 1px solid rgb(66 85 211 / 20%);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgb(48 89 232 / 7%), rgb(114 80 218 / 9%));
+}
+
+.ribbon-tool.large.as-button.offira-ai-entry:hover {
+  border-color: rgb(66 85 211 / 42%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 13%), rgb(114 80 218 / 16%));
+}
+
+.ribbon-tool.large.as-button.offira-ai-entry.active {
+  border-color: rgb(66 85 211 / 55%);
+  background: linear-gradient(135deg, rgb(48 89 232 / 17%), rgb(114 80 218 / 20%));
+}
+
+.ribbon-tool.large.as-button.offira-ai-entry .tool-icon-row {
+  background: transparent;
+}
+
+.offira-ai-entry .offira-ai-mark {
+  display: block;
+  width: 27px;
+  height: 27px;
+}
+
+.ribbon-tool.large.as-button.offira-ai-entry strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.ribbon-tool.as-button.offira-ai-entry:focus-visible {
+  outline: 2px solid #5967dc;
+  outline-offset: 2px;
+}
+
 .ribbon-tool.as-button:disabled {
   opacity: 0.45;
   cursor: default;
@@ -1772,6 +1813,19 @@ button.check-item:hover {
   flex: 1;
   min-height: 0;
 }
+
+.native-harness-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 32px 9px 12px;
+  border-bottom: 1px solid var(--color-border-default);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.native-harness-scope span { flex: 1; overflow-wrap: anywhere; }
+.native-harness-scope button { background: transparent; border: 0; cursor: pointer; color: inherit; }
 
 .native-harness-panel-error {
   display: grid;

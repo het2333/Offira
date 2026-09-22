@@ -21,7 +21,7 @@ export async function loadBootstrap(
   if (response.status === 401) {
     return {
       kind: 'unauthenticated',
-      message: 'Your local NexusDesk session has expired.',
+      message: 'Your local Offira session has expired.',
       reconnectHref: '/bootstrap/reconnect',
     }
   }

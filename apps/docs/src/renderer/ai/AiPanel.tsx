@@ -2,13 +2,16 @@ import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
-import { AgentLoop, composeSkills, streamText, type AgentImage } from '@genoffice/agent-core'
+import { composeSkills, streamText, type AgentImage } from '@genoffice/agent-core'
+import { createAgentLoopRuntime, type AgentLoopLike } from '@nexusdesk/web-client'
+import { NativeOfficePanel } from '@nexusdesk/web-client/native-office-panel'
+import type { Revision } from '@nexusdesk/protocol'
 import { imageGenerationAvailable } from '@genoffice/ai-provider/browser'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { PmNode } from '../editor/convert'
 import { TABLE_TRAILING_SKIP } from '../editor/extensions'
-import { countWords, findNumId, type NumIds } from './protocol'
+import { countWords, findNumId, getSelectionScope, type NumIds } from './protocol'
 import { DOC_NAV_SCHEME, navigateToBlock, parseDocNavHref } from './doc-nav'
 import {
   markDocSeen,
@@ -320,7 +323,39 @@ interface AiPanelProps {
   notesAccess?: AiNotesAccess
 }
 
-export function AiPanel({
+export function AiPanel(props: AiPanelProps) {
+  return window.nexusdeskDocsHost ? <NativeDocsPanel {...props} /> : <LegacyAiPanel {...props} />
+}
+
+function NativeDocsPanel(props: AiPanelProps) {
+  const [, changed] = useState(0)
+  useEffect(() => {
+    const update = () => changed(value => value + 1)
+    props.editor.on('selectionUpdate', update)
+    props.editor.on('update', update)
+    return () => {
+      props.editor.off('selectionUpdate', update)
+      props.editor.off('update', update)
+    }
+  }, [props.editor])
+  const host = window.nexusdeskDocsHost!
+  const scope = getSelectionScope(props.editor)
+  const selection = props.editor.state.selection
+  const scopeText = selection.empty
+    ? ''
+    : props.editor.state.doc.textBetween(selection.from, selection.to, '\n', ' ').trim()
+  const request = props.preset
+  const draftRequest = useRef<{ id: number; text: string } | null>(null)
+  if (request && draftRequest.current?.id !== request.nonce) draftRequest.current = { id: request.nonce, text: request.text }
+  return <NativeOfficePanel host={host} isOpen={props.open ?? true}
+    onExpand={() => props.onExpand?.()} onCollapse={() => props.onCollapse?.()}
+    draftRequest={draftRequest.current}
+    scopeLabel={scope.isRange ? `已选中第 ${scope.startIndex + 1}–${scope.endIndex + 1} 段 · ${countWords(scopeText)} 字` : null}
+    onScopeDismiss={() => props.editor.commands.setTextSelection(props.editor.state.selection.to)}
+    captureSnapshot={() => ({ revision: host.document.revision as Revision, selection: { kind: 'docs', ...getSelectionScope(props.editor) } })} />
+}
+
+function LegacyAiPanel({
   editor,
   blocks,
   settings,
@@ -742,13 +777,14 @@ export function AiPanel({
     decidePartial(false)
   }
 
-  const loopRef = useRef<AgentLoop<PmNode> | null>(null)
+  const loopRef = useRef<AgentLoopLike | null>(null)
   if (!loopRef.current) {
     const numIds = (): NumIds => ({
       bullet: findNumId(blocksRef.current, 'bullet') ?? numIdFallbackRef.current?.bullet ?? null,
       ordered: findNumId(blocksRef.current, 'ordered') ?? numIdFallbackRef.current?.ordered ?? null,
     })
-    loopRef.current = new AgentLoop<PmNode>({
+    loopRef.current = createAgentLoopRuntime<PmNode>({
+      getDocumentId: () => window.nexusdeskDocsHost?.document.documentId ?? null,
       transport: transportRef.current,
       systemSuffix: aiLangDirective,
       skill: composeSkills('docs+files', '', [
@@ -863,7 +899,7 @@ export function AiPanel({
           })
           // Signed-out failures get an inline sign-in button; detected via
           // gsk status rather than matching the localized error text
-          void window.desktop
+          if (!window.agentApi) void window.desktop
             .aiGskStatus()
             .then((status) => {
               if (status.loggedIn) return
@@ -1490,6 +1526,7 @@ export function AiPanel({
             </div>
           )
         })}
+        <div data-agent-approval-slot />
       </div>
 
       <div className="ai-composer">

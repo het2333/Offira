@@ -11,7 +11,7 @@ export const GENOFFICE_PRODUCT_CONFIG: ProductConfig = {
 
 export const NEXUSDESK_PRODUCT_CONFIG: ProductConfig = {
   id: 'nexusdesk',
-  name: 'NexusDesk',
+  name: 'Offira',
   editors: ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'],
   features: { mcp: false, cloudProjects: false, account: false, integrations: false },
 }

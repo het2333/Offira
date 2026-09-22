@@ -27,6 +27,56 @@ async function authenticatedHeaders(): Promise<{ cookie: string }> {
 }
 
 describe('startLocalHost HTTP bootstrap', () => {
+  it('imports a legacy provider key before making the new settings endpoint available', async () => {
+    running = await startLocalHost({
+      runtimeCommand: { entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) },
+      legacyProviderKeys: { DEEPSEEK_API_KEY: 'sk-legacy-test-value' },
+    })
+    const headers = await authenticatedHeaders()
+    const status = await fetch(`${running.origin}/api/shell/model-credentials?ref=DEEPSEEK_API_KEY`, { headers })
+    expect(await status.json()).toEqual({ ref: 'DEEPSEEK_API_KEY', configured: true, source: 'stored', writable: true })
+  })
+  it('stores a model API key in Harness without returning the secret to the browser', async () => {
+    running = await startLocalHost({
+      runtimeCommand: { entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) },
+    })
+    const unauthenticated = await fetch(`${running.origin}/api/shell/model-credentials?ref=DEEPSEEK_API_KEY`)
+    expect(unauthenticated.status).toBe(401)
+    const headers = await authenticatedHeaders()
+    const endpoint = `${running.origin}/api/shell/model-credentials`
+    const before = await fetch(`${endpoint}?ref=DEEPSEEK_API_KEY`, { headers })
+    expect(await before.json()).toEqual({ ref: 'DEEPSEEK_API_KEY', configured: false, writable: true })
+
+    const saved = await fetch(endpoint, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json', Origin: running.origin },
+      body: JSON.stringify({ ref: 'DEEPSEEK_API_KEY', value: 'sk-private-test-value' }),
+    })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toEqual({ ref: 'DEEPSEEK_API_KEY', configured: true, source: 'stored', writable: true })
+    const after = await fetch(`${endpoint}?ref=DEEPSEEK_API_KEY`, { headers })
+    expect(await after.json()).toEqual({ ref: 'DEEPSEEK_API_KEY', configured: true, source: 'stored', writable: true })
+
+    const invalid = await fetch(endpoint, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: 'HOME', value: 'secret' }),
+    })
+    expect(invalid.status).toBe(400)
+    expect(await invalid.text()).not.toContain('secret')
+  })
+
+  it('refuses to overwrite a launch-environment model key', async () => {
+    running = await startLocalHost({
+      runtimeCommand: { entry: fileURLToPath(new URL('./fixtures/fake-runtime.mjs', import.meta.url)) },
+    })
+    const headers = await authenticatedHeaders()
+    const response = await fetch(`${running.origin}/api/shell/model-credentials`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: 'READ_ONLY_API_KEY', value: 'sk-should-not-be-saved' }),
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'READ_ONLY' })
+  })
   it('authenticates binary uploads against the websocket owner and publishes a durable lookup before acknowledging apply', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'server-checkpoint-'))
     const path = join(temporaryDirectory, 'source.xlsx')
@@ -212,7 +262,7 @@ describe('startLocalHost HTTP bootstrap', () => {
         revision: 4,
       },
       async bootstrap(origin) {
-        return { documentId: 'doc-1', kind: 'docs', origin }
+        return { documentId: 'doc-1', kind: 'docs', origin, language: 'en', theme: 'system' }
       },
       async execute(action, payload) {
         actions.push([action, payload])
@@ -233,7 +283,12 @@ describe('startLocalHost HTTP bootstrap', () => {
     })
     const unknown = await fetch(`${running.origin}/api/documents/missing/bootstrap`, { headers })
 
-    expect(await bootstrap.json()).toMatchObject({ documentId: 'doc-1', kind: 'docs' })
+    expect(await bootstrap.json()).toMatchObject({ documentId: 'doc-1', kind: 'docs', language: 'zh', theme: 'system' })
+    await fetch(`${running.origin}/api/shell/settings`, {
+      method: 'POST', headers, body: JSON.stringify({ language: 'ja', theme: 'dark' }),
+    })
+    const localized = await fetch(`${running.origin}/api/documents/doc-1/bootstrap`, { headers })
+    expect(await localized.json()).toMatchObject({ language: 'ja', theme: 'dark' })
     expect(action.status).toBe(200)
     expect(actions).toEqual([['read-document', { scope: 'document' }]])
     expect(unknown.status).toBe(404)

@@ -1291,6 +1291,7 @@ export function App(): React.JSX.Element {
                 ...last,
                 text: error,
                 isError: true,
+                loginRequired: false,
                 streaming: false,
                 tools: last.tools.filter((tl) => !tl.running),
               }
@@ -1299,7 +1300,7 @@ export function App(): React.JSX.Element {
           })
           // Signed-out failures get an inline sign-in button; detected via
           // gsk status rather than matching the localized error text
-          void window.desktopApi
+          if (window.agentApi === undefined) void window.desktopApi
             .aiGskStatus()
             .then((status) => {
               if (status.loggedIn) return
@@ -1586,7 +1587,7 @@ export function App(): React.JSX.Element {
     const undoRedoService = runtime.univer.__getInjector().get(IUndoRedoService)
     const revisionTracker = createRevisionTracker({
       suppressed: () => journalSuppression.active,
-      schedule: queueMicrotask,
+      schedule: (run) => window.queueMicrotask(run),
       advance: () => {
         const browserHost = window.nexusdeskBrowserHost
         if (browserHost === undefined) return
@@ -4621,8 +4622,8 @@ export function App(): React.JSX.Element {
                   selection: {
                     kind: 'sheets',
                     sheetId,
-                    a1,
-                    ...(columns === null ? {} : { columns }),
+                    a1: aiScopeDismissed ? null : a1,
+                    ...(aiScopeDismissed || columns === null ? {} : { columns }),
                   },
                 }
               },
