@@ -36,9 +36,12 @@
 
 ## Demo
 
-[![Watch the English Excel AI chart demo](docs/media/offira-excel-ai-chart-demo-en-poster.png)](docs/media/offira-excel-ai-chart-demo-en.mp4)
+| Excel — AI chart | Docs — edit and save | Slides — edit and save |
+| --- | --- | --- |
+| [![Watch the Excel AI chart demo](docs/media/offira-excel-ai-chart-demo-en-poster.png)](docs/media/offira-excel-ai-chart-demo-en.mp4) | [![Watch the Docs editor demo](docs/media/offira-docs-editor-demo-en-poster.png)](docs/media/offira-docs-editor-demo-en.mp4) | [![Watch the Slides editor demo](docs/media/offira-slides-editor-demo-en-poster.png)](docs/media/offira-slides-editor-demo-en.mp4) |
+| [Watch the 21-second video](docs/media/offira-excel-ai-chart-demo-en.mp4) | [Watch the 10-second video](docs/media/offira-docs-editor-demo-en.mp4) | [Watch the 8-second video](docs/media/offira-slides-editor-demo-en.mp4) |
 
-[Watch the 41-second English demo](docs/media/offira-excel-ai-chart-demo-en.mp4): Offira opens an illustrative sales workbook, selects `A4:B10`, asks the AI to create a column chart at `D4`, reviews the changes, and saves the result. The sample figures are fictional; no user workbook or API credential appears in the recording.
+The Excel video shows a real AI session: select `A4:B10`, request a column chart at `D4`, approve the writes, and save. AI waiting periods are shortened and marked on screen. The Docs and Slides videos show real **manual editor** changes and saved files; they do not portray those edits as AI-generated. All three clips use fictional samples, have English on-screen captions, and contain no user files or API credentials.
 
 ## Quick start
 
