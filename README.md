@@ -36,10 +36,17 @@
 
 ## Demo
 
-| Excel — AI chart | Docs — edit and save | Slides — edit and save |
-| --- | --- | --- |
-| [![Watch the Excel AI chart demo](docs/media/offira-excel-ai-chart-demo-en-poster.png)](docs/media/offira-excel-ai-chart-demo-en.mp4) | [![Watch the Docs editor demo](docs/media/offira-docs-editor-demo-en-poster.png)](docs/media/offira-docs-editor-demo-en.mp4) | [![Watch the Slides editor demo](docs/media/offira-slides-editor-demo-en-poster.png)](docs/media/offira-slides-editor-demo-en.mp4) |
-| [Watch the 21-second video](docs/media/offira-excel-ai-chart-demo-en.mp4) | [Watch the 10-second video](docs/media/offira-docs-editor-demo-en.mp4) | [Watch the 8-second video](docs/media/offira-slides-editor-demo-en.mp4) |
+### Excel — AI chart (21 seconds)
+
+https://github.com/user-attachments/assets/7507bada-e64f-40e8-9817-b17a019c0b82
+
+### Docs — edit and save (10 seconds)
+
+https://github.com/user-attachments/assets/aea696c7-7c1e-4d7e-afdd-811dd11d9a5d
+
+### Slides — edit and save (8 seconds)
+
+https://github.com/user-attachments/assets/a3a3c93b-2f73-44b9-be67-8f40109d6c3b
 
 The Excel video shows a real AI session: select `A4:B10`, request a column chart at `D4`, approve the writes, and save. AI waiting periods are shortened and marked on screen. The Docs and Slides videos show real **manual editor** changes and saved files; they do not portray those edits as AI-generated. All three clips use fictional samples, have English on-screen captions, and contain no user files or API credentials.
 
