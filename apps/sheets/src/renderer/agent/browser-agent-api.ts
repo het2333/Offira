@@ -27,6 +27,7 @@ import {
   type EditorRegistrationHandle,
   type NexusClient,
 } from '@nexusdesk/web-client'
+import { getLang } from '../i18n/locale'
 
 export interface BrowserAgentBridge {
   readonly agentApi: AgentApi
@@ -168,15 +169,18 @@ export function createBrowserAgentBridge(options: BrowserAgentBridgeOptions): Br
         snapshot,
         adapter: saveAdapter,
       })
+      const summary = getLang() === 'en'
+        ? 'Save the verified workbook to the original file. Previous edits will not run again.'
+        : '将当前已核验的工作簿保存到原文件。不会重新执行之前的编辑。'
       return {
         ok: true,
-        summary: '将当前已核验的工作簿保存到原文件。不会重新执行之前的编辑。',
+        summary,
         warnings: [],
         data: {
           operationId: frame.target.operationId,
           planHash,
           snapshotHash,
-          summary: '将当前已核验的工作簿保存到原文件。不会重新执行之前的编辑。',
+          summary,
           targets: ['current document'],
         },
       }

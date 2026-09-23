@@ -26,6 +26,7 @@ import {
   prepareSheetsOperations,
   type McpSheetHandlers,
 } from './sheets-command'
+import { getLang } from '../i18n/locale'
 
 export interface SheetsDocumentState {
   documentId: DocumentId
@@ -86,23 +87,37 @@ function operationsOf(plan: EditPlan): WorkbookOperation[] {
 }
 
 function describeOperations(handlers: McpSheetHandlers, operations: readonly WorkbookOperation[]): string {
+  const english = getLang() === 'en'
   const preview = (value: unknown) => {
     const text = typeof value === 'string' ? `“${value}”` : String(value)
     return text.length > 180 ? `${text.slice(0, 180)}…` : text
   }
   return operations.map((op, index) => {
-    const target = operationTargets(handlers, [op]).join('、')
+    const target = operationTargets(handlers, [op]).join(english ? ', ' : '、')
     let action: string
-    switch (op.op) {
-      case 'set_cell': action = `在 ${target} 写入 ${preview(op.value)}`; break
-      case 'set_formula': action = `在 ${target} 设置公式 ${preview(op.formula)}`; break
-      case 'clear_cell': case 'clear_range': action = `清空 ${target} 的内容`; break
-      case 'add_chart': action = `在 ${target} 新建图表${op.title ? `“${op.title}”` : ''}，数据范围 ${op.dataRange}`; break
-      case 'rename_sheet': action = `将 ${target} 重命名为“${op.name}”`; break
-      default: action = `修改 ${target}（${op.op.replace(/_/g, ' ')}）`
+    if (english) {
+      switch (op.op) {
+        case 'set_cell': action = `Write ${preview(op.value)} to ${target}`; break
+        case 'set_formula': action = `Set formula ${preview(op.formula)} in ${target}`; break
+        case 'clear_cell': case 'clear_range': action = `Clear contents of ${target}`; break
+        case 'add_chart': action = `Create chart${op.title ? ` “${op.title}”` : ''} on ${target} using ${op.dataRange}`; break
+        case 'rename_sheet': action = `Rename ${target} to “${op.name}”`; break
+        default: action = `Edit ${target} (${op.op.replace(/_/g, ' ')})`
+      }
+    } else {
+      switch (op.op) {
+        case 'set_cell': action = `在 ${target} 写入 ${preview(op.value)}`; break
+        case 'set_formula': action = `在 ${target} 设置公式 ${preview(op.formula)}`; break
+        case 'clear_cell': case 'clear_range': action = `清空 ${target} 的内容`; break
+        case 'add_chart': action = `在 ${target} 新建图表${op.title ? `“${op.title}”` : ''}，数据范围 ${op.dataRange}`; break
+        case 'rename_sheet': action = `将 ${target} 重命名为“${op.name}”`; break
+        default: action = `修改 ${target}（${op.op.replace(/_/g, ' ')}）`
+      }
     }
-    return `${index + 1}. ${action}`
-  }).join('\n') + '\n只执行以上修改；保存文件需另行确认。'
+    return `${index + 1}. ${action}${english ? '.' : ''}`
+  }).join('\n') + (english
+    ? '\nOnly the changes above will be applied. Saving the file requires separate confirmation.'
+    : '\n只执行以上修改；保存文件需另行确认。')
 }
 
 async function hashPlan(plan: Pick<EditPlan, 'target' | 'operations'>): Promise<string> {

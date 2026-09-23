@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#features">Features</a> ·
+  <a href="#demo">Demo</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#project-status">Project status</a>
@@ -32,6 +33,12 @@
 | Sheets              | `.xlsx`                | Native spreadsheet tools and Harness sidebar                |
 | Slides              | `.pptx`                | Native presentation tools and Harness sidebar               |
 | PDF, Markdown, HTML | `.pdf`, `.md`, `.html` | Local web editors; feature coverage is still being verified |
+
+## Demo
+
+[![Watch the English Excel AI chart demo](docs/media/offira-excel-ai-chart-demo-en-poster.png)](docs/media/offira-excel-ai-chart-demo-en.mp4)
+
+[Watch the 41-second English demo](docs/media/offira-excel-ai-chart-demo-en.mp4): Offira opens an illustrative sales workbook, selects `A4:B10`, asks the AI to create a column chart at `D4`, reviews the changes, and saves the result. The sample figures are fictional; no user workbook or API credential appears in the recording.
 
 ## Quick start
 

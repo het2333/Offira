@@ -15,6 +15,7 @@ import {
   type SheetsAdapterOptions,
 } from '../src/renderer/agent/sheets-adapter'
 import type { McpSheetHandlers } from '../src/renderer/agent/sheets-command'
+import { setModuleLang } from '../src/renderer/i18n/locale'
 
 const documentId = 'document-1' as DocumentId
 const clientId = 'client-1' as ClientId
@@ -80,6 +81,26 @@ describe('Sheets editor adapter', () => {
     expect(plan.summary).toContain('Summary!B2')
     expect(plan.summary).toContain('写入 5')
     expect(plan.summary).not.toContain('set_cell')
+  })
+  it('shows English chart and cell approval copy when the editor language is English', async () => {
+    setModuleLang('en')
+    try {
+      const { adapter } = setup()
+      const plan = await adapter.propose(editRequest({
+        arguments: { ops: [
+          { op: 'set_cell', sheet: 'Summary', address: 'B2', value: 5 },
+          { op: 'add_chart', sheet: 'Summary', chartType: 'column', dataRange: 'A4:B10', title: 'H1 2026 Sales', anchorCell: 'D4' },
+        ] },
+      }))
+
+      expect(plan.summary).toContain('1. Write 5 to Summary!B2')
+      expect(plan.summary).toContain('2. Create chart “H1 2026 Sales” on Summary using A4:B10')
+      expect(plan.summary).toContain('A4:B10.\nOnly the changes above')
+      expect(plan.summary).toContain('Saving the file requires separate confirmation.')
+      expect(plan.summary).not.toMatch(/[\u3400-\u9fff]/)
+    } finally {
+      setModuleLang('zh')
+    }
   })
   it('proposes normalized operations without mutating the workbook', async () => {
     const applyOps = vi.fn()

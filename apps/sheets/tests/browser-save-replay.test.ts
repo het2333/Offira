@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import { BoundedEditorCache, createWorkingCopyMutationLane } from '@nexusdesk/web-client'
 import { createBrowserAgentBridge } from '../src/renderer/agent/browser-agent-api'
+import { setModuleLang } from '../src/renderer/i18n/locale'
 
 function setup(storageOverride?: any, workingCopy?: any) {
   let receive: (frame: any) => void = () => {}
@@ -65,6 +66,22 @@ function setup(storageOverride?: any, workingCopy?: any) {
     results: () => sent.filter((value) => value.type === 'editor:result'),
   }
 }
+
+it('describes an English save approval in English', async () => {
+  setModuleLang('en')
+  const s = setup()
+  try {
+    s.bridge.attachEditor({ saveSnapshot: () => 'approved' } as never)
+    s.emit(s.frame('propose_save'))
+    await vi.waitFor(() => expect(s.results()).toHaveLength(1))
+    const result = s.results()[0].result
+    expect(result.summary).toBe('Save the verified workbook to the original file. Previous edits will not run again.')
+    expect(result.data.summary).toBe(result.summary)
+  } finally {
+    s.bridge.dispose()
+    setModuleLang('zh')
+  }
+})
 
 it('durable apply delivers success only after full capture commits and carries the receipt', async () => {
   let finish!: (value: any) => void
