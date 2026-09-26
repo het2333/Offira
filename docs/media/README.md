@@ -1,6 +1,6 @@
 # Offira video demos
 
-Press play below. GitHub's `.mp4` file pages are for viewing or downloading the file, not for inline playback. You can also [watch all three demos in the repository README](../../README.md#demo).
+Press play in the players below, or [watch all three demos in the repository README](../../README.md#demo). The `.mp4` entries in this folder are downloadable source files; GitHub's file-detail pages do not show a player.
 
 [▶ Watch Excel](#excel--ai-chart-21-seconds) · [▶ Watch Docs](#docs--edit-and-save-10-seconds) · [▶ Watch Slides](#slides--edit-and-save-8-seconds)
 

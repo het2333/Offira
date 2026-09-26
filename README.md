@@ -10,6 +10,12 @@
 </p>
 
 <p align="center">
+  <a href="#excel--ai-chart-21-seconds">▶ Watch the Excel demo</a> ·
+  <a href="#docs--edit-and-save-10-seconds">Watch Docs</a> ·
+  <a href="#slides--edit-and-save-8-seconds">Watch Slides</a>
+</p>
+
+<p align="center">
   <a href="#features">Features</a> ·
   <a href="#demo">Demo</a> ·
   <a href="#quick-start">Quick start</a> ·
