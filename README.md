@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="#excel--ai-chart-21-seconds">▶ Watch the Excel demo</a> ·
-  <a href="#docs--edit-and-save-10-seconds">Watch Docs</a> ·
-  <a href="#slides--edit-and-save-8-seconds">Watch Slides</a>
+  <a href="https://github.com/user-attachments/assets/7507bada-e64f-40e8-9817-b17a019c0b82">▶ Play Excel</a> ·
+  <a href="https://github.com/user-attachments/assets/aea696c7-7c1e-4d7e-afdd-811dd11d9a5d">▶ Play Docs</a> ·
+  <a href="https://github.com/user-attachments/assets/a3a3c93b-2f73-44b9-be67-8f40109d6c3b">▶ Play Slides</a>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 ## Demo
 
-Play the videos directly below. The `.mp4` file pages in GitHub's file browser do not provide a player; the files remain available there for download.
+Play the videos directly below, or use the links above to open each video on its own. GitHub's `.mp4` file-detail pages are not video players; the copies in `docs/media` are kept as source files.
 
 [▶ Excel](#excel--ai-chart-21-seconds) · [▶ Docs](#docs--edit-and-save-10-seconds) · [▶ Slides](#slides--edit-and-save-8-seconds)
 
