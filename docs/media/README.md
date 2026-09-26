@@ -1,6 +1,6 @@
 # Offira video demos
 
-Watch the demos directly on this page. GitHub's individual `.mp4` file pages show the file for download, not an inline video player.
+Press play on the videos below. GitHub's individual `.mp4` file pages show the file for download, not an inline video player. You can also [watch all three demos in the repository README](../../README.md#demo).
 
 ## Excel — AI chart (21 seconds)
 

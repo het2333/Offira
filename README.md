@@ -19,6 +19,8 @@
 
 > **Development preview:** Offira currently runs as a local web service on your computer. There is no downloadable installer, hosted demo, cloud sync, or collaboration service yet.
 
+[▶ Watch the Excel, Docs, and Slides demos in this README](#demo)
+
 ## Features
 
 - **One workspace for your files.** Open documents, spreadsheets, presentations, PDFs, Markdown, and HTML from a shared home screen with file tabs and editor switching.
@@ -35,6 +37,8 @@
 | PDF, Markdown, HTML | `.pdf`, `.md`, `.html` | Local web editors; feature coverage is still being verified |
 
 ## Demo
+
+Press play on the videos below to watch them on GitHub. Individual `.mp4` file pages are download pages, not video players; use this section or the [video gallery](docs/media/README.md) to watch online.
 
 ### Excel — AI chart (21 seconds)
 
