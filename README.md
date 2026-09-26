@@ -19,7 +19,7 @@
 
 > **Development preview:** Offira currently runs as a local web service on your computer. There is no downloadable installer, hosted demo, cloud sync, or collaboration service yet.
 
-[▶ Watch the demos in this README](#demo) · [Play Excel directly](https://github.com/user-attachments/assets/7507bada-e64f-40e8-9817-b17a019c0b82) · [Play Docs directly](https://github.com/user-attachments/assets/aea696c7-7c1e-4d7e-afdd-811dd11d9a5d) · [Play Slides directly](https://github.com/user-attachments/assets/a3a3c93b-2f73-44b9-be67-8f40109d6c3b)
+[▶ Watch Excel](#excel--ai-chart-21-seconds) · [▶ Watch Docs](#docs--edit-and-save-10-seconds) · [▶ Watch Slides](#slides--edit-and-save-8-seconds)
 
 ## Features
 
@@ -38,23 +38,17 @@
 
 ## Demo
 
-Press play below, or use each **Play directly** link to open a video player in a new tab. GitHub's `.mp4` file pages are for viewing or downloading the file, not for inline playback.
+Press play in this README, or use the [video gallery](docs/media/README.md). GitHub's `.mp4` file pages are for viewing or downloading the file, not for inline playback.
 
 ### Excel — AI chart (21 seconds)
-
-[▶ Play directly](https://github.com/user-attachments/assets/7507bada-e64f-40e8-9817-b17a019c0b82)
 
 https://github.com/user-attachments/assets/7507bada-e64f-40e8-9817-b17a019c0b82
 
 ### Docs — edit and save (10 seconds)
 
-[▶ Play directly](https://github.com/user-attachments/assets/aea696c7-7c1e-4d7e-afdd-811dd11d9a5d)
-
 https://github.com/user-attachments/assets/aea696c7-7c1e-4d7e-afdd-811dd11d9a5d
 
 ### Slides — edit and save (8 seconds)
-
-[▶ Play directly](https://github.com/user-attachments/assets/a3a3c93b-2f73-44b9-be67-8f40109d6c3b)
 
 https://github.com/user-attachments/assets/a3a3c93b-2f73-44b9-be67-8f40109d6c3b
 
